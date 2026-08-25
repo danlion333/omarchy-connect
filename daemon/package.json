@@ -1,0 +1,24 @@
+{
+  "name": "omarchy-connect-daemon",
+  "version": "0.2.0",
+  "description": "Omarchy Connect daemon \u2014 bridges an Omarchy desktop with the mobile app over the LAN",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "omarchy-connect": "bin/omarchy-connect.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node bin/omarchy-connect.js start",
+    "pair": "node bin/omarchy-connect.js pair",
+    "test": "node test/smoke.mjs && node test/tls.mjs && node test/calls.mjs && node test/ios.mjs",
+    "test:tls": "node test/tls.mjs",
+    "test:calls": "node test/calls.mjs",
+    "test:ios": "node test/ios.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

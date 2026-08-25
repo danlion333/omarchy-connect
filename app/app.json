@@ -1,0 +1,68 @@
+{
+  "expo": {
+    "name": "Omarchy Connect",
+    "slug": "omarchy-connect",
+    "version": "0.1.0",
+    "scheme": "omarchy-connect",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#101010",
+    "splash": {
+      "backgroundColor": "#101010",
+      "resizeMode": "contain",
+      "image": "./assets/splash-icon.png"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.omarchy.connect",
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "Omarchy Connect talks to your desktop over the local network.",
+        "NSCameraUsageDescription": "Scanning the pairing QR code shown by the desktop.",
+        "NSPhotoLibraryUsageDescription": "Sending photos to your desktop."
+      }
+    },
+    "android": {
+      "package": "dev.omarchy.connect",
+      "adaptiveIcon": {
+        "backgroundColor": "#101010",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.RECEIVE_SMS",
+        "android.permission.READ_SMS",
+        "android.permission.SEND_SMS",
+        "android.permission.READ_CALL_LOG",
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.ANSWER_PHONE_CALLS",
+        "android.permission.READ_CONTACTS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Scanning the pairing QR code shown by the desktop."
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Sending photos to your desktop."
+        }
+      ],
+      "expo-secure-store",
+      "expo-font",
+      "expo-sharing",
+      "./plugins/withDesktopCa"
+    ]
+  }
+}

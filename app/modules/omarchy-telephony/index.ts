@@ -1,0 +1,78 @@
+import { requireNativeModule, NativeModule } from 'expo'
+import { Platform } from 'react-native'
+
+export type SmsEvent = {
+  kind: 'sms'
+  at: number
+  from: string | null
+  name: string | null
+  body: string
+  read?: boolean
+}
+
+export type CallEvent = {
+  kind: 'call'
+  at: number
+  /** Live state from the broadcast; absent on entries read back from the log. */
+  state?: 'ringing' | 'active' | 'ended'
+  from: string | null
+  name: string | null
+  missed: boolean
+  seconds?: number
+  direction?: 'incoming' | 'outgoing' | 'missed'
+}
+
+export type TelephonyEvent = SmsEvent | CallEvent
+
+export type PermissionResult = {
+  status: 'granted' | 'denied' | 'undetermined'
+  granted: boolean
+  canAskAgain: boolean
+}
+
+type Events = {
+  onMessage: (event: SmsEvent) => void
+  onCall: (event: CallEvent) => void
+}
+
+declare class OmarchyTelephony extends NativeModule<Events> {
+  isAvailable(): boolean
+  getPermissionsAsync(): Promise<PermissionResult>
+  requestPermissionsAsync(): Promise<PermissionResult>
+  requestSendPermissionAsync(): Promise<PermissionResult>
+  requestCallPermissionAsync(): Promise<PermissionResult>
+  /** Whether ANSWER_PHONE_CALLS is held right now — cheap, so not a promise. */
+  canAnswerCalls(): boolean
+  answerCall(): Promise<{ ok: boolean; audio: 'handset' }>
+  rejectCall(): Promise<{ ok: boolean }>
+  drainBacklog(): Promise<TelephonyEvent[]>
+  backlogSize(): number
+  recentMessages(limit: number): Promise<SmsEvent[]>
+  recentCalls(limit: number): Promise<CallEvent[]>
+  sendMessage(to: string, text: string): Promise<{ ok: boolean; to: string; parts: number }>
+}
+
+/**
+ * Android only, and only in a real build.
+ *
+ * Expo Go cannot carry the SMS and call-log permissions, and iOS does not
+ * expose either to any app — so the module is simply absent on both, and every
+ * caller has to cope with `null` rather than being handed a stub that lies.
+ */
+let cached: OmarchyTelephony | null | undefined
+
+export function telephony(): OmarchyTelephony | null {
+  if (cached !== undefined) return cached
+  if (Platform.OS !== 'android') {
+    cached = null
+    return cached
+  }
+  try {
+    cached = requireNativeModule<OmarchyTelephony>('OmarchyTelephony')
+  } catch {
+    cached = null
+  }
+  return cached
+}
+
+export const isTelephonyAvailable = () => telephony() !== null

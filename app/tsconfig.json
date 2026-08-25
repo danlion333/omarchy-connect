@@ -1,0 +1,9 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    // The protocol tests run src/api/client.ts under Node, whose ESM resolver
+    // needs the extension spelled out. Metro resolves it just the same.
+    "allowImportingTsExtensions": true
+  }
+}

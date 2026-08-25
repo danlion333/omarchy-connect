@@ -1,0 +1,27 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    Declared here rather than registered at runtime on purpose: a manifest
+    receiver is what makes Android start this app's process for a message that
+    arrives while the app is closed. The receiver then parks the message in a
+    small on-device backlog, and JavaScript drains it the next time the app
+    runs. Nothing here keeps a socket open in the background — see the module.
+  -->
+  <application>
+    <receiver
+      android:name=".SmsReceiver"
+      android:exported="true"
+      android:permission="android.permission.BROADCAST_SMS">
+      <intent-filter android:priority="999">
+        <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+      </intent-filter>
+    </receiver>
+
+    <receiver
+      android:name=".PhoneStateReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.PHONE_STATE" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

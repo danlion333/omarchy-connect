@@ -1,0 +1,124 @@
+# Omarchy Connect — desktop client
+
+The Omarchy side of the link, as a bar widget and a panel. One icon says
+whether a phone is on the other end; one click opens everything the desktop
+knows about it and everything you do from here.
+
+It is an ordinary Omarchy shell plugin — `manifest.json` plus QML, loaded out
+of `~/.config/omarchy/plugins/omarchy-connect.phone/` by the running
+`omarchy-shell` process. No build step, no root, no second Quickshell.
+
+```bash
+omarchy-connect panel install     # copy, validate, rescan, add to the bar
+omarchy-connect panel status      # where it is and whether the bar has it
+omarchy-connect panel remove
+```
+
+Installing again after editing the QML copies and rescans, but a bar widget
+that is already mounted keeps its compiled component — the new version only
+appears after `omarchy-restart-shell`. The install command says so when it is
+replacing an existing copy.
+
+## Panel
+
+- **Hero** — the connected phone's name and platform, the state of the link,
+  and a switch that starts and stops the daemon. With no phone connected the
+  hero falls back to the desktop's own name.
+- **Pairing card** — only while a code is live: the six digits, a countdown,
+  and a button that reopens the QR code.
+- **The numbers** — link state, notifications mirrored, the phone's battery,
+  how long the link has been up (or when the phone was last seen), files in and
+  out, whether the transport is TLS or plain, missed calls, whether a handset is
+  on Bluetooth, the daemon's address, and the desktop's identity fingerprint.
+  Address and fingerprint copy on click. Missed calls turn urgent when there are
+  any; `plain` sits in the dim colour, because it is the state of the transport
+  rather than a fault. Bluetooth reads *unsupported* when this machine's
+  PipeWire is older than 1.4 and *not connected* when nothing is paired — a
+  distinction worth making, because only one of them is fixable by pairing.
+  The **iPhone** row beside it is the other Bluetooth link — the low-energy one
+  an iPhone mirrors its notifications over — and it reads *not paired*,
+  *idle* (bonded, but the phone declined to share notifications) or the
+  handset's name while it is mirroring.
+- **Call card** — the one card that is a remote control rather than a readout.
+  It appears while a call is live over Bluetooth, urgent while it is ringing,
+  with **Answer** and **Decline**. Bluetooth only, deliberately: that is the
+  link that carries the audio, and answering a call you then cannot hear is no
+  improvement on walking over to the phone. Answering from the panel goes
+  through `omarchy-connect call answer` like everything else here.
+- **Firewall card** — appears only when the daemon reports that its port is
+  closed, and carries the exact `ufw` command. The panel never runs it;
+  opening a port is the user's call.
+- **Paired phones** — one row each, live ones filled, with an unpair action.
+- **From the phone** — the last few mirrored messages, calls and app
+  notifications, missed calls in the urgent colour. Three sources feed one
+  list: an Android build over the LAN, the hands-free link, and an iPhone's own
+  notifications over low energy. Hidden entirely until something arrives, which
+  in Expo Go with no Bluetooth paired is never.
+- **Recent transfers** — the last few files across the link, either direction.
+- **Actions** — Pair, Send, Inbox, and Autostart. Autostart is a checkbox, not
+  a button: it shows whether the daemon runs at login and flips it. Starting
+  and stopping the daemon *right now* is the hero's switch, which is a separate
+  decision.
+
+## Data
+
+The panel is strictly a display. The daemon publishes one file:
+
+```
+~/.local/state/omarchy-connect/status.json
+```
+
+and rewrites it, atomically, the moment anything changes — a phone connects,
+a file moves, a pairing code is minted. The panel watches that file, so it
+reacts as fast as the daemon does without polling, and still has something
+true to draw (desktop name, fingerprint, paired phones) while the daemon is
+stopped.
+
+The one thing a file cannot report is its own writer being killed. So while
+the panel is open, `omarchy-connect status --json` runs on a slow timer; it
+probes loopback, has the final word on `running`, and rewrites a stale file.
+That interval is the plugin's only setting.
+
+TLS is reported, never switched: turning it on means minting a certificate and
+restarting the daemon, which is `omarchy-connect tls enable` and not something a
+bar widget should do behind a click. Both Bluetooth rows are reported the same
+way — pairing a handset belongs in Bluetooth settings, and opening a window in
+which this machine advertises itself to the neighbourhood (`omarchy-connect ios
+pair`) is even less of a thing to hide behind a click.
+
+Every action shells out to the same CLI a person would use. The argv is read
+from the `exec` field of the status file rather than from `$PATH`, so a daemon
+running out of a checkout works without being installed anywhere.
+
+## Keyboard
+
+`j`/`k` move, `h`/`l` walk the action row, Enter activates, `x` unpairs the
+selected phone, `p` pairs, `s` sends, `i` opens the inbox, `r` refreshes, Tab
+moves to the neighbouring bar panel, Esc closes.
+
+`a` answers a ringing call and `d` declines it — or hangs up one already in
+progress. Both do nothing when there is no call, so a mistyped key on an idle
+panel is harmless.
+
+## IPC
+
+```bash
+omarchy-shell omarchy-connect toggle
+omarchy-shell omarchy-connect pair
+omarchy-shell omarchy-connect refresh
+omarchy-shell omarchy-connect status
+```
+
+## Settings
+
+Settings live inline on the widget's entry in `~/.config/omarchy/shell.json`.
+
+| Key | Default | What it does |
+|---|---|---|
+| `refreshIntervalSec` | `15` | How often an open panel re-confirms the daemon is alive |
+| `hideWhenUnpaired` | `false` | Leave the bar alone until a phone has been paired |
+
+```bash
+omarchy bar set omarchy-connect.phone refreshIntervalSec 30 --json
+omarchy bar set omarchy-connect.phone hideWhenUnpaired true --json
+```
