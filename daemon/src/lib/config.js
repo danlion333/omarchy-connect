@@ -13,6 +13,9 @@ const DEFAULTS = {
   openFilesOnReceive: false,
   requireEncryption: true,
   tls: false,
+  // Reading an agent is reading everything it saw, and writing to one is a
+  // shell. Nothing here is on until `omarchy-connect agent enable` says so.
+  agents: { enabled: false, spawn: false },
   devices: [],
 }
 

@@ -40,5 +40,8 @@ yarn-error.*
 /ios
 /android
 
+# local module build output — the modules themselves are checked in, not this
+modules/*/android/build/
+
 # Written by `omarchy-connect tls trust` — one desktop's certificate, per machine.
 assets/desktop-ca.pem

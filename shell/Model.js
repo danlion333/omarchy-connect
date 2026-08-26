@@ -206,7 +206,7 @@ function iosText(ios) {
 function callHeadline(call) {
   if (!call) return ""
   var who = call.name || call.from || "unknown number"
-  if (call.state === "incoming" || call.state === "waiting") return "󰏲  " + who
+  if (call.state === "incoming" || call.state === "waiting" || call.state === "ringing") return "󰏲  " + who
   if (call.state === "dialing" || call.state === "alerting") return "󰏳  " + who
   return "󰂰  " + who
 }
@@ -215,12 +215,20 @@ function callHeadline(call) {
 function callDetail(call, bt) {
   if (!call) return ""
   var state = String(call.state || "")
-  if (state === "incoming") return "ringing · answer to take it here"
+  // Where the sound will come out is the one thing worth saying before the
+  // button is pressed, and it is not the same answer on both roads: only the
+  // hands-free profile moves the audio, the app just presses the button.
+  if (state === "incoming" || state === "ringing") {
+    return call.via && call.via !== "bluetooth"
+      ? "ringing · answering leaves the audio on the phone"
+      : "ringing · answer to take it here"
+  }
   if (state === "waiting") return "call waiting · answering holds the first"
   if (state === "held") return "on hold"
   if (state === "dialing" || state === "alerting") return "dialling"
   if (state === "active") {
-    return (bt && bt.audio === "active") ? "in progress · audio on this machine" : "in progress"
+    var here = call.audio === "active" || (bt && bt.audio === "active")
+    return here ? "in progress · audio on this machine" : "in progress · audio on the handset"
   }
   return state
 }

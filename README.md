@@ -36,6 +36,7 @@ the desktop and the app repaints in the same palette.
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
 | **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
+| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default — see below. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **Desktop client** | An Omarchy bar widget and panel: whether the phone is linked, its battery, recent transfers, and one click each to pair, send a file, or open the inbox. |
 
@@ -76,6 +77,7 @@ omarchy-connect sms <number> <message…>     send an SMS through the paired pho
 omarchy-connect call <status|answer|reject|…>  answer or place a call
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
+omarchy-connect agent <status|enable|list|…>  read this desktop's coding agents
 omarchy-connect tls <status|enable|…>       serve https + wss with a pinned certificate
 omarchy-connect config [key] [value]        read or change configuration
 omarchy-connect firewall                    check the port is reachable
@@ -144,6 +146,26 @@ npx expo run:android          # or: eas build --profile preview --platform andro
 Then open **Settings → Messages and calls** in the app and grant the permission.
 Nothing is read until you do.
 
+There is a third switch on that card, **Show who is calling**, and it is worth
+knowing why it exists. Android stopped putting the caller's number in the call
+broadcast for anything targeting API 29 or higher — no permission brings it
+back, and the call log is only written once the call is over. So a mirrored
+call would say `unknown` for exactly as long as the phone is ringing, which is
+the only time it matters. The dialler does know, and puts the contact's name on
+a notification; granting notification access lets the app read it off there.
+Call notifications are the only ones it looks at.
+
+That gets you the number. Turning it into a name is the contacts permission,
+which is a separate decision and a perfectly reasonable one to decline — the
+card says which of the two is missing, because from the desktop a bare number
+looks exactly like a caller ID that does not work.
+
+One more thing worth knowing on Android 13 and newer: a build you installed
+yourself, rather than from a store, has notification access greyed out with
+*Restricted setting*. It is not broken. Open **Settings → Apps → Omarchy
+Connect**, tap the menu in the corner, and choose **Allow restricted
+settings** — installing with `adb install` avoids the block entirely.
+
 iOS has no equivalent *in an app* and never will — Apple gives no app access to
 messages or the call log — so the card offers the road that does work instead of
 a button that cannot: see [On an iPhone](#on-an-iphone).
@@ -157,11 +179,19 @@ omarchy-connect sms +15551234567 'on my way'
 omarchy-connect phone            # what has been mirrored so far
 ```
 
-> A message that lands while the app is closed is not lost: Android starts the
-> app's process for the broadcast and the native receiver writes the message
-> into a small on-device backlog, which the app forwards the next time it runs.
-> Nothing holds a socket open in the background, so "the next time it runs" is
-> the honest limit — it is not instant delivery to a sleeping phone.
+> A message that lands while the app is closed still arrives, by one of two
+> roads. With the **background link** on — Settings → Background link, and the
+> default for a newly paired phone — a foreground service keeps the socket and
+> the app's timers alive through sleep, a swipe-away and a reboot, and the
+> message is forwarded as it lands. With it off, Android still starts the app's
+> process for the broadcast and the native receiver writes the message into a
+> small on-device backlog, which the app forwards the next time it is opened.
+>
+> The background link costs a permanent, silent notification — that is the
+> price Android charges for a process that stays alive, and it is the switch
+> that decides whether this phone exists on the desktop when it is in your
+> pocket. iOS has no equivalent: the socket is taken away seconds after the app
+> leaves the screen.
 
 ## Answering calls
 
@@ -179,6 +209,22 @@ purpose since long before any of us had a smartphone.
 That gets you the whole thing: the phone rings, the desktop raises a
 notification with **Answer** and **Decline** on it, and the conversation comes
 out of your speakers and back through your microphone.
+
+Not every handset holds up its end of that. The profile has a way to describe a
+call in progress, and a phone is free to connect, carry the audio and never use
+it — PipeWire then publishes an audio gateway with no calls under it, and the
+desktop learns that the phone is ringing from the app instead. Answering still
+works; the audio is the part that stays on the handset. `omarchy-connect call
+status` names the road each way, and the panel's call card says which one is
+about to be taken before you press anything.
+
+### Where the buttons are
+
+**Answer** and **Decline** are drawn by whatever is showing your notifications,
+and not every notification server draws action buttons — Omarchy's own shell
+does not. Where there are no buttons, **clicking the notification answers the
+call**, and the notification says so. Declining is then the panel's call card,
+which carries both buttons whatever the server does, or:
 
 ```bash
 omarchy-connect call status      # is a handset connected, and where is the audio
@@ -295,6 +341,45 @@ run `ios pair` again and watch for the notifications prompt; declining it bonds
 the phone but gives nothing away, and the row will read *idle*. Some Bluetooth
 adapters — Realtek dongles especially — bond happily and then never deliver the
 service; an Intel adapter is the reliable case.
+
+## Coding agents
+
+A phone can read the coding agent already open on this desktop: what it is
+doing, what it ran, and — this is the part that earns the feature — the moment
+it stops and waits for you to answer something. Reading only, for now.
+
+```bash
+omarchy-connect agent enable          # off by default, and it says why
+omarchy-connect agent install-hooks   # so the desktop knows when it is stuck
+omarchy-connect agent status
+```
+
+Nothing is scraped off a terminal. Claude Code already keeps every session as
+JSONL under `~/.claude/projects/`, so the daemon reads the file the agent
+writes for itself and collapses it into something a phone screen can carry: one
+line per tool call, its full output one tap away, thinking collapsed, subagent
+traffic folded away.
+
+Sessions are found two ways. `install-hooks` adds a hook to
+`~/.claude/settings.json` that reports every lifecycle event to the daemon over
+loopback — that is the only road that can tell you an agent is *waiting*,
+because a permission prompt leaves no trace in the transcript. Without hooks
+the daemon scans `/proc` for a running agent and matches it to the newest
+transcript for its working directory, which is enough to read a session that
+started before any of this was installed, and is labelled as the guess it is.
+
+**Read this before you enable it.** Reading an agent is reading everything it
+saw: your source, the output of every command it ran, any secret that crossed a
+tool result. That is a wider exposure than the clipboard or the notification
+mirror, which is why it is off until you turn it on and why the CLI spells it
+out when you do. The channel is encrypted end to end and only paired phones can
+ask — but pair only phones you own.
+
+Writing back — answering a prompt from the phone — is not here yet. Nothing may
+push bytes into a terminal another process owns: `TIOCSTI` is gone from the
+kernel, so it has to be a multiplexer that owns the pty or the compositor
+typing on your behalf. Until that ships the app says `reading only` rather than
+offering a send that would do nothing. See `docs/AGENT-CONTROL.md`.
 
 ## Run the app
 
@@ -428,7 +513,9 @@ daemon/         Node.js daemon — one dependency (ws)
                 sampling, hyprland IPC, the published status file, the
                 shell-plugin installer
   src/plugins/  system, clipboard, notifications, media, desktop, share,
-                input, device telemetry, SMS and calls
+                input, device telemetry, SMS and calls, coding agents
+  src/agents/   one adapter per coding agent — where its transcript lives and
+                how to read a line of it
   src/lib/      …including the two Bluetooth clients: hands-free call control
                 over PipeWire, and an iPhone's notifications over ANCS
 shell/          Omarchy shell plugin — the desktop client (QML)
@@ -438,13 +525,14 @@ app/            Expo app (TypeScript)
   src/api/      WebSocket client, channel crypto, discovery, secure storage,
                 phone telemetry, SMS/call mirroring
   src/ui/       the card / readout / control kit
-  src/screens/  stats, remote, share, alerts, setup, pairing
+  src/screens/  stats, remote, touch, agents, share, alerts, setup, pairing
 docs/           protocol specification
 ```
 
 ## Next
 
-Encrypted file bodies for the platforms that cannot pin a certificate (iOS and
+Answering a coding agent from the phone — a tmux pane where there is one, the
+compositor typing where there is not; encrypted file bodies for the platforms that cannot pin a certificate (iOS and
 Expo Go), so TLS is not the only way to close that gap; wake-on-LAN so a
 sleeping desktop can be woken from the couch; a real scroll wheel without
 depending on `ydotool`; replying to a mirrored message from the desktop

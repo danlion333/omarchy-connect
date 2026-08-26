@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Alert, Platform, View } from 'react-native'
+import { Alert, AppState, Platform, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 
 import { useConnection } from '../state/ConnectionContext'
@@ -7,11 +7,25 @@ import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, S
 import { clock, duration } from '../lib/format'
 import {
   canAnswerCalls,
+  canReadCallNotifications,
+  canReadContacts,
+  openNotificationAccess,
   phoneMirrorSupported,
   phonePermission,
   requestCallPermission,
   requestPhonePermission,
 } from '../api/phone'
+import {
+  backgroundLinkEnabled,
+  backgroundLinkRunning,
+  backgroundLinkSupported,
+  canPostNotifications,
+  isBatteryOptimized,
+  openBatterySettings,
+  requestNotificationPermission,
+  startBackgroundLink,
+  stopBackgroundLink,
+} from '../../modules/omarchy-link'
 import { font, size, space } from '../theme'
 
 export function SettingsScreen() {
@@ -155,6 +169,8 @@ export function SettingsScreen() {
         )}
       </Card>
 
+      <BackgroundLink />
+
       <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} />
 
       <Card>
@@ -178,6 +194,138 @@ export function SettingsScreen() {
 }
 
 /**
+ * The switch that decides whether this phone exists when nobody is looking.
+ *
+ * Android suspends an app's timers the moment it leaves the screen and
+ * reclaims its process soon after, which took the socket, the keepalive and
+ * every event with it. A foreground service is the only sanctioned way out,
+ * and it costs a permanent notification — so it is a choice the user makes
+ * with the price in front of them, not something switched on behind their
+ * back.
+ */
+function BackgroundLink() {
+  const { palette } = useConnection()
+  const supported = backgroundLinkSupported()
+  const [enabled, setEnabled] = useState(false)
+  const [running, setRunning] = useState(false)
+  const [optimized, setOptimized] = useState(false)
+  const [notifications, setNotifications] = useState(true)
+  const [busy, setBusy] = useState(false)
+
+  const sync = useCallback(() => {
+    if (!supported) return
+    setEnabled(backgroundLinkEnabled())
+    setRunning(backgroundLinkRunning())
+    setOptimized(isBatteryOptimized())
+    setNotifications(canPostNotifications())
+  }, [supported])
+
+  useEffect(() => {
+    sync()
+    // Both the battery exemption and notification access are granted on
+    // system screens, so coming back is the only moment we learn the answer.
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') sync()
+    })
+    return () => subscription.remove()
+  }, [sync])
+
+  const enable = useCallback(async () => {
+    setBusy(true)
+    try {
+      // Asked for first: without it the service still runs, but Android hides
+      // its notification, and an invisible foreground service is the kind of
+      // thing a user is right to be annoyed about discovering later.
+      await requestNotificationPermission()
+      startBackgroundLink()
+    } finally {
+      setBusy(false)
+      sync()
+    }
+  }, [sync])
+
+  const disable = useCallback(() => {
+    stopBackgroundLink()
+    sync()
+  }, [sync])
+
+  if (!supported) {
+    if (Platform.OS !== 'ios') return null
+    return (
+      <Card>
+        <CardHeader icon="moon" title="Background link" subtitle="not possible on iOS" tone={palette.muted} />
+        <Body tone={palette.muted} style={{ fontSize: size.label }}>
+          iOS takes the socket away seconds after an app leaves the screen and gives nothing back that would
+          hold it open. Pair the desktop over Bluetooth for the things that must work with the app closed.
+        </Body>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon="moon"
+        title="Background link"
+        subtitle={enabled ? (running ? 'connected with the app closed' : 'starting') : 'off — this phone goes offline'}
+        tone={enabled ? palette.green : palette.orange}
+      />
+      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
+        With this off, the desktop only sees this phone while the app is open on screen — no calls, no messages,
+        no battery in the bar. On, a quiet notification keeps the connection alive through sleep, a reboot, and
+        the app being swiped away.
+      </Body>
+      {enabled ? (
+        <>
+          <DataGrid
+            pairs={[
+              { label: 'Service', value: running ? 'running' : 'stopped' },
+              { label: 'Notification', value: notifications ? 'shown' : 'hidden' },
+            ]}
+            columns={2}
+          />
+          {notifications ? null : (
+            <>
+              <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+                The link is up, but Android is hiding the notification that says so. It keeps working either
+                way — this is only about whether you can see that it is.
+              </Body>
+              <Button
+                icon="bell"
+                label="Show the connection notification"
+                variant="ghost"
+                loading={busy}
+                onPress={enable}
+              />
+            </>
+          )}
+          <View style={{ height: space.md }} />
+          <Button icon="moon" label="Stop staying connected" variant="ghost" onPress={disable} />
+        </>
+      ) : (
+        <Button
+          icon="moon"
+          label="Stay connected in the background"
+          variant="solid"
+          loading={busy}
+          onPress={enable}
+        />
+      )}
+      {enabled && optimized ? (
+        <>
+          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+            Android is still allowed to put this app to sleep. The link survives ordinary sleep either way, but
+            several manufacturers run their own killer on top of it — exempting the app is the one lever there
+            is against that.
+          </Body>
+          <Button icon="battery-charging" label="Turn off battery optimisation" variant="ghost" onPress={openBatterySettings} />
+        </>
+      ) : null}
+    </Card>
+  )
+}
+
+/**
  * Granting Android the right to read messages and call state.
  *
  * Deliberately a button rather than something asked for at startup: this is
@@ -192,6 +340,8 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
   const [busy, setBusy] = useState(false)
   const [answering, setAnswering] = useState(false)
   const [askingCalls, setAskingCalls] = useState(false)
+  const [callerId, setCallerId] = useState(false)
+  const [contacts, setContacts] = useState(false)
 
   useEffect(() => {
     if (!supported) return
@@ -200,6 +350,17 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
       setCanAskAgain(result.canAskAgain)
     })
     setAnswering(canAnswerCalls())
+    setCallerId(canReadCallNotifications())
+    setContacts(canReadContacts())
+    // Notification access is granted on a system screen rather than in a
+    // dialog, so the only moment we can learn the answer is on the way back.
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') return
+      setAnswering(canAnswerCalls())
+      setCallerId(canReadCallNotifications())
+      setContacts(canReadContacts())
+    })
+    return () => subscription.remove()
   }, [supported])
 
   const ask = useCallback(async () => {
@@ -208,6 +369,7 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
       const result = await requestPhonePermission()
       setGranted(result.granted)
       setCanAskAgain(result.canAskAgain)
+      setContacts(canReadContacts())
     } finally {
       setBusy(false)
     }
@@ -243,8 +405,8 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
       {supported ? (
         <>
           <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-            Incoming messages and calls appear as desktop notifications. Anything that arrives while this app is
-            closed is forwarded the next time you open it — nothing runs in the background.
+            Incoming messages and calls appear as desktop notifications. With the background link on they
+            arrive as they happen; with it off they wait in a queue on this phone until you next open the app.
           </Body>
           {granted ? (
             <DataGrid pairs={[{ label: 'Status', value: 'granted' }]} columns={1} />
@@ -274,6 +436,43 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
               onPress={askCalls}
             />
           )}
+          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+            Android no longer tells any app who is calling — without notification access the desktop shows an
+            incoming call as "unknown". Granting it lets this app read the caller's name off your dialler's own
+            notification. Call notifications are the only ones it looks at.
+          </Body>
+          {callerId ? (
+            <DataGrid
+              pairs={[
+                { label: 'Caller ID', value: 'granted' },
+                { label: 'Contact names', value: contacts ? 'granted' : 'denied' },
+              ]}
+              columns={2}
+            />
+          ) : (
+            <Button
+              icon="user"
+              label="Show who is calling"
+              variant="ghost"
+              onPress={openNotificationAccess}
+            />
+          )}
+          {callerId && !contacts ? (
+            <>
+              <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+                Your dialler is being read, but the address book is not — so a caller who is saved on this phone
+                still reaches the desktop as a bare number.
+              </Body>
+              <Button
+                icon="users"
+                label={canAskAgain ? 'Allow reading contacts' : 'Open Android settings to allow'}
+                variant="ghost"
+                loading={busy}
+                disabled={!canAskAgain}
+                onPress={ask}
+              />
+            </>
+          ) : null}
         </>
       ) : Platform.OS === 'ios' ? (
         <IosBridge />

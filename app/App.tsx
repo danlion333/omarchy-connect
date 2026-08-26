@@ -11,16 +11,18 @@ import { RemoteScreen } from './src/screens/RemoteScreen'
 import { TouchpadScreen } from './src/screens/TouchpadScreen'
 import { ShareScreen } from './src/screens/ShareScreen'
 import { NotificationsScreen } from './src/screens/NotificationsScreen'
+import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { FALLBACK_PALETTE, font, size, space } from './src/theme'
 
-type TabKey = 'stats' | 'remote' | 'touch' | 'share' | 'alerts' | 'setup'
+type TabKey = 'stats' | 'remote' | 'touch' | 'agents' | 'share' | 'alerts' | 'setup'
 
 const TABS: { key: TabKey; icon: React.ComponentProps<typeof Feather>['name']; label: string }[] = [
   { key: 'stats', icon: 'activity', label: 'Stats' },
   { key: 'remote', icon: 'sliders', label: 'Remote' },
   { key: 'touch', icon: 'move', label: 'Touch' },
+  { key: 'agents', icon: 'terminal', label: 'Agents' },
   { key: 'share', icon: 'upload-cloud', label: 'Share' },
   { key: 'alerts', icon: 'bell', label: 'Alerts' },
   { key: 'setup', icon: 'settings', label: 'Setup' },
@@ -62,6 +64,7 @@ function Shell() {
         {tab === 'stats' ? <DashboardScreen /> : null}
         {tab === 'remote' ? <RemoteScreen /> : null}
         {tab === 'touch' ? <TouchpadScreen /> : null}
+        {tab === 'agents' ? <AgentsScreen /> : null}
         {tab === 'share' ? <ShareScreen /> : null}
         {tab === 'alerts' ? <NotificationsScreen /> : null}
         {tab === 'setup' ? <SettingsScreen /> : null}
@@ -72,7 +75,7 @@ function Shell() {
 }
 
 function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
-  const { palette, unreadCount, status } = useConnection()
+  const { palette, unreadCount, agentsWaiting, status } = useConnection()
   const insets = useSafeAreaInsets()
 
   return (
@@ -88,7 +91,10 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
     >
       {TABS.map((entry) => {
         const active = entry.key === current
-        const badge = entry.key === 'alerts' && unreadCount > 0
+        // An agent stuck on a permission prompt is the one thing on this bar
+        // that is costing someone time right now.
+        const count = entry.key === 'alerts' ? unreadCount : entry.key === 'agents' ? agentsWaiting : 0
+        const badge = count > 0
         return (
           <Pressable
             key={entry.key}
@@ -107,13 +113,13 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
                     height: 14,
                     borderRadius: 7,
                     paddingHorizontal: 3,
-                    backgroundColor: palette.red,
+                    backgroundColor: entry.key === 'agents' ? palette.orange : palette.red,
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}
                 >
                   <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: 9 }}>
-                    {unreadCount > 9 ? '9+' : unreadCount}
+                    {count > 9 ? '9+' : count}
                   </Text>
                 </View>
               ) : null}

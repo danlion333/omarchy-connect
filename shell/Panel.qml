@@ -539,9 +539,10 @@ Panel {
           /* ── the call in progress ────────────────────────────────── */
 
           // The one card that is a remote control rather than a readout. It
-          // only appears over Bluetooth, because that is the link that carries
-          // the audio — answering a call you then cannot hear is not an
-          // improvement on walking over to the phone.
+          // appears for a call down any road: Bluetooth is the link that
+          // carries the audio and is preferred for exactly that reason, but a
+          // handset that connects over the profile and never reports its calls
+          // is common, and answering from here still beats reaching for it.
           CursorSurface {
             visible: !!bridge.liveCall
             width: parent.width
@@ -590,7 +591,9 @@ Panel {
                   PanelActionButton {
                     visible: bridge.ringing
                     iconText: "󰏲"
-                    tooltipText: "Answer — audio comes out of this machine"
+                    tooltipText: bridge.liveCall && bridge.liveCall.via && bridge.liveCall.via !== "bluetooth"
+                      ? "Answer — the call stays on the handset"
+                      : "Answer — audio comes out of this machine"
                     foreground: root.foreground
                     fontFamily: root.fontFamily
                     onClicked: bridge.answerCall()

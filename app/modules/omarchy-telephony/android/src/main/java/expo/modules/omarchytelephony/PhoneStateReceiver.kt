@@ -12,6 +12,13 @@ import android.telephony.TelephonyManager
  * `READ_CALL_LOG` on API 29, and it never sends one for OFFHOOK or IDLE at
  * all. A ringing number is therefore remembered so the "ended" event can still
  * say who the call was with.
+ *
+ * On anything targeting API 29 or higher — which is every current build — the
+ * number is never sent at all, whatever permissions are held. `CallNotifications`
+ * reads it off the dialler's own notification instead and calls `identify`,
+ * which may land either just before this broadcast or just after it. Both
+ * orders are handled: whoever arrives first is used, and a late identification
+ * re-announces the ringing call so the desktop can fill in what it was missing.
  */
 class PhoneStateReceiver : BroadcastReceiver() {
   companion object {
@@ -19,6 +26,52 @@ class PhoneStateReceiver : BroadcastReceiver() {
     @Volatile private var ringingName: String? = null
     @Volatile private var lastState: String? = null
     @Volatile private var answered = false
+    /** When the last ringing event went out, named or not. */
+    @Volatile private var announcedAt = 0L
+    /** Whether that event carried a name, which is as good as it gets. */
+    @Volatile private var namedOut = false
+
+    /**
+     * The desktop folds a second report of the same ringing call into the
+     * first one, but only for a few seconds after the previous one. Past that
+     * window a re-announcement would show up as a second call rather than as
+     * the same one, named — so a notification that arrives late is kept for
+     * the "ended" event only.
+     */
+    private const val ENRICH_WINDOW_MS = 5000L
+
+    /**
+     * Who the dialler says is calling. Called from the notification listener,
+     * which runs in this same process but on its own schedule.
+     *
+     * Diallers commonly post the call notification twice: bare the instant the
+     * phone rings, then again a moment later with the contact filled in. Every
+     * post therefore gets a hearing, and only one that adds something the
+     * desktop has not been told is forwarded — until a name has gone out, past
+     * which there is nothing left to improve on.
+     */
+    @Synchronized
+    fun identify(context: Context, name: String?, number: String?) {
+      if (name == null && number == null) return
+      val gained = (number != null && ringingNumber == null) || (name != null && ringingName == null)
+      if (ringingNumber == null && number != null) ringingNumber = number
+      if (ringingName == null && name != null) ringingName = name
+      if (!gained || namedOut) return
+      if (lastState != "ringing") return
+      if (System.currentTimeMillis() - announcedAt > ENRICH_WINDOW_MS) return
+      announcedAt = System.currentTimeMillis()
+      namedOut = ringingName != null
+      OmarchyTelephonyModule.deliver(context, "onCall", ringingEvent())
+    }
+
+    private fun ringingEvent() = mapOf(
+      "kind" to "call",
+      "at" to System.currentTimeMillis(),
+      "state" to "ringing",
+      "from" to ringingNumber,
+      "name" to ringingName,
+      "missed" to false,
+    )
   }
 
   override fun onReceive(context: Context, intent: Intent) {
@@ -36,9 +89,16 @@ class PhoneStateReceiver : BroadcastReceiver() {
     lastState = state
 
     if (state == "ringing") {
+      announcedAt = System.currentTimeMillis()
+      // Empty on every modern build; kept because it costs nothing and is
+      // still the most direct answer on the handsets that do send it.
       @Suppress("DEPRECATION")
-      ringingNumber = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)
-      ringingName = Contacts.nameFor(context, ringingNumber)
+      val broadcast = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)?.takeIf { it.isNotBlank() }
+      if (broadcast != null) ringingNumber = broadcast
+      if (ringingName == null) ringingName = Contacts.nameFor(context, ringingNumber)
+      // The listener may already have named the caller before the broadcast
+      // arrived, in which case this first event is the named one.
+      namedOut = ringingName != null
       answered = false
     }
     if (state == "active") answered = true
@@ -59,6 +119,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
       ringingNumber = null
       ringingName = null
       answered = false
+      namedOut = false
+      announcedAt = 0L
     }
   }
 }

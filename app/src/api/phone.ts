@@ -67,6 +67,50 @@ export const canAnswerCalls = () => {
   }
 }
 
+/**
+ * Whether the desktop will learn who is calling, not just that someone is.
+ *
+ * Android stopped putting the number in the call broadcast for anything
+ * targeting API 29 or higher, and the call log is only written once the call is
+ * over — so without this the desktop shows "unknown" while the phone rings.
+ */
+export const canReadCallNotifications = () => {
+  const native = telephony()
+  if (!native) return false
+  try {
+    return native.canReadCallNotifications()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Whether a number can be turned into a name. Separate from the above on
+ * purpose: with notification access but no contacts, every call arrives as a
+ * bare number, which from the desktop is indistinguishable from a caller ID
+ * that does not work at all.
+ */
+export const canReadContacts = () => {
+  const native = telephony()
+  if (!native) return false
+  try {
+    return native.canReadContacts()
+  } catch {
+    return false
+  }
+}
+
+/** Notification access has no dialog — only a settings screen to open. */
+export async function openNotificationAccess(): Promise<void> {
+  const native = telephony()
+  if (!native) return
+  try {
+    await native.openNotificationAccess()
+  } catch {
+    /* a settings screen we cannot open is not worth crashing the app over */
+  }
+}
+
 export function startPhoneMirror(client: ConnectClient): () => void {
   const native = telephony()
   if (!native) return () => {}
@@ -100,6 +144,12 @@ export function startPhoneMirror(client: ConnectClient): () => void {
 
   const push = (event: TelephonyEvent) => {
     queue.push(event)
+    // A ringing phone is the least forgiving thing this app carries: the
+    // desktop is useful for the twenty seconds the call lasts and useless
+    // after. If the socket died while the phone was asleep, waiting out the
+    // backoff would spend all twenty of them, so the arrival of an event is
+    // itself the reason to re-dial now.
+    if (client.status !== 'connected') client.reconnectNow()
     flush()
   }
 

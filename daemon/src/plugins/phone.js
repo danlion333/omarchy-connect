@@ -1,6 +1,6 @@
 import crypto from 'node:crypto'
 
-import { has, spawn, spawnDetached } from '../lib/exec.js'
+import { has, run, spawn, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
 import { ancs } from '../lib/ancs.js'
@@ -44,6 +44,8 @@ import { ancs } from '../lib/ancs.js'
 
 const HISTORY = 50
 const PENDING_TTL = 60 * 1000
+/** How often a request the phone never answered is checked for expiry. */
+const SWEEP_MS = 5000
 /** Two roads to the same phone means the same call can arrive twice. */
 const DEDUPE_MS = 6000
 /** Long enough to reach the desk, short enough that voicemail wins after. */
@@ -53,8 +55,46 @@ const RING_TIMEOUT_MS = 45_000
 const history = []
 const pending = new Map()
 let bus = null
+/** Runs `sweep` on its own, so a request nobody follows still ends. */
+let janitor = null
 /** The `notify-send` process holding the Answer/Decline buttons, if any. */
 let ringer = null
+/** The server's id for that notification, so it can be replaced or closed. */
+let ringingId = 0
+/** The call a remote control should act on, from whichever road saw it. */
+let live = null
+
+/**
+ * Notification servers that advertise `actions` and draw no buttons.
+ *
+ * Every server on the bus claims the `actions` capability, including the ones
+ * whose entire idea of an action is to run the one named `default` when the
+ * notification is clicked — Omarchy's own shell among them. Nothing in the
+ * spec tells the two apart, so the server is asked who it is and this short
+ * list is consulted. Being wrong costs a line of text, never a button.
+ */
+const BUTTONLESS = /quickshell/i
+let drawsButtons = true
+
+/** Ask once, at startup, so `ring` never waits on D-Bus while a phone rings. */
+async function readNotificationServer() {
+  if (!has('gdbus')) return
+  const res = await run(
+    'gdbus',
+    [
+      'call', '--session',
+      '--dest', 'org.freedesktop.Notifications',
+      '--object-path', '/org/freedesktop/Notifications',
+      '--method', 'org.freedesktop.Notifications.GetServerInformation',
+    ],
+    { timeout: 4000 },
+  )
+  if (!res.ok) return
+  drawsButtons = !BUTTONLESS.test(res.stdout)
+  if (!drawsButtons) {
+    log.info('notifications: this server draws no buttons — a ringing call answers on click')
+  }
+}
 
 const counters = { messages: 0, calls: 0, missed: 0, sent: 0, answered: 0, rejected: 0, notifications: 0 }
 /** ANCS notification ids for calls still on screen, so we can act on them. */
@@ -62,6 +102,14 @@ const ringingUids = new Map()
 
 const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : null)
 
+/**
+ * Time out the requests the phone never answered.
+ *
+ * This is on a timer rather than only at the head of the next request: the
+ * next request may never come, and until one does the promise stays unsettled
+ * — which the caller sees as an HTTP request that hangs forever rather than as
+ * a phone that did not reply.
+ */
 function sweep() {
   const now = Date.now()
   for (const [id, entry] of pending) {
@@ -75,16 +123,36 @@ function sweep() {
 /** Who the event is from, in the form a human wants to read it. */
 const caller = (entry) => entry.name || entry.from || 'unknown number'
 
-/** Take down the ringing notification — answered, rejected, or gone quiet. */
-function silence() {
-  if (!ringer) return
+/**
+ * Take down the ringing notification — answered, rejected, or gone quiet.
+ *
+ * Killing `notify-send` is not enough. By the time it is waiting for a click
+ * the notification belongs to the server, and it stays on screen until its own
+ * timeout however the client dies. So the id is kept and the server is told to
+ * close it. `close` is false for the one caller that wants the opposite: `ring`
+ * replacing its own notification in place, which needs that id still valid.
+ */
+function silence(close = true) {
   const child = ringer
   ringer = null
-  try {
-    child.kill()
-  } catch {
-    /* already gone */
+  if (child) {
+    try {
+      child.kill()
+    } catch {
+      /* already gone */
+    }
   }
+  if (!close || !ringingId) return
+  const id = ringingId
+  ringingId = 0
+  if (!has('gdbus')) return
+  spawnDetached('gdbus', [
+    'call', '--session',
+    '--dest', 'org.freedesktop.Notifications',
+    '--object-path', '/org/freedesktop/Notifications',
+    '--method', 'org.freedesktop.Notifications.CloseNotification',
+    String(id),
+  ])
 }
 
 /**
@@ -95,19 +163,38 @@ function silence() {
  */
 function ring(entry, actionable) {
   if (!has('notify-send')) return
-  silence()
+  // One ringing phone is one notification, even though it is announced twice:
+  // the call arrives anonymous and is named a moment later, and the second
+  // report must rewrite the first rather than stack beside it. `-r` is what
+  // makes that a rewrite; closing and re-raising would flash and re-alert.
+  const replaces = ringingId
+  silence(false)
   const title = 'Incoming call'
-  const body = caller(entry)
+  // A server with no buttons still has a click, and the click is worth
+  // spelling out — otherwise the notification looks like a readout of a phone
+  // you have to walk over to.
+  const body = actionable && !drawsButtons ? `${caller(entry)} · click to answer` : caller(entry)
+  const common = ['-a', 'Omarchy Connect', '-u', 'critical']
+  if (replaces) common.push('-r', String(replaces))
   if (!actionable) {
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', '-u', 'critical', title, body])
+    // Detached, so its stdout is gone and a first notification's id is unknown
+    // — a replacement of one we already have an id for still works.
+    spawnDetached('notify-send', [...common, title, body])
+    ringingId = replaces
     return
   }
   const child = spawn(
     'notify-send',
     [
-      '-a', 'Omarchy Connect',
-      '-u', 'critical',
+      ...common,
+      '-p',
       '-t', String(RING_TIMEOUT_MS),
+      // `default` is the action a notification invokes when it is clicked
+      // rather than one it draws a button for, and it is the only one some
+      // servers implement at all. Registering it alongside the named pair is
+      // what makes one notification work on both kinds: buttons where there
+      // are buttons, click-to-answer where there are not.
+      '-A', 'default=Answer',
       '-A', 'answer=Answer',
       '-A', 'reject=Decline',
       title,
@@ -122,14 +209,24 @@ function ring(entry, actionable) {
   let chosen = ''
   child.stdout.on('data', (chunk) => {
     chosen += chunk
+    // `-p` prints the id as soon as the server accepts the notification; the
+    // clicked action, if there is one, follows on a later line.
+    if (ringer !== child) return
+    const first = chosen.split('\n', 1)[0].trim()
+    if (/^\d+$/.test(first)) ringingId = Number(first)
   })
   child.on('exit', () => {
-    if (ringer === child) ringer = null
-    const action = chosen.trim()
-    if (action !== 'answer' && action !== 'reject') return
-    requestCall({ op: action === 'answer' ? 'answer' : 'reject' }).catch((err) =>
-      log.warn(`could not ${action} the call: ${err.message}`),
-    )
+    // Killed by `silence`, which already owns the id and has moved on.
+    if (ringer !== child) return
+    ringer = null
+    ringingId = 0
+    const action = chosen
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line === 'default' || line === 'answer' || line === 'reject')
+    if (!action) return
+    const op = action === 'reject' ? 'reject' : 'answer'
+    requestCall({ op }).catch((err) => log.warn(`could not ${op} the call: ${err.message}`))
   })
   ringer = child
 }
@@ -150,7 +247,7 @@ function notify(entry) {
   }
   if (entry.state === 'ringing') {
     // Buttons only when something on this machine can actually act on them.
-    ring(entry, entry.via !== 'app' || Boolean(bus))
+    ring(entry, canAct())
     return
   }
   silence()
@@ -189,8 +286,13 @@ function twin(entry) {
  * Let the second report fill in what the first one could not know. Nothing
  * already recorded is overwritten: the first road to arrive keeps its `via`,
  * which is what makes "it came in over Bluetooth" a stable statement.
+ *
+ * Returns whether what the user would be shown has changed, which is the one
+ * thing worth telling them a second time: "unknown number" becoming a number
+ * is worth a replacement, and so is that number becoming a name.
  */
 function enrich(existing, incoming) {
+  const before = caller(existing)
   if (!existing.from && incoming.from) existing.from = incoming.from
   if (!existing.name && incoming.name) existing.name = incoming.name
   if (existing.ancs == null && incoming.ancs != null) existing.ancs = incoming.ancs
@@ -199,7 +301,7 @@ function enrich(existing, incoming) {
     counters.missed += 1
   }
   existing.receivedAt = Date.now()
-  return existing
+  return { entry: existing, named: caller(existing) !== before }
 }
 
 const KINDS = new Set(['call', 'sms', 'notification'])
@@ -240,7 +342,10 @@ function record(raw, device) {
     entry.seconds = Number.isFinite(raw.seconds) ? raw.seconds : null
     entry.ancs = Number.isFinite(raw.ancs) ? raw.ancs : null
     const already = twin(entry)
-    if (already) return { entry: enrich(already, entry), fresh: false }
+    if (already) {
+      const { entry: merged, named } = enrich(already, entry)
+      return { entry: merged, fresh: false, named }
+    }
     // `active` and `ended` are transitions, not events worth counting twice.
     if (entry.state !== 'active' && entry.state !== 'ended') counters.calls += 1
     if (entry.missed) counters.missed += 1
@@ -252,8 +357,12 @@ function record(raw, device) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh } = record(raw, device)
-  if (fresh) notify(entry)
+  const { entry, fresh, named } = record(raw, device)
+  if (entry.kind === 'call') remember(entry)
+  // A phone that is still ringing is announced again once its caller becomes
+  // known: `ring` rewrites the notification already on screen, so "unknown
+  // number" turns into a name in place rather than gaining a twin beside it.
+  if (fresh || (named && entry.state === 'ringing')) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
   return { entry, fresh }
 }
@@ -263,7 +372,7 @@ export function recent(limit = 10) {
 }
 
 export function summary() {
-  return { ...counters, recent: recent(5), bluetooth: handsfree.summary(), ios: ancs.summary() }
+  return { ...counters, recent: recent(5), call: liveCall(), bluetooth: handsfree.summary(), ios: ancs.summary() }
 }
 
 /**
@@ -297,6 +406,52 @@ export function trackConnections(fn) {
   connectedDevices = fn
 }
 const appCanAct = () => Boolean(bus) && connectedDevices() > 0
+
+/**
+ * Whether a button on this desktop would reach the phone at all.
+ *
+ * Any one of the three roads is enough, and it need not be the road the call
+ * arrived down: a call the app mirrored is answered over Bluetooth when
+ * Bluetooth is what is connected, which is how the audio ends up here.
+ */
+const canAct = () => handsfree.connected || ancs.connected || appCanAct()
+
+/**
+ * The call a remote control should act on, from whichever road saw it.
+ *
+ * Hands-free wins when it published a call object, because that one knows
+ * about audio. But PipeWire only publishes those for handsets that report call
+ * state over the profile, and plenty connect, carry sound and say nothing —
+ * for those the mirrored entry is the only evidence a phone is ringing, and
+ * falling back to it is what keeps the panel's buttons on screen.
+ */
+export function liveCall() {
+  const call = handsfree.connected ? handsfree.pick() : null
+  if (call && (isRinging(call) || isLive(call))) {
+    return {
+      id: call.id,
+      state: isRinging(call) ? 'ringing' : 'active',
+      from: call.from ?? null,
+      name: call.name ?? null,
+      via: 'bluetooth',
+      audio: handsfree.state.gateway?.audio ?? null,
+    }
+  }
+  if (!live) return null
+  // A phone that rang and was never reported again: voicemail has it by now,
+  // and offering to answer it would be a lie.
+  if (live.state === 'ringing' && Date.now() - live.receivedAt > RING_TIMEOUT_MS) {
+    live = null
+    return null
+  }
+  return { id: live.id, state: live.state, from: live.from, name: live.name, via: live.via, audio: null }
+}
+
+/** One handset, one conversation: `ended` takes down whatever was offered. */
+function remember(entry) {
+  if (entry.state === 'ringing' || entry.state === 'active') live = entry
+  else if (entry.state === 'ended') live = null
+}
 
 /**
  * Answer, reject, hang up, dial. One verb, whichever road is open.
@@ -366,6 +521,11 @@ function finish(result, action) {
   if (action === 'answer') counters.answered += 1
   if (action === 'reject') counters.rejected += 1
   if (action === 'answer' || action === 'reject') silence()
+  // The phone will say so itself a moment later, but the panel is looking at
+  // the button that was just pressed and must not still be offering to answer
+  // a call that is already up.
+  if (action === 'answer' && live?.state === 'ringing') live.state = 'active'
+  if (action === 'reject' || action === 'hangup') live = null
   return result
 }
 
@@ -454,6 +614,13 @@ export default {
   start(eventBus) {
     bus = eventBus
 
+    readNotificationServer().catch(() => {
+      /* a server that will not say who it is keeps the default answer */
+    })
+
+    janitor = setInterval(sweep, SWEEP_MS)
+    janitor.unref?.()
+
     handsfree.on('call', (call, previous) => {
       ingest(fromHandsfree(call, previous))
     })
@@ -519,6 +686,9 @@ export default {
 
   stop() {
     silence()
+    live = null
+    if (janitor) clearInterval(janitor)
+    janitor = null
     handsfree.stop()
     ancs.stop()
     ringingUids.clear()
@@ -544,6 +714,7 @@ export default {
       return {
         items: recent(limit),
         counters: { ...counters },
+        call: liveCall(),
         bluetooth: handsfree.summary(),
         ios: ancs.summary(),
       }

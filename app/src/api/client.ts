@@ -81,6 +81,49 @@ export type NotificationItem = {
   timestamp: number
 }
 
+/* ── coding agents ─────────────────────────────────────────────────────── */
+
+export type AgentState = 'idle' | 'working' | 'waiting' | 'gone'
+
+export type AgentSession = {
+  id: string
+  agent: string
+  title: string
+  cwd: string | null
+  state: AgentState
+  /** How a message could be typed into this session — `null` until stage two. */
+  writable: 'tmux' | 'wtype' | null
+  pane: string | null
+  pid: number | null
+  startedAt: number
+  lastActivity: number
+  preview: string
+  /** What the agent is blocked on, when it is blocked. */
+  prompt: string | null
+  /** `hook` is the agent reporting in; `scan` is us guessing from /proc. */
+  via: 'hook' | 'scan'
+}
+
+export type AgentBlock = {
+  seq: number
+  role: 'user' | 'assistant' | 'system'
+  kind: 'text' | 'thinking' | 'tool' | 'result' | 'state'
+  at: number
+  text?: string
+  tool?: string
+  summary?: string
+  status?: 'ok' | 'error' | 'interrupted'
+  lines?: number
+  ref?: string | null
+  /** Whether a fuller body is one `agents.detail` away. */
+  expandable?: boolean
+}
+
+export type AgentEvent =
+  | { kind: 'session'; id: string; removed: boolean; session: AgentSession | null }
+  | { kind: 'state'; id: string; state: AgentState; prompt: string | null; preview: string; lastActivity: number }
+  | { kind: 'blocks'; id: string; blocks: AgentBlock[]; cursor: number; reset?: boolean }
+
 type Listener = (data: any) => void
 
 const REQUEST_TIMEOUT = 12_000
@@ -122,7 +165,12 @@ export class ConnectClient {
   private retryTimer: any = null
   private attempt = 0
   private closedByUser = false
-  private subscriptions: string[] = ['stats', 'clipboard', 'notification', 'theme', 'file']
+  /**
+   * `phone` is not optional decoration: it is the channel the desktop uses to
+   * ask this handset to answer a call or send a message. Leaving it out makes
+   * every such request time out on the desktop with no sign anything is wrong.
+   */
+  private subscriptions: string[] = ['stats', 'clipboard', 'notification', 'theme', 'file', 'agent', 'phone']
 
   constructor(opts: {
     host: string

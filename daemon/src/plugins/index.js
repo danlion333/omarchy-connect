@@ -7,8 +7,9 @@ import share from './share.js'
 import input from './input.js'
 import device from './device.js'
 import phone from './phone.js'
+import agents from './agents.js'
 
-export const plugins = [system, clipboard, notifications, media, desktop, share, input, device, phone]
+export const plugins = [system, clipboard, notifications, media, desktop, share, input, device, phone, agents]
 
 export function buildMethodTable() {
   const table = new Map()

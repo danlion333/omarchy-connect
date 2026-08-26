@@ -166,7 +166,7 @@ installed. The app greys out what is missing instead of failing at call time.
 ### Events
 
 ```jsonc
-{ "t": "sub", "events": ["stats", "clipboard", "notification", "theme", "file", "phone"] }
+{ "t": "sub", "events": ["stats", "clipboard", "notification", "theme", "file", "phone", "agent"] }
 { "t": "ev", "event": "stats", "data": { … } }
 ```
 
@@ -181,6 +181,7 @@ least one phone is subscribed.
 | `theme` | The active Omarchy theme changes. |
 | `file` | A file arrived from a phone, or the desktop offered one. |
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`). |
+| `agent` | A coding agent appeared, changed state, or said something new. |
 
 `ping`/`pong` frames are available for round-trip measurement; the daemon also
 runs a 20-second WebSocket ping and drops sockets that stop answering, because
@@ -248,10 +249,20 @@ The daemon is written to be fed rather than to poll.
 
 Call *control* is not restricted that way: see **Bluetooth** below.
 
+Who is calling does not come from the telephony stack. Android withholds the
+number from `ACTION_PHONE_STATE_CHANGED` for apps targeting API 29 or higher,
+so the app reads the caller off the dialler's own call notification instead and
+reports it in the same `call` event. The notification and the state change race
+each other: when the name arrives first it rides on the one `ringing` event,
+and when it arrives second the app sends a further `ringing` event carrying it.
+The daemon folds the second into the first rather than recording the call
+twice — the same fold described under *Mirroring*, which was written for an
+iPhone announcing itself down two Bluetooth roads at once.
+
 | Method | Params | Returns |
 | --- | --- | --- |
 | `phone.report` | `{ events: [ … ] }` | `{ ok, stored }` |
-| `phone.history` | `{ limit }` | `{ items, counters, bluetooth, ios }` |
+| `phone.history` | `{ limit }` | `{ items, counters, call, bluetooth, ios }` |
 | `phone.sent` | `{ id, ok, error }` | `{ ok }` |
 | `phone.acted` | `{ id, ok, error }` | `{ ok }` |
 
@@ -385,6 +396,97 @@ counts as the same call when it shares a state and either a number or a road it
 has not been seen on yet. Answering prefers hands-free — ANCS presses the button
 but moves no audio.
 
+### agents
+
+Reading a coding agent that is already open on the desktop — what it is doing,
+and whether it is stuck waiting for an answer. Off by default; see
+**Security model**.
+
+| Method | Params | Returns |
+| --- | --- | --- |
+| `agents.list` | — | `{ sessions, adapters, write, spawn }` — every session this desktop can see. |
+| `agents.open` | `{ id, limit }` | `{ session, blocks, cursor, truncated }`, and starts streaming `agent` events for it. |
+| `agents.close` | `{ id }` | `{ ok }` — stops the desktop tailing a transcript nobody is reading. |
+| `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
+
+A session is what the phone lists and opens:
+
+```jsonc
+{
+  "id": "claude:2fe60a4a-…",       // adapter id + native session id
+  "agent": "claude",
+  "title": "omarchy-connect",       // basename of cwd
+  "cwd": "/home/dan/Projects/omarchy-connect",
+  "state": "idle" | "working" | "waiting" | "gone",
+  "writable": null,                 // "tmux" | "wtype" once writing ships
+  "pane": "%3",                     // tmux pane, when a hook reported one
+  "pid": 53316,
+  "startedAt": 1756100000000,
+  "lastActivity": 1756100420000,
+  "preview": "…the last line the agent said…",
+  "prompt": "Claude needs your permission to use Bash",   // when waiting
+  "via": "hook" | "scan"
+}
+```
+
+`state` is the field the whole feature hangs on. `waiting` — the agent asked a
+question or hit a permission prompt — is the one that earns a badge, because
+that is the moment a person on the sofa can actually help.
+
+`via` says how much to trust the rest. **`hook`** means the agent reported in
+itself: Claude Code runs a shell hook on every lifecycle event and hands it
+`session_id`, `transcript_path` and `cwd` on stdin, and the hook process
+inherits the agent's environment, so it also knows the pid and the pane. That
+is the only road that can say `waiting`. **`scan`** means the daemon found an
+agent binary in `/proc`, read its working directory and matched it to the
+newest transcript for that directory — enough to read a session that started
+before the hooks were installed, but a heuristic, and labelled as one.
+
+Blocks are agent-neutral, whichever agent produced them:
+
+```jsonc
+{ "seq": 12, "at": 1756100000000, "role": "user",      "kind": "text",   "text": "…" }
+{ "seq": 13, "at": …, "role": "assistant", "kind": "thinking", "text": "" }
+{ "seq": 14, "at": …, "role": "assistant", "kind": "tool",   "tool": "Bash", "summary": "ls -la",
+  "ref": "toolu_01…", "expandable": true }
+{ "seq": 15, "at": …, "role": "user",      "kind": "result", "ref": "toolu_01…",
+  "status": "ok" | "error" | "interrupted", "summary": "…first line…", "lines": 42, "expandable": true }
+```
+
+Collapsing tool traffic into one line per call is deliberate: a phone screen
+cannot carry a 400-line tool result, and the interesting part of a tool call is
+that it happened and whether it worked. The body stays one `agents.detail`
+away, fetched only when someone taps. A `result` carries the `ref` of the
+`tool` it answers, so the app draws them as one thing.
+
+Two rules the reader never sees the other side of: a `thinking` block's
+`signature` is encrypted and is never sent, and traffic from a subagent
+(`isSidechain`) is dropped rather than interleaved into the conversation.
+
+Only sessions the phone has opened stream their blocks — the same
+reference-counted discipline the stats sampler uses, capped at four transcripts
+tailed at once. `state` changes stream for every session, because that is what
+drives the badge. A phone that disconnects releases everything it had open.
+
+The three `agent` event frames:
+
+```jsonc
+{ "t": "ev", "event": "agent", "data": { "kind": "session", "id": "claude:2fe…", "removed": false, "session": { … } } }
+{ "t": "ev", "event": "agent", "data": { "kind": "state",   "id": "claude:2fe…", "state": "waiting",
+                                         "prompt": "Allow Bash?", "preview": "…", "lastActivity": 1756100420000 } }
+{ "t": "ev", "event": "agent", "data": { "kind": "blocks",  "id": "claude:2fe…", "blocks": [ … ], "cursor": 148 } }
+```
+
+A `blocks` frame carries everything one drain of the transcript produced, so a
+turn that ran six tools arrives as one frame rather than twelve. `reset: true`
+means the transcript was rewritten under the daemon and the reader should
+replace what it has rather than append.
+
+`capabilities.agents` is `{ enabled, adapters, read, write, spawn }`. `write` is
+`null`: nothing may push bytes into a terminal another process owns, and the
+answer — a tmux pane or the compositor typing — is not implemented yet. The app
+greys the input out rather than offering a send that would silently do nothing.
+
 ### input
 
 Pointer, buttons and keys are injected through Hyprland's own dispatchers over
@@ -414,8 +516,9 @@ speaks and sends the matching spelling, so both generations work.
 
 ## Loopback endpoints
 
-Four endpoints answer only on `127.0.0.1`, because they are the CLI and the
-desktop client talking to a daemon they already share a machine with.
+These answer only on `127.0.0.1`, because they are the CLI, a coding agent's
+own hook, and the desktop client talking to a daemon they already share a
+machine with.
 
 | Endpoint | Body | Effect |
 | --- | --- | --- |
@@ -425,6 +528,17 @@ desktop client talking to a daemon they already share a machine with.
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
 | `POST /api/call` | `{ op, id?, number? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`. Answers `{ ok, via }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
+| `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
+
+`POST /api/agent/hook` is the bridge between a coding agent and this daemon:
+`omarchy-connect agent hook` reads the agent's JSON on stdin, adds what only
+the hook process knows — its parent pid, its `$TMUX_PANE` — and posts it here.
+`omarchy-connect agent install-hooks` writes it into `~/.claude/settings.json`
+for `SessionStart`, `UserPromptSubmit`, `Stop`, `Notification` and
+`SessionEnd`, without disturbing hooks anyone else installed. A hook must never
+cost the agent anything, so the post has a one-second timeout, a daemon that is
+not running is a silent no-op, and a payload the daemon cannot use answers 200
+with an error inside rather than looking like a failed hook.
 
 `unpair` goes through the daemon rather than editing the config file directly
 because the running process holds a cached config and possibly an open
@@ -472,6 +586,13 @@ deleted. The desktop raises a notification on arrival.
   they also land in the desktop's notification history and in the status file
   (mode 0600). Granting the permission is a deliberate act in the app, never
   something asked for at startup.
+- **Reading a coding agent is reading everything it saw** — source, tool
+  output, whatever secrets crossed a `Bash` result. It is the widest exposure
+  in the project, wider than the clipboard, so `agents.enabled` defaults to
+  **false** and is turned on by `omarchy-connect agent enable`, which says what
+  it grants before it grants it. Writing to an agent would be arbitrary code
+  execution — the agent runs what it is told — which is why `write` is `null`
+  rather than shipped alongside reading.
 - Every method call requires a paired token. There is no anonymous access.
 - Input injection is reachable by any paired phone: pairing grants control of
   the pointer and keyboard, and should be treated accordingly.

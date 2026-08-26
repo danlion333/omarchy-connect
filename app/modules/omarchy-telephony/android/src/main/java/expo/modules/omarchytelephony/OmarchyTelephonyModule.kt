@@ -30,10 +30,12 @@ import expo.modules.kotlin.modules.ModuleDefinition
  *             broadcast, the receiver writes the event down, and the app
  *             forwards it the next time it runs
  *
- * Nothing here holds a socket open in the background. A message that arrives
- * while the app is closed reaches the desktop when the app is next opened, not
- * the instant it lands — that is the honest limit of doing this without a
- * foreground service.
+ * Nothing *here* holds a socket open — that is `modules/omarchy-link`, whose
+ * foreground service keeps the app's process and its JavaScript timers alive
+ * while the phone is in a pocket. When it is running, an event takes the live
+ * road and reaches the desktop as it lands; the backlog is what remains for
+ * the case where the user turned the service off, and for the gap between
+ * Android starting the process for a broadcast and the link coming back up.
  */
 class OmarchyTelephonyModule : Module() {
   companion object {
@@ -115,6 +117,27 @@ class OmarchyTelephonyModule : Module() {
     }
 
     Function("canAnswerCalls") { canAnswerCalls() }
+
+    /**
+     * Who is calling, rather than merely that someone is. There is no dialog
+     * to raise for this one — notification access is granted on a settings
+     * screen — so the app can only ask whether it has it and offer to open it.
+     */
+    Function("canReadCallNotifications") { CallNotifications.enabled(context) }
+
+    AsyncFunction("openNotificationAccess") {
+      CallNotifications.openSettings(appContext.currentActivity ?: context)
+    }
+
+    /**
+     * Notification access answers *that* a number is calling; the address book
+     * is what turns it into a name. Denying contacts is a perfectly reasonable
+     * choice, but it looks exactly like a broken caller ID from the desktop —
+     * so the app can say which of the two is missing.
+     */
+    Function("canReadContacts") {
+      context.checkSelfPermission(Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+    }
 
     AsyncFunction("answerCall") { answerCall() }
 

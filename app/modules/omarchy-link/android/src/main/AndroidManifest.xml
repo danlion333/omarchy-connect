@@ -1,0 +1,46 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!--
+    What keeps the desktop link alive when nobody is looking at the phone.
+
+    Android stops this app's JavaScript timers the moment the activity pauses
+    and reclaims the process altogether once the task is swiped away — which
+    took the WebSocket, the keepalive ping and the reconnect backoff with it.
+    A foreground service is the only sanctioned way to say "this process is
+    talking to a device the user cares about, leave it running".
+
+    `connectedDevice` rather than `dataSync` on purpose: dataSync is capped at
+    a few hours a day since Android 14, and a link to your own desktop is
+    exactly the case connectedDevice describes. It requires the app to hold one
+    of a short list of permissions to prove the claim — CHANGE_NETWORK_STATE is
+    the cheapest of them and is granted at install time.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+  <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+  <application>
+    <service
+      android:name=".LinkService"
+      android:exported="false"
+      android:foregroundServiceType="connectedDevice"
+      android:stopWithTask="false" />
+
+    <!--
+      A phone that reboots overnight would otherwise be missing from the
+      desktop until somebody thought to open the app. BOOT_COMPLETED is one of
+      the few broadcasts still allowed to start a foreground service from the
+      background, which is what makes this work at all.
+    -->
+    <receiver
+      android:name=".BootReceiver"
+      android:exported="true"
+      android:enabled="true">
+      <intent-filter>
+        <action android:name="android.intent.action.BOOT_COMPLETED" />
+        <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

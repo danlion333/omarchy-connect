@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 
 import { connectPhone } from './phone.mjs'
 import { handsfree } from '../src/lib/handsfree.js'
+import { DEFAULT_EVENTS } from '../src/server.js'
 
 const PORT = Number(process.env.PORT || 8797)
 const base = `http://127.0.0.1:${PORT}`
@@ -35,13 +36,26 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-calls-'))
  *
  * Printing the action name is what `notify-send --help` says a click does, so
  * this also drives the answer path end to end.
+ *
+ * It imitates two more of the real one's habits, because the daemon depends on
+ * both. `-p` prints the notification's id, which is what lets a second report
+ * of the same ringing call rewrite the first rather than stack beside it. And
+ * a notification with actions waits for the click instead of exiting — an id
+ * belongs to a notification that is still on screen, so a stand-in that
+ * returned immediately would make every replacement look like a fresh one.
  */
 const notifyLog = path.join(sandbox, 'notify.log')
 const fakeBin = path.join(sandbox, 'bin')
 fs.mkdirSync(fakeBin, { recursive: true })
 fs.writeFileSync(
   path.join(fakeBin, 'notify-send'),
-  `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(notifyLog)}\n`,
+  [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(notifyLog)}`,
+    'case " $* " in *" -p "*) printf \'4242\\n\' ;; esac',
+    'case " $* " in *" -A "*) exec sleep 20 ;; esac',
+    '',
+  ].join('\n'),
   { mode: 0o755 },
 )
 
@@ -227,8 +241,16 @@ check("the phone's refusal is reported", denied.status === 400 && /permission/.t
 
 // Dialling has no app fallback, and the error should say why rather than
 // leaving the user to guess that the feature is missing.
-const dial = await post('/api/call', { op: 'dial', number: '+15551234' })
-check('dialling without Bluetooth explains itself', dial.status === 400 && /Bluetooth/.test(dial.data.error), dial.data.error)
+//
+// Only asked when this machine has no phone on hands-free. With one connected
+// the request would not fail — it would place a real call to a made-up number
+// from the developer's own handset, which is not a thing a test suite may do.
+if ((await handsfree.read()).gateway) {
+  check('dialling is skipped — a phone is connected over Bluetooth and would really dial', true)
+} else {
+  const dial = await post('/api/call', { op: 'dial', number: '+15551234' })
+  check('dialling without Bluetooth explains itself', dial.status === 400 && /Bluetooth/.test(dial.data.error), dial.data.error)
+}
 
 const stray = await req('phone.acted', { id: 'nobody-asked', ok: true })
 check('an unsolicited ack is refused', stray.ok === false)
@@ -251,6 +273,51 @@ check('history reports the Bluetooth link', typeof history.bluetooth?.connected 
 check('answering and rejecting are counted', history.counters.answered === 1 && history.counters.rejected === 1,
   `answered=${history.counters.answered} rejected=${history.counters.rejected}`)
 
+/**
+ * An Android phone cannot always say who is calling at the moment it says the
+ * phone is ringing: the state change comes from the telephony stack and the
+ * name from the dialler's notification, and either can arrive first. When the
+ * name arrives second the desktop has already put "unknown number" on screen,
+ * so the entry being filled in is not enough — the notification has to be
+ * raised again, or the one thing the user is looking at stays wrong.
+ */
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing' }] })
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+15551111', name: 'Тарас' }] })
+const late = await req('phone.history', { limit: 10 })
+const named = late.items.filter((i) => i.kind === 'call' && i.name === 'Тарас')
+check('a late caller name fills in the ringing call', named.length === 1, `${named.length} entr(y/ies)`)
+check('it does not become a second call', named[0]?.from === '+15551111', named[0]?.from)
+
+/**
+ * The same again, one step further along. A call that arrived as a bare number
+ * is not anonymous, so nothing about the entry changes when the name lands —
+ * but what the user is reading does, and that is what decides whether the
+ * notification is worth raising a second time.
+ */
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+15552222' }] })
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+15552222', name: 'Оксана' }] })
+const upgraded = (await req('phone.history', { limit: 10 })).items.filter((i) => i.from === '+15552222')
+check('a number that turns into a name stays one call', upgraded.length === 1, `${upgraded.length} entr(y/ies)`)
+check('and takes the name', upgraded[0]?.name === 'Оксана', upgraded[0]?.name)
+
+/**
+ * The panel's remote control has to appear for a call down any road.
+ *
+ * It used to read the hands-free profile alone, which is right about the audio
+ * and wrong about everything else: plenty of handsets connect over the profile
+ * and never publish a call object, so PipeWire reports a gateway, no calls, and
+ * the panel offered nothing to press while the phone rang.
+ */
+const midRing = await req('phone.history', { limit: 5 })
+check('a ringing call is published for the panel to act on', Boolean(midRing.call), JSON.stringify(midRing.call))
+check('and says which road it came down', midRing.call?.via === 'app', midRing.call?.via)
+check('and carries the name the buttons are about', midRing.call?.name === 'Оксана', midRing.call?.name)
+check('and is marked ringing rather than in progress', midRing.call?.state === 'ringing', midRing.call?.state)
+
+await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+15552222' }] })
+const afterRing = await req('phone.history', { limit: 5 })
+check('a call that ends takes the remote control off the screen', afterRing.call === null, JSON.stringify(afterRing.call))
+
 // A ringing phone is the one notification worth putting buttons on, and the
 // buttons are the whole point — a notification without them is just a readout.
 const notifications = fs.existsSync(notifyLog) ? fs.readFileSync(notifyLog, 'utf8').split('\n') : []
@@ -261,10 +328,57 @@ check(
   Boolean(rang) && /-A answer=Answer/.test(rang) && /-A reject=Decline/.test(rang),
 )
 check('it is raised as urgent', Boolean(rang) && /-u critical/.test(rang))
+/**
+ * Buttons are not the only way an action reaches a notification, and on this
+ * desktop they are not even the usual one: Omarchy's shell draws no buttons at
+ * all and invokes the action named `default` when the card is clicked. Without
+ * that name registered the notification was inert — the call could be seen and
+ * not answered, which is the whole complaint.
+ */
+check(
+  'and a click on it answers, for the servers that draw no buttons',
+  Boolean(rang) && /-A default=Answer/.test(rang),
+)
+check(
+  'the named caller replaces the anonymous notification',
+  notifications.some((line) => /Incoming call/.test(line) && /Тарас/.test(line)),
+)
+check(
+  'a number becoming a name is worth raising again',
+  notifications.some((line) => /Incoming call/.test(line) && /Оксана/.test(line)),
+)
+
+/**
+ * The point of raising it again is that the user ends up looking at one
+ * notification, not two. `-r` is the whole of that: without the id of the one
+ * already on screen the server has no way to know this is the same call, and
+ * "unknown number" sits there beside the name until it times out.
+ */
+const rerung = notifications.filter((line) => /Incoming call/.test(line) && /-r 4242/.test(line))
+check('the second notification replaces the first rather than joining it', rerung.length >= 1,
+  `${rerung.length} replacement(s)`)
+
+/**
+ * The app has to be listening on the channel the daemon talks on.
+ *
+ * Everything above proves the desktop asks; none of it proves the handset is
+ * subscribed to `phone`, because the test phone subscribes to whatever it is
+ * told to. The real app keeps its own list, and once left `phone` off it — so
+ * every answer, reject and outgoing message timed out with nothing in the log
+ * to say why. The two lists live in different languages and different
+ * repositories' halves; this is the only place they can be compared.
+ */
+const clientSource = fs.readFileSync(path.join(root, '..', 'app', 'src', 'api', 'client.ts'), 'utf8')
+const declared = clientSource.match(/private subscriptions: string\[\] = \[([^\]]*)\]/)?.[1] ?? ''
+const appEvents = [...declared.matchAll(/'([^']+)'/g)].map((m) => m[1])
+const missing = DEFAULT_EVENTS.filter((event) => !appEvents.includes(event))
+check('the app subscribes to every event the daemon publishes', missing.length === 0,
+  missing.length ? `missing: ${missing.join(', ')}` : appEvents.join(' '))
 
 const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
 check('the status file carries the Bluetooth summary', 'bluetooth' in (status.phone || {}),
   `available=${status.phone?.bluetooth?.available}`)
+check('and the live call the panel puts its buttons on', 'call' in (status.phone || {}))
 
 phone.close()
 const failed = results.filter((r) => !r.ok)

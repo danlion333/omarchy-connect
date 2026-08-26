@@ -119,12 +119,18 @@ export function baseSnapshot({ version = null, port = null } = {}) {
       rejected: 0,
       notifications: 0,
       recent: [],
+      // The live call, from whichever road saw it. Nothing is live while the
+      // daemon is down, and the panel's remote control stays off the screen.
+      call: null,
       // Bluetooth is the daemon's to watch, so with the daemon down the panel
       // shows the profile as unknown rather than guessing it is absent.
       bluetooth: { available: false, connected: false, device: null, audio: null, call: null, calls: 0 },
       // Same for the low-energy link an iPhone mirrors its notifications over.
       ios: { available: false, connected: false, subscribed: false, device: null, paired: false, pairing: null },
     },
+    // Coding agents are discovered by a running daemon and nothing else, so
+    // with it stopped the panel shows the switch rather than a stale list.
+    agents: { enabled: cfg.agents?.enabled === true, adapters: [], running: 0, waiting: 0, sessions: [] },
   }
 }
 
@@ -160,5 +166,9 @@ export function clear() {
   snapshot.pid = null
   snapshot.pairing = null
   snapshot.devices = (snapshot.devices || []).map((d) => ({ ...d, online: false, address: null }))
+  // Agent sessions are the daemon's live view of other processes: with it
+  // stopped there is nothing watching them, so the list is not merely stale,
+  // it is unknown.
+  snapshot.agents = { ...(snapshot.agents || {}), running: 0, waiting: 0, sessions: [] }
   return publish(snapshot)
 }

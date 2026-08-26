@@ -43,6 +43,14 @@ declare class OmarchyTelephony extends NativeModule<Events> {
   requestCallPermissionAsync(): Promise<PermissionResult>
   /** Whether ANSWER_PHONE_CALLS is held right now — cheap, so not a promise. */
   canAnswerCalls(): boolean
+  /**
+   * Whether the dialler's notifications can be read — which is the only place
+   * a modern Android puts the caller's name where an app can see it.
+   */
+  canReadCallNotifications(): boolean
+  canReadContacts(): boolean
+  /** Opens the system screen where notification access is granted. */
+  openNotificationAccess(): Promise<void>
   answerCall(): Promise<{ ok: boolean; audio: 'handset' }>
   rejectCall(): Promise<{ ok: boolean }>
   drainBacklog(): Promise<TelephonyEvent[]>

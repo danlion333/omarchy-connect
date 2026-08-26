@@ -40,10 +40,14 @@ replacing an existing copy.
   *idle* (bonded, but the phone declined to share notifications) or the
   handset's name while it is mirroring.
 - **Call card** — the one card that is a remote control rather than a readout.
-  It appears while a call is live over Bluetooth, urgent while it is ringing,
-  with **Answer** and **Decline**. Bluetooth only, deliberately: that is the
-  link that carries the audio, and answering a call you then cannot hear is no
-  improvement on walking over to the phone. Answering from the panel goes
+  It appears while a call is live, urgent while it is ringing, with **Answer**
+  and **Decline**. Any road: hands-free is preferred because it is the link
+  that carries the audio, but a handset that connects over the profile and
+  never publishes its calls is common, and the card falls back to the mirrored
+  event for those. The dim line says which of the two is about to happen —
+  whether answering brings the sound here or leaves it on the handset. It is
+  also the only place to *decline* on a notification server that draws no
+  action buttons, Omarchy's own among them. Answering from the panel goes
   through `omarchy-connect call answer` like everything else here.
 - **Firewall card** — appears only when the daemon reports that its port is
   closed, and carries the exact `ufw` command. The panel never runs it;

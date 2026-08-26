@@ -20,6 +20,7 @@ import {
   requestCall,
   trackConnections,
 } from './plugins/phone.js'
+import { summary as agentsSummary, hook as agentHook } from './plugins/agents.js'
 import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
 import * as state from './lib/state.js'
@@ -31,7 +32,7 @@ export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
-const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone']
+export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'agent']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
 
@@ -110,6 +111,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       transfers: [...transfers],
       counters: { ...counters },
       phone: phoneSummary(),
+      agents: agentsSummary(),
     }
   }
 
@@ -318,6 +320,33 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           return json(res, 400, { error: `unknown iOS action: ${op}` })
         } catch (err) {
           return json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * Localhost only: a coding agent's own lifecycle hook, reporting in.
+     *
+     * This must never cost the agent anything. The hook fires and forgets, so
+     * the answer is immediate and a payload we cannot make sense of is a 200
+     * with an error inside rather than something that could make a hook look
+     * like it failed.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/agent/hook') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 64 * 1024) req.destroy()
+      })
+      req.on('end', () => {
+        try {
+          const result = agentHook(JSON.parse(body || '{}'))
+          if (result.ok) publishState()
+          json(res, 200, result)
+        } catch (err) {
+          json(res, 200, { ok: false, error: err.message })
         }
       })
       return undefined
@@ -608,6 +637,9 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     // A mirrored message or a ringing phone changes what the bar panel should
     // be showing, so it is republished the same way a connection is.
     if (event === 'phone' && ['received', 'bluetooth', 'ios'].includes(data?.action)) publishState()
+    // An agent that started, finished or got stuck changes what the bar shows.
+    // The blocks streaming out of an open chat do not, and there are many.
+    if (event === 'agent' && data?.kind !== 'blocks') publishState()
     const message = { t: 'ev', event, data }
     for (const client of clients) {
       if (!client.device || !client.events.has(event)) continue

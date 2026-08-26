@@ -43,7 +43,7 @@ Item {
   readonly property var firewall: (status && status.firewall) ? status.firewall : ({ blocked: false })
   readonly property var phone: (status && status.phone)
     ? status.phone
-    : ({ messages: 0, calls: 0, missed: 0, sent: 0, notifications: 0, recent: [] })
+    : ({ messages: 0, calls: 0, missed: 0, sent: 0, notifications: 0, recent: [], call: null })
   readonly property var phoneRecent: (phone && Array.isArray(phone.recent)) ? phone.recent : []
   // The Bluetooth hands-free link. This is the half that carries the audio, so
   // it is also the half the panel offers Answer and Decline on.
@@ -56,8 +56,18 @@ Item {
   readonly property var ios: (phone && phone.ios)
     ? phone.ios
     : ({ available: false, connected: false, subscribed: false, device: null, paired: false, pairing: null })
-  readonly property var liveCall: (bluetooth && bluetooth.call) ? bluetooth.call : null
-  readonly property bool ringing: !!liveCall && (liveCall.state === "incoming" || liveCall.state === "waiting")
+  // The call the buttons act on. The daemon has already picked which road saw
+  // it — hands-free when the profile published a call object, the mirrored
+  // event otherwise — so the panel takes its word rather than looking at
+  // Bluetooth alone. `bluetooth.call` stays as the fallback for a daemon old
+  // enough not to publish the merged field.
+  readonly property var liveCall: (phone && phone.call)
+    ? phone.call
+    : ((bluetooth && bluetooth.call) ? bluetooth.call : null)
+  // Two vocabularies meet here: the hands-free profile says "incoming", the
+  // mirrored events say "ringing", and both mean a phone nobody has picked up.
+  readonly property bool ringing: !!liveCall
+    && (liveCall.state === "incoming" || liveCall.state === "waiting" || liveCall.state === "ringing")
   // Whether the daemon is serving https + wss. The panel only reports it —
   // switching TLS on is `omarchy-connect tls enable`, which needs a restart.
   readonly property bool tls: !!status && !!status.tls && status.tls.enabled === true

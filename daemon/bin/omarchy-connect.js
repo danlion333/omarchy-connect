@@ -19,6 +19,7 @@ import { run, has } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
 import { INBOX } from '../src/plugins/share.js'
+import { detected as detectedAgents } from '../src/plugins/agents.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8'))
@@ -94,8 +95,15 @@ function daemonRequest(pathname, { method = 'GET', body = null, port = null, tim
         resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, data })
       })
     })
-    req.on('timeout', () => req.destroy(new Error('timeout')))
-    req.on('error', () => resolve({ ok: false, status: 0, data: null }))
+    // A request that ran out of time and one that never connected both come
+    // back with no status; only the first of them means the daemon is there
+    // and something behind it is taking too long.
+    let expired = false
+    req.on('timeout', () => {
+      expired = true
+      req.destroy(new Error('timeout'))
+    })
+    req.on('error', () => resolve({ ok: false, status: 0, data: null, timeout: expired }))
     if (payload) req.write(payload)
     req.end()
   })
@@ -395,7 +403,11 @@ async function cmdSms(args) {
   }
   const res = await daemonRequest('/api/sms', { method: 'POST', body: { to, body }, timeout: 65_000 })
   if (!res.status) {
-    log.error('daemon is not running — start it with `omarchy-connect start`')
+    log.error(
+      res.timeout
+        ? 'the phone did not answer — open the app on the handset and try again'
+        : 'daemon is not running — start it with `omarchy-connect start`',
+    )
     process.exit(1)
   }
   if (!res.ok) {
@@ -420,14 +432,22 @@ async function cmdCall(args) {
   if (action === 'status') {
     const snapshot = await liveStatus()
     const bt = snapshot.phone?.bluetooth || {}
-    const live = bt.call
+    // The merged field covers a call the app mirrored as well as one the
+    // hands-free profile published; `bt.call` is the fallback for a daemon
+    // older than that field.
+    const live = snapshot.phone?.call || bt.call
     console.log(
       card('CALL CONTROL', [
         ['bluetooth', bt.available === false ? 'unsupported' : bt.connected ? 'connected' : 'not connected'],
         ['handset', bt.device || dim('—')],
         ['audio', bt.connected ? bt.audio || 'idle' : dim('—')],
         ['app', (snapshot.devices || []).some((d) => d.online) ? 'connected' : 'not connected'],
-        ['in progress', live ? `${live.name || live.from || 'unknown'} (${live.state})` : dim('none')],
+        [
+          'in progress',
+          live
+            ? `${live.name || live.from || 'unknown'} (${live.state}${live.via ? ` · ${live.via}` : ''})`
+            : dim('none'),
+        ],
       ]),
     )
     if (bt.available === false) {
@@ -457,7 +477,11 @@ async function cmdCall(args) {
     timeout: 65_000,
   })
   if (!res.status) {
-    log.error('daemon is not running — start it with `omarchy-connect start`')
+    log.error(
+      res.timeout
+        ? 'the phone did not answer — open the app on the handset and try again'
+        : 'daemon is not running — start it with `omarchy-connect start`',
+    )
     process.exit(1)
   }
   if (!res.ok) {
@@ -575,7 +599,7 @@ async function cmdPhone(args) {
         bt.connected || ios.subscribed
           ? '\n  nothing mirrored yet — this will fill up as the phone is used\n'
           : '\n  nothing mirrored yet — an iPhone needs `omarchy-connect ios pair`,\n' +
-            '  an Android build mirrors SMS over the app, calls need Bluetooth\n',
+            '  an Android build mirrors messages and calls through the app\n',
       ),
     )
     return
@@ -811,6 +835,212 @@ function cmdConfig(args) {
   log.ok(`${key} = ${parsed}`)
 }
 
+/* ── coding agents ───────────────────────────────────────────────────── */
+
+const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json')
+/** The lifecycle events worth a hook: everything the state machine needs. */
+const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'Notification', 'SessionEnd']
+
+const shellQuote = (value) => (/[\s"'$`\\]/.test(value) ? `'${value.replace(/'/g, `'\\''`)}'` : value)
+
+/** How a hook invokes this CLI again, without depending on $PATH. */
+const hookCommand = () => [...state.execCommand().map(shellQuote), 'agent', 'hook'].join(' ')
+
+const isOurHook = (entry) =>
+  typeof entry?.command === 'string' && entry.command.includes('agent hook') && entry.command.includes('omarchy-connect')
+
+function readClaudeSettings() {
+  try {
+    return JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, 'utf8'))
+  } catch (err) {
+    if (err.code === 'ENOENT') return {}
+    throw new Error(`${CLAUDE_SETTINGS} is not valid JSON — fix it first`)
+  }
+}
+
+function hooksInstalled() {
+  const hooks = readClaudeSettings().hooks || {}
+  return HOOK_EVENTS.every((event) =>
+    (hooks[event] || []).some((group) => (group.hooks || []).some(isOurHook)),
+  )
+}
+
+/**
+ * Add — or remove — our hook from Claude Code's settings without disturbing
+ * anybody else's. Every write strips our own entries first, so running this
+ * twice leaves one hook rather than two.
+ */
+function writeHooks(install) {
+  const settings = readClaudeSettings()
+  const hooks = { ...(settings.hooks || {}) }
+  const command = hookCommand()
+
+  for (const event of Object.keys(hooks)) {
+    const groups = (hooks[event] || [])
+      .map((group) => ({ ...group, hooks: (group.hooks || []).filter((h) => !isOurHook(h)) }))
+      .filter((group) => group.hooks.length)
+    if (groups.length) hooks[event] = groups
+    else delete hooks[event]
+  }
+
+  if (install) {
+    for (const event of HOOK_EVENTS) {
+      hooks[event] = [...(hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 5 }] }]
+    }
+  }
+
+  const next = { ...settings }
+  if (Object.keys(hooks).length) next.hooks = hooks
+  else delete next.hooks
+  fs.mkdirSync(path.dirname(CLAUDE_SETTINGS), { recursive: true })
+  fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(next, null, 2) + '\n')
+  return command
+}
+
+/**
+ * The bridge between a coding agent's hook and this daemon.
+ *
+ * Claude Code feeds a hook JSON on stdin and waits for it. That makes every
+ * failure mode here the agent's problem, so there is only one rule: be quick
+ * and exit 0. A daemon that is not running is a silent no-op, not an error.
+ */
+async function cmdAgentHook() {
+  let raw = ''
+  try {
+    process.stdin.setEncoding('utf8')
+    for await (const chunk of process.stdin) {
+      raw += chunk
+      if (raw.length > 64 * 1024) break
+    }
+  } catch {
+    /* no stdin is survivable — the environment below still says something */
+  }
+
+  let payload = {}
+  try {
+    payload = JSON.parse(raw || '{}')
+  } catch {
+    payload = {}
+  }
+
+  // The environment is the half the payload cannot carry: the hook was spawned
+  // by the agent itself, so its parent is the process we are looking for and
+  // its `$TMUX_PANE` is the pane that owns the terminal.
+  await daemonRequest('/api/agent/hook', {
+    method: 'POST',
+    timeout: 1000,
+    body: {
+      ...payload,
+      agent: 'claude',
+      ppid: process.ppid,
+      pane: process.env.TMUX_PANE || null,
+    },
+  })
+  process.exit(0)
+}
+
+async function cmdAgent(args) {
+  const action = args._[0] || 'status'
+
+  if (action === 'hook') return cmdAgentHook()
+
+  const cfg = loadConfig()
+  const live = state.read()
+  const restartHint = () => {
+    if (live?.running) log.warn('restart the daemon for this to take effect: systemctl --user restart omarchy-connect')
+  }
+
+  if (action === 'enable' || action === 'disable') {
+    const on = action === 'enable'
+    saveConfig({ ...cfg, agents: { ...(cfg.agents || {}), enabled: on } })
+    if (on) {
+      log.ok('agent control on')
+      console.log(
+        dim(
+          '\n  a paired phone can now read every coding agent session on this\n' +
+            '  desktop — the source it saw, the commands it ran, the output of\n' +
+            '  those commands. Pair only phones you own.\n',
+        ),
+      )
+      if (!hooksInstalled()) console.log(dim('  omarchy-connect agent install-hooks   to know when an agent is stuck\n'))
+    } else {
+      log.ok('agent control off')
+    }
+    restartHint()
+    return
+  }
+
+  if (action === 'install-hooks' || action === 'uninstall-hooks') {
+    const install = action === 'install-hooks'
+    const command = writeHooks(install)
+    if (install) {
+      log.ok(`hooks installed in ${CLAUDE_SETTINGS.replace(os.homedir(), '~')}`)
+      console.log(card('CLAUDE CODE HOOKS', HOOK_EVENTS.map((event) => [event, 'installed'])))
+      console.log(dim(`\n  ${command}\n`))
+      console.log(dim('  already-running agents pick these up when they next start\n'))
+    } else {
+      log.ok('hooks removed')
+    }
+    return
+  }
+
+  const agents = live?.agents || { enabled: cfg.agents?.enabled === true, adapters: [], sessions: [], waiting: 0 }
+
+  if (action === 'list') {
+    const sessions = agents.sessions || []
+    if (!sessions.length) {
+      console.log(dim('\n  no coding agent is running on this desktop\n'))
+      return
+    }
+    for (const session of sessions) {
+      console.log(
+        card(`${session.agent.toUpperCase()} · ${session.title}`, [
+          ['state', session.state + (session.state === 'waiting' ? ' ← needs you' : '')],
+          ['id', session.id],
+          ['directory', session.cwd || '—'],
+          ['pid', session.pid ? String(session.pid) : '—'],
+          ['found by', session.via],
+          ['writable', session.writable || 'no — reading only'],
+          ['last activity', session.lastActivity ? new Date(session.lastActivity).toLocaleTimeString() : '—'],
+        ]),
+      )
+      if (session.preview) console.log(dim(`  ${session.preview.slice(0, 56)}\n`))
+    }
+    return
+  }
+
+  if (action !== 'status') {
+    log.error('usage: omarchy-connect agent <status|enable|disable|list|install-hooks|uninstall-hooks>')
+    process.exit(1)
+  }
+
+  console.log(
+    card('CODING AGENTS', [
+      ['reading', agents.enabled ? 'on' : 'off'],
+      ['writing', 'not yet — stage two'],
+      // With the daemon down the status file knows nothing about what is
+      // installed, so ask the adapters themselves rather than report none.
+      ['adapters', ((agents.adapters || []).length ? agents.adapters : detectedAgents()).join(' ') || dim('none detected')],
+      ['hooks', hooksInstalled() ? 'installed' : dim('not installed')],
+      ['sessions', String((agents.sessions || []).length)],
+      ['waiting on you', String(agents.waiting || 0)],
+    ]),
+  )
+  if (!agents.enabled) {
+    console.log(dim('\n  omarchy-connect agent enable   let a paired phone read these sessions\n'))
+  } else if (!hooksInstalled()) {
+    console.log(
+      dim(
+        '\n  without hooks a session is found by scanning /proc, which cannot\n' +
+          '  tell when an agent is waiting for an answer:\n\n' +
+          '  omarchy-connect agent install-hooks\n',
+      ),
+    )
+  } else if (!live?.running) {
+    console.log(dim('\n  the daemon is not running, so nothing is watching\n'))
+  }
+}
+
 const SERVICE = `[Unit]
 Description=Omarchy Connect daemon
 After=graphical-session.target
@@ -867,6 +1097,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} <status|answer|reject|…>  answer or place a call
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
+  ${bold('agent')} <status|enable|list|…>  read this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate
@@ -888,6 +1119,7 @@ const commands = {
   call: cmdCall,
   ios: cmdIos,
   phone: cmdPhone,
+  agent: cmdAgent,
   config: cmdConfig,
   firewall: cmdFirewall,
   tls: cmdTls,

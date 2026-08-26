@@ -23,5 +23,23 @@
         <action android:name="android.intent.action.PHONE_STATE" />
       </intent-filter>
     </receiver>
+
+    <!--
+      Who is calling. The PHONE_STATE broadcast above no longer carries the
+      number for anything targeting API 29 or higher, so the caller's name is
+      read off the dialler's own notification instead — see CallNotifications,
+      which ignores everything that is not a call. Android only binds this
+      after the user grants notification access in system settings; until then
+      it is declared and dormant.
+    -->
+    <service
+      android:name=".CallNotifications"
+      android:exported="true"
+      android:label="Omarchy Connect"
+      android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+      <intent-filter>
+        <action android:name="android.service.notification.NotificationListenerService" />
+      </intent-filter>
+    </service>
   </application>
 </manifest>
