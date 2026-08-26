@@ -15,7 +15,7 @@ import * as firewall from '../src/lib/firewall.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
-import { run, has } from '../src/lib/exec.js'
+import { run, runInteractive, has } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
 import { INBOX } from '../src/plugins/share.js'
@@ -408,8 +408,8 @@ async function pickFile() {
     log.error('gum is not installed — pass a path instead: omarchy-connect send <file>')
     return null
   }
-  const res = await run('gum', ['file', '--height', '20', os.homedir()], { stdio: 'inherit', timeout: 0 })
-  const chosen = res.stdout.trim()
+  const res = await runInteractive('gum', ['file', '--height', '20', os.homedir()])
+  const chosen = res.stdout
   if (!chosen) {
     console.log(dim('  nothing picked'))
     return null

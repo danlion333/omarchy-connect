@@ -39,6 +39,27 @@ export async function run(bin, args = [], opts = {}) {
 }
 
 /**
+ * Run an interactive terminal tool and collect what it prints.
+ *
+ * `run` cannot do this: `execFile` builds its own stdio and quietly drops the
+ * option, so the tool gets pipes instead of the terminal — it never draws, and
+ * the window the user is looking at stays empty. So the child keeps the real
+ * stdin and stderr, and only stdout is captured. That split is exactly what
+ * tools like gum expect: they draw on stderr when stdout is not a terminal,
+ * and keep stdout for the answer.
+ */
+export function runInteractive(bin, args = []) {
+  return new Promise((resolve) => {
+    let stdout = ''
+    const child = spawn(bin, args, { stdio: ['inherit', 'pipe', 'inherit'] })
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => (stdout += chunk))
+    child.on('error', () => resolve({ ok: false, stdout: '', code: 1 }))
+    child.on('close', (code) => resolve({ ok: code === 0, stdout: stdout.trim(), code: code ?? 1 }))
+  })
+}
+
+/**
  * Write text to the Wayland clipboard. `wl-copy` forks a background process
  * that owns the selection and inherits stdio, so exec-style helpers hang
  * waiting for EOF — hand it the text on stdin and discard its output instead.
