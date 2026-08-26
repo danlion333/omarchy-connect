@@ -788,8 +788,8 @@ Panel {
           /* ── coding agents ──────────────────────────────────────── */
 
           // The desktop half of the agent feature: the switch that decides
-          // whether a paired phone may read the coding agent already open
-          // here, and — once it is on — what that agent is doing. The card
+          // whether a paired phone may read — and answer — the coding agent
+          // already open here, and once it is on, what that agent is doing. The card
           // stays out of the way on a machine with no agent installed, because
           // a switch for a thing that does not exist is only a question.
           PanelSeparator {
@@ -810,7 +810,7 @@ Panel {
 
             Toggle {
               width: parent.width
-              label: bridge.agentsEnabled ? "The phone can read them" : "Let the phone read them"
+              label: bridge.agentsEnabled ? "The phone can read and answer them" : "Let the phone read and answer them"
               description: Model.agentsText(bridge.agents, bridge.running)
               checked: bridge.agentsEnabled
               hasCursor: root.cursorActive && root.focusSection === "agents"
@@ -1119,8 +1119,8 @@ Panel {
         z: 10
         opened: root.agentConfirmOpen
         message: "Let " + (bridge.device ? bridge.device.name : "the paired phone")
-          + " read the coding agents on this desktop? It sees everything they saw — your source, the commands they ran, and the output of those commands."
-        confirmText: "Let it read"
+          + " read and answer the coding agents on this desktop? It sees everything they saw — your source, the commands they ran, and the output of those commands — and it can type into them, which the agent will act on. That is a shell."
+        confirmText: "Let it in"
         foreground: root.foreground
         fontFamily: root.fontFamily
         onCanceled: root.agentConfirmOpen = false

@@ -247,18 +247,30 @@ function agents(status) {
     enabled: value.enabled === true,
     hooks: value.hooks === true,
     adapters: Array.isArray(value.adapters) ? value.adapters : [],
+    // "tmux", "wtype" or null — which road this desktop has into a terminal.
+    // A daemon from before the writing half simply has none, which reads the
+    // same as a desktop that cannot type into anything.
+    write: typeof value.write === "string" ? value.write : null,
     running: num(value.running, 0),
     waiting: num(value.waiting, 0),
     sessions: Array.isArray(value.sessions) ? value.sessions : []
   }
 }
 
-/** The one line under the header: what reading agents is doing right now. */
+/** The one line under the header: what agent control is doing right now. */
 function agentsText(value, running) {
   if (!value.enabled) return "off · the phone sees nothing"
   if (!running) return "on · nothing is watching while the daemon is stopped"
   if (value.waiting > 0) return value.waiting === 1 ? "one agent is waiting for you" : value.waiting + " agents are waiting for you"
-  if (value.running > 0) return value.running === 1 ? "one session · reading only" : value.running + " sessions · reading only"
+  if (value.running > 0) {
+    // Whether the phone can answer or only watch is the difference between a
+    // notification you can act on and one you can only read, so it is what
+    // this line spends its remaining words on — counted from the sessions
+    // themselves, because a desktop with tmux still has agents outside it.
+    var answerable = value.sessions.filter(function (s) { return isObject(s) && s.writable }).length
+    var how = answerable === 0 ? "reading only" : answerable === value.running ? "answerable" : answerable + " answerable"
+    return (value.running === 1 ? "one session · " : value.running + " sessions · ") + how
+  }
   if (value.adapters.length === 0) return "on · no coding agent is installed here"
   return "on · nothing running"
 }

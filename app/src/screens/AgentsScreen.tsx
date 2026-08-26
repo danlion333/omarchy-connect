@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { RefreshControl, View } from 'react-native'
 
 import { useConnection } from '../state/ConnectionContext'
-import type { AgentSession } from '../api/client'
+import type { AgentCapabilities, AgentSession } from '../api/client'
 import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, StatusDot } from '../ui/kit'
 import { AgentChatScreen } from './AgentChatScreen'
 import { ago } from '../lib/format'
@@ -21,9 +21,7 @@ export function AgentsScreen() {
   const [refreshing, setRefreshing] = useState(false)
 
   const connected = status === 'connected'
-  const caps = (hello?.capabilities?.agents ?? null) as
-    | { enabled?: boolean; adapters?: string[]; write?: string | null }
-    | null
+  const caps = (hello?.capabilities?.agents ?? null) as AgentCapabilities | null
 
   const load = useCallback(async () => {
     setRefreshing(true)
@@ -55,8 +53,8 @@ export function AgentsScreen() {
         <Card>
           <CardHeader icon="terminal" title="Turned off on the desktop" subtitle="reading an agent is reading everything it saw" />
           <Body tone={palette.muted}>
-            Source, tool output, whatever crossed a command's result — all of it would cross to this phone. Enable it
-            deliberately on the desktop:
+            Source, tool output, whatever crossed a command's result — all of it would cross to this phone, and this
+            phone could type back into an agent that will run what it is told. Enable it deliberately on the desktop:
           </Body>
           <Body style={{ marginTop: space.md }}>omarchy-connect agent enable</Body>
           <Body tone={palette.muted} style={{ marginTop: space.md }}>
@@ -93,9 +91,15 @@ export function AgentsScreen() {
         )}
       </Card>
 
-      {caps?.write === null ? (
+      {caps?.enabled && !caps.write ? (
         <Body tone={palette.muted} style={{ textAlign: 'center' }}>
-          Reading only — this desktop cannot yet be typed into
+          Reading only — that desktop has neither tmux nor wtype, so nothing there can type into a terminal
+        </Body>
+      ) : null}
+      {caps?.write && sorted.some((s) => !s.writable) ? (
+        <Body tone={palette.muted} style={{ textAlign: 'center' }}>
+          A session with no dot beside it is not in a terminal this desktop can reach — start those with{' '}
+          omarchy-connect agent run
         </Body>
       ) : null}
     </Screen>
@@ -113,7 +117,16 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
       tone={session.state === 'waiting' ? palette.bright_foreground : undefined}
       subtitle={[
         session.state === 'waiting' ? session.prompt || 'waiting for an answer' : session.preview,
-        `${session.agent} · ${ago(session.lastActivity)}${session.via === 'scan' ? ' · found by scan' : ''}`,
+        [
+          session.agent,
+          ago(session.lastActivity),
+          session.via === 'scan' ? 'found by scan' : null,
+          // Which road in, because it decides whether the composer is a text
+          // field or an apology — and `wtype` is worth knowing before you open it.
+          session.writable === 'tmux' ? 'answerable' : session.writable === 'wtype' ? 'answerable · steals focus' : 'read only',
+        ]
+          .filter(Boolean)
+          .join(' · '),
       ]
         .filter(Boolean)
         .join('\n')}

@@ -1,11 +1,21 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native'
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection } from '../state/ConnectionContext'
 import type { AgentBlock, AgentEvent, AgentSession } from '../api/client'
-import { Body, Caps, StatusDot } from '../ui/kit'
+import { Body, Button, Caps, Chip, StatusDot } from '../ui/kit'
 import { ago } from '../lib/format'
 import { alpha, font, radius, size, space } from '../theme'
 
@@ -23,6 +33,10 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [expanded, setExpanded] = useState<Record<number, string>>({})
+  // The terminal as it actually looks. A permission prompt is drawn on screen
+  // and never written to the transcript, so the numbered options this phone is
+  // about to answer exist nowhere else.
+  const [raw, setRaw] = useState<string | null>(null)
   const scroller = useRef<ScrollView | null>(null)
   const atBottom = useRef(true)
 
@@ -101,11 +115,19 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      <Header session={session} tone={stateTone} onBack={onBack} />
+      <Header
+        session={session}
+        tone={stateTone}
+        onBack={onBack}
+        raw={raw !== null}
+        onToggleRaw={session.writable === 'tmux' ? () => setRaw((was) => (was === null ? '' : null)) : undefined}
+      />
+
+      {raw !== null ? <RawScreen session={session} /> : null}
 
       <ScrollView
         ref={scroller}
-        style={{ flex: 1 }}
+        style={{ flex: 1, display: raw !== null ? 'none' : 'flex' }}
         contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
         onScroll={(e) => {
           const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent
@@ -152,7 +174,19 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   )
 }
 
-function Header({ session, tone, onBack }: { session: AgentSession; tone: string; onBack: () => void }) {
+function Header({
+  session,
+  tone,
+  onBack,
+  raw,
+  onToggleRaw,
+}: {
+  session: AgentSession
+  tone: string
+  onBack: () => void
+  raw: boolean
+  onToggleRaw?: () => void
+}) {
   const { palette } = useConnection()
   const insets = useSafeAreaInsets()
   return (
@@ -180,9 +214,62 @@ function Header({ session, tone, onBack }: { session: AgentSession; tone: string
           {session.agent} · {session.cwd || '—'}
         </Text>
       </View>
+      {onToggleRaw ? (
+        <Pressable onPress={onToggleRaw} hitSlop={10}>
+          <Feather name="terminal" size={16} color={raw ? palette.accent : palette.muted} />
+        </Pressable>
+      ) : null}
       <StatusDot tone={tone} pulse={session.state === 'working'} />
       <Caps tone={tone}>{session.state}</Caps>
     </View>
+  )
+}
+
+/**
+ * The pane, captured and redrawn as a monospace block.
+ *
+ * Deliberately not dressed up as a chat: this is a terminal, and saying so is
+ * more honest than pretending to understand a screen nothing parsed. It is
+ * polled rather than pushed — a screen is only interesting while somebody is
+ * looking at it, and the transcript covers everything else.
+ */
+function RawScreen({ session }: { session: AgentSession }) {
+  const { call, palette } = useConnection()
+  const [screen, setScreen] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let live = true
+    const pull = () =>
+      call<{ screen: string }>('agents.screen', { id: session.id, lines: 80 })
+        .then((res) => live && (setScreen(res.screen), setError(null)))
+        .catch((err) => live && setError((err as Error).message))
+    void pull()
+    const timer = setInterval(pull, 2500)
+    return () => {
+      live = false
+      clearInterval(timer)
+    }
+  }, [call, session.id])
+
+  return (
+    <ScrollView
+      style={{ flex: 1, backgroundColor: palette.darker_background }}
+      contentContainerStyle={{ padding: space.md }}
+    >
+      {error ? <Body tone={palette.red}>{error}</Body> : null}
+      {screen === null && !error ? <ActivityIndicator color={palette.accent} /> : null}
+      {screen !== null ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+          <Text
+            selectable
+            style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.micro, lineHeight: 15 }}
+          >
+            {screen}
+          </Text>
+        </ScrollView>
+      ) : null}
+    </ScrollView>
   )
 }
 
@@ -303,32 +390,185 @@ function Row({
   )
 }
 
+/** The keys worth a button. Anything longer is typed. */
+const QUICK: { key: string; label: string }[] = [
+  { key: 'Escape', label: 'Esc' },
+  { key: '1', label: '1' },
+  { key: '2', label: '2' },
+  { key: '3', label: '3' },
+  { key: 'Enter', label: '⏎' },
+]
+
 /**
- * The input, and the honest reason it is not one yet. Nothing may push bytes
- * into a terminal somebody else's process owns — that is stage two's problem,
- * and pretending otherwise would just make a send silently do nothing.
+ * Answering the agent.
+ *
+ * The text field is the obvious half; the row of keys above it is the one that
+ * matters. An agent that has stopped is almost always sitting on a numbered
+ * permission prompt, and the useful answer is a single digit — typing "yes"
+ * into a menu that wanted "2" is how a remote answer goes wrong. So the quick
+ * row sends real keystrokes and the field sends prose, and the two are not the
+ * same button.
+ *
+ * A session on the `wtype` road says so before its first send rather than
+ * after. The compositor typing on the user's behalf steals focus for a moment
+ * and interleaves with anyone at the real keyboard — that cannot be fixed, but
+ * it can be told to the person deciding whether to press send.
  */
 function Composer({ session }: { session: AgentSession }) {
-  const { palette } = useConnection()
+  const { call, palette } = useConnection()
   const insets = useSafeAreaInsets()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [acknowledged, setAcknowledged] = useState(false)
+
+  const needsWarning = session.writable === 'wtype' && !acknowledged
+
+  const guard = useCallback(
+    async (what: () => Promise<unknown>) => {
+      setBusy(true)
+      setError(null)
+      try {
+        await what()
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [],
+  )
+
+  const send = useCallback(() => {
+    const body = text.trim()
+    if (!body) return
+    // Cleared optimistically: the transcript is the receipt, and a field that
+    // keeps the text after a successful send invites sending it twice.
+    setText('')
+    void guard(async () => {
+      try {
+        await call('agents.send', { id: session.id, text: body })
+      } catch (err) {
+        setText(body)
+        throw err
+      }
+    })
+  }, [call, guard, session.id, text])
+
+  const press = useCallback(
+    (key: string) => void guard(() => call('agents.key', { id: session.id, key })),
+    [call, guard, session.id],
+  )
+
+  const frame = {
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: Math.max(insets.bottom, space.md),
+    backgroundColor: palette.dark_background,
+    borderTopWidth: StyleSheet.hairlineWidth * 2,
+    borderTopColor: palette.lighter_background,
+  }
+
+  if (!session.writable) {
+    return (
+      <View style={{ ...frame, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Feather name="eye" size={14} color={palette.muted} />
+        <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
+          Reading only — nothing on that desktop can reach this terminal
+        </Text>
+      </View>
+    )
+  }
+
+  if (needsWarning) {
+    return (
+      <View style={{ ...frame, gap: space.sm }}>
+        <Caps tone={palette.orange}>The desktop will type this itself</Caps>
+        <Body tone={palette.muted}>
+          This agent is not in tmux, so the desktop focuses its window and types on your behalf. It steals focus for a
+          moment, and it will interleave with anyone typing at the keyboard. Start it with{' '}
+          <Text style={{ fontFamily: font.medium }}>omarchy-connect agent run</Text> to get a cleaner road.
+        </Body>
+        <Button label="Type anyway" icon="edit-2" tone={palette.orange} onPress={() => setAcknowledged(true)} />
+      </View>
+    )
+  }
+
   return (
-    <View
-      style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: space.sm,
-        paddingHorizontal: space.lg,
-        paddingTop: space.md,
-        paddingBottom: Math.max(insets.bottom, space.md),
-        backgroundColor: palette.dark_background,
-        borderTopWidth: StyleSheet.hairlineWidth * 2,
-        borderTopColor: palette.lighter_background,
-      }}
-    >
-      <Feather name={session.writable ? 'edit-2' : 'eye'} size={14} color={palette.muted} />
-      <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
-        {session.writable ? 'writable' : 'reading only — answering lands in a later release'}
-      </Text>
-    </View>
+    <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={0}>
+      <View style={frame}>
+        {error ? (
+          <Body tone={palette.red} style={{ marginBottom: space.sm }}>
+            {error}
+          </Body>
+        ) : null}
+
+        <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm }}>
+          {QUICK.map((quick) => (
+            <Chip
+              key={quick.key}
+              label={quick.label}
+              tone={session.state === 'waiting' ? palette.orange : undefined}
+              active={session.state === 'waiting'}
+              onPress={() => press(quick.key)}
+            />
+          ))}
+          <View style={{ flex: 1 }} />
+          <Chip label="stop" tone={palette.red} onPress={() => press('C-c')} />
+        </View>
+
+        <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'flex-end' }}>
+          <TextInput
+            value={text}
+            onChangeText={setText}
+            placeholder={session.writable === 'tmux' ? 'answer the agent…' : 'the desktop will type this…'}
+            placeholderTextColor={palette.muted}
+            autoCapitalize="sentences"
+            autoCorrect
+            multiline
+            // Return adds a newline and the arrow sends, the way every chat
+            // app on a phone works — and here it earns its keep twice over,
+            // because a multi-line message travels as a bracketed paste and
+            // arrives as one message rather than as several half-sent ones.
+            submitBehavior="newline"
+            style={{
+              flex: 1,
+              maxHeight: 120,
+              color: palette.light_foreground,
+              fontFamily: font.regular,
+              fontSize: size.body,
+              backgroundColor: palette.darker_background,
+              borderColor: palette.lighter_background,
+              borderWidth: 1,
+              borderRadius: radius.sm,
+              paddingHorizontal: space.md,
+              paddingVertical: space.md,
+            }}
+          />
+          <Pressable
+            onPress={send}
+            disabled={busy || !text.trim()}
+            style={({ pressed }) => ({
+              paddingHorizontal: space.lg,
+              paddingVertical: space.md,
+              justifyContent: 'center',
+              backgroundColor: pressed ? palette.selection : palette.lighter_background,
+              borderRadius: radius.sm,
+              opacity: busy || !text.trim() ? 0.4 : 1,
+            })}
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color={palette.accent} />
+            ) : (
+              <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
+            )}
+          </Pressable>
+        </View>
+
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
+          {session.writable === 'tmux' ? `tmux ${session.pane}` : 'the desktop types this — focus moves for a moment'}
+        </Text>
+      </View>
+    </KeyboardAvoidingView>
   )
 }

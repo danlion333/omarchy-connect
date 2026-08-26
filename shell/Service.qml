@@ -73,7 +73,7 @@ Item {
   // mirrored events say "ringing", and both mean a phone nobody has picked up.
   readonly property bool ringing: !!liveCall
     && (liveCall.state === "incoming" || liveCall.state === "waiting" || liveCall.state === "ringing")
-  // The coding agents this desktop can read, and whether it is allowed to.
+  // The coding agents this desktop can read and answer, and whether it may.
   // Unlike TLS this one *is* switchable from here: the daemon applies it
   // without a restart, so the link survives the click.
   readonly property var agents: Model.agents(status)
@@ -336,11 +336,11 @@ Item {
    * anything that goes wrong there is worth a line on screen.
    */
   function enableAgents() {
-    invoke(Model.command(root.status, ["agent", "enable"]), "Letting the phone read agents…")
+    invoke(Model.command(root.status, ["agent", "enable"]), "Letting the phone read and answer agents…")
   }
 
   function disableAgents() {
-    invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent reading off…")
+    invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent control off…")
   }
 
   /**

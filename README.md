@@ -84,7 +84,7 @@ omarchy-connect sms <number> <message…>     send an SMS through the paired pho
 omarchy-connect call <status|answer|reject|…>  answer or place a call
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
-omarchy-connect agent <status|enable|list|…>  read this desktop's coding agents
+omarchy-connect agent <status|enable|run|…>   read and answer this desktop's coding agents
 omarchy-connect tls <status|enable|…>       serve https + wss with a pinned certificate
 omarchy-connect config [key] [value]        read or change configuration
 omarchy-connect firewall                    check the port is reachable
@@ -353,13 +353,14 @@ service; an Intel adapter is the reliable case.
 
 ## Coding agents
 
-A phone can read the coding agent already open on this desktop: what it is
-doing, what it ran, and — this is the part that earns the feature — the moment
-it stops and waits for you to answer something. Reading only, for now.
+A phone can read the coding agent already open on this desktop — what it is
+doing, what it ran, and, the part that earns the feature, the moment it stops
+and waits for you to answer something — and then answer it.
 
 ```bash
 omarchy-connect agent enable          # off by default, and it says why
 omarchy-connect agent install-hooks   # so the desktop knows when it is stuck
+omarchy-connect agent run -- claude   # start one the phone can type into
 omarchy-connect agent status
 ```
 
@@ -391,20 +392,35 @@ the daemon scans `/proc` for a running agent and matches it to the newest
 transcript for its working directory, which is enough to read a session that
 started before any of this was installed, and is labelled as the guess it is.
 
+Answering is the harder half, because nothing may push bytes into a terminal
+another process owns. There are two roads and the app tells you which one a
+session is on. Inside **tmux** the pane is tmux's own pty, so a message arrives
+exactly as typed and nothing on the desktop moves — `agent run` exists to put
+an agent there, attached in the terminal you started it from, so the desktop
+experience is unchanged. Outside tmux the daemon falls back to **the
+compositor typing on your behalf**: it remembers what was focused, focuses the
+agent's window, types, and puts focus back. That one steals focus for a moment
+and will interleave with anyone at the keyboard, so the app says so before the
+first send. Either way the useful answer to a stopped agent is usually a single
+key, which is why the composer carries `Esc`, the digits and Return above the
+text field, and a raw view of the pane behind a toggle — a permission prompt is
+drawn on the terminal and never written to the transcript.
+
 **Read this before you enable it.** Reading an agent is reading everything it
 saw: your source, the output of every command it ran, any secret that crossed a
-tool result. That is a wider exposure than the clipboard or the notification
-mirror, which is why it is off until you turn it on and why both the CLI and
-the panel spell it out when you do. The switch is the desktop's alone — it
-answers on loopback, and there is no call a phone can make to grant itself
-reading. The channel is encrypted end to end and only the paired phone can ask
-— but pair only a phone you own.
+tool result. Writing to one is arbitrary code execution — the agent runs what
+it is told, so a phone that can type into a session has, in effect, a shell.
+Both arrive with the same switch. That is a wider exposure than the clipboard
+or the notification mirror, which is why it is off until you turn it on and why
+both the CLI and the panel spell it out when you do. The switch is the
+desktop's alone — it answers on loopback, and there is no call a phone can make
+to grant itself either. The channel is encrypted end to end and only the paired
+phone can ask — but pair only a phone you own.
 
-Writing back — answering a prompt from the phone — is not here yet. Nothing may
-push bytes into a terminal another process owns: `TIOCSTI` is gone from the
-kernel, so it has to be a multiplexer that owns the pty or the compositor
-typing on your behalf. Until that ships the app says `reading only` rather than
-offering a send that would do nothing. See `docs/AGENT-CONTROL.md`.
+Not every session can be answered, and the app never pretends otherwise: a
+session in a terminal nothing on the desktop can reach says `reading only` and
+greys its composer out rather than offering a send that would silently do
+nothing. See `docs/AGENT-CONTROL.md`.
 
 ## Run the app
 
@@ -541,8 +557,9 @@ daemon/         Node.js daemon — one dependency (ws)
   src/plugins/  system, clipboard, notifications, media, desktop, share,
                 input, device telemetry, SMS and calls, coding agents
   src/agents/   one adapter per coding agent — where its transcript lives and
-                how to read a line of it, plus the lifecycle hooks the desktop
-                installs into Claude Code's own settings
+                how to read a line of it — plus the lifecycle hooks the desktop
+                installs into Claude Code's own settings, and the writer that
+                types back through tmux or the compositor
   src/lib/      …including the two Bluetooth clients: hands-free call control
                 over PipeWire, and an iPhone's notifications over ANCS
 shell/          Omarchy shell plugin — the desktop client (QML)
@@ -558,9 +575,10 @@ docs/           protocol specification
 
 ## Next
 
-Answering a coding agent from the phone — a tmux pane where there is one, the
-compositor typing where there is not; encrypted file bodies for the platforms that cannot pin a certificate (iOS and
-Expo Go), so TLS is not the only way to close that gap; wake-on-LAN so a
+Adapters for the other coding agents — Codex, Gemini CLI — and a raw
+`capture-pane` view for the ones nothing can parse; encrypted file bodies for
+the platforms that cannot pin a certificate (iOS and Expo Go), so TLS is not
+the only way to close that gap; wake-on-LAN so a
 sleeping desktop can be woken from the couch; a real scroll wheel without
 depending on `ydotool`; replying to a mirrored message from the desktop
 notification itself rather than from the CLI; and drag-and-drop onto the bar

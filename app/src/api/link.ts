@@ -4,6 +4,7 @@ import {
   ConnectClient,
   type AgentEvent,
   type AgentSession,
+  type AgentWrite,
   type ConnectionStatus,
   type Hello,
   type NotificationItem,
@@ -208,7 +209,7 @@ class Link {
         // and nothing is about to say hello again, so they are patched in
         // place — otherwise the screen would keep telling the user to run a
         // command they have already run.
-        if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters)
+        if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters, data.write ?? null)
         this.patch({ agents: reduceAgents(this.state.agents, data) })
       }),
       client.on('ev:clipboard', (data: ClipboardEvent) => this.patch({ clipboard: data })),
@@ -236,11 +237,11 @@ class Link {
    * On, the list is fetched at once so the screen fills without a visit; off,
    * it is dropped, because nothing on it can be opened any more.
    */
-  private agentsSwitched(enabled: boolean, adapters: string[]) {
+  private agentsSwitched(enabled: boolean, adapters: string[], write: AgentWrite) {
     const hello = this.state.hello
     if (hello) {
       const capabilities = { ...(hello.capabilities || {}) } as Record<string, any>
-      capabilities.agents = { ...(capabilities.agents || {}), enabled, adapters }
+      capabilities.agents = { ...(capabilities.agents || {}), enabled, adapters, write }
       this.patch({ hello: { ...hello, capabilities } as Hello })
     }
     if (enabled) void this.refreshAgents()

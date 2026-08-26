@@ -15,12 +15,14 @@ import * as firewall from '../src/lib/firewall.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
-import { run, runInteractive, has } from '../src/lib/exec.js'
+import { run, runInteractive, has, spawn } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
 import { INBOX } from '../src/plugins/share.js'
 import { detected as detectedAgents } from '../src/agents/index.js'
 import * as agentHooks from '../src/agents/hooks.js'
+import * as agentTmux from '../src/agents/tmux.js'
+import * as agentWriter from '../src/agents/writer.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8'))
@@ -935,10 +937,60 @@ async function cmdAgentHook() {
   process.exit(0)
 }
 
+/**
+ * Start an agent in a pane the phone can type into.
+ *
+ * Everything else about the desktop stays as it was: tmux attaches in this
+ * very terminal, so what the person at the keyboard sees is the agent, drawn
+ * where they asked for it. What they get for free is a pty that belongs to
+ * tmux rather than to the terminal emulator — which is the whole difference
+ * between a session a phone can answer and one it can only watch.
+ *
+ * Two cases need no wrapper at all and say so rather than nesting a second
+ * multiplexer inside the first: already inside tmux, and no tmux installed.
+ */
+async function cmdAgentRun(args) {
+  // `--` is where the agent's own flags begin, and they must not be parsed as
+  // ours — `claude --resume` is a perfectly ordinary thing to want.
+  const separator = process.argv.indexOf('--')
+  const command = separator >= 0 ? process.argv.slice(separator + 1) : args._.slice(1)
+  if (!command.length) {
+    log.error('usage: omarchy-connect agent run -- claude [args…]')
+    process.exit(1)
+  }
+
+  const inherit = { stdio: 'inherit' }
+  const wait = (child) =>
+    new Promise((resolve) => {
+      child.on('error', (err) => {
+        log.error(err.message)
+        resolve(1)
+      })
+      child.on('exit', (code, signal) => resolve(signal ? 1 : (code ?? 0)))
+    })
+
+  if (process.env.TMUX) {
+    console.log(dim('  already inside tmux — this pane is writable as it is\n'))
+    process.exit(await wait(spawn(command[0], command.slice(1), inherit)))
+  }
+
+  if (!agentTmux.available()) {
+    log.warn('tmux is not installed — starting the agent anyway, but a phone will only be able to read it')
+    console.log(dim('  pacman -S tmux   to make sessions started this way answerable\n'))
+    process.exit(await wait(spawn(command[0], command.slice(1), inherit)))
+  }
+
+  const name = await agentTmux.freeSessionName()
+  console.log(dim(`\n  tmux session ${name} — a phone can answer this one\n`))
+  // `--` again, this time so tmux hands the rest to the agent verbatim.
+  process.exit(await wait(spawn('tmux', ['new-session', '-s', name, '--', ...command], inherit)))
+}
+
 async function cmdAgent(args) {
   const action = args._[0] || 'status'
 
   if (action === 'hook') return cmdAgentHook()
+  if (action === 'run') return cmdAgentRun(args)
 
   const cfg = loadConfig()
   const live = state.read()
@@ -964,10 +1016,14 @@ async function cmdAgent(args) {
         dim(
           '\n  a paired phone can now read every coding agent session on this\n' +
             '  desktop — the source it saw, the commands it ran, the output of\n' +
-            '  those commands. Pair only phones you own.\n',
+            '  those commands — and type into the ones it can reach, which the\n' +
+            '  agent will act on. That is a shell. Pair only phones you own.\n',
         ),
       )
       if (!hooksInstalled()) console.log(dim('  omarchy-connect agent install-hooks   to know when an agent is stuck\n'))
+      if (!agentWriter.best()) {
+        console.log(dim('  nothing here can type into a terminal — install tmux for that\n'))
+      }
     } else {
       log.ok('agent control off')
     }
@@ -1010,7 +1066,8 @@ async function cmdAgent(args) {
           ['directory', session.cwd || '—'],
           ['pid', session.pid ? String(session.pid) : '—'],
           ['found by', session.via],
-          ['writable', session.writable || 'no — reading only'],
+          ['writable', session.writable || 'no — not in a terminal we can reach'],
+          ['pane', session.pane || '—'],
           ['last activity', session.lastActivity ? new Date(session.lastActivity).toLocaleTimeString() : '—'],
         ]),
       )
@@ -1020,14 +1077,16 @@ async function cmdAgent(args) {
   }
 
   if (action !== 'status') {
-    log.error('usage: omarchy-connect agent <status|enable|disable|list|install-hooks|uninstall-hooks>')
+    log.error('usage: omarchy-connect agent <status|enable|disable|list|run|install-hooks|uninstall-hooks>')
     process.exit(1)
   }
 
   console.log(
     card('CODING AGENTS', [
       ['reading', agents.enabled ? 'on' : 'off'],
-      ['writing', 'not yet — stage two'],
+      // Reading and writing arrive together, so what this reports is not a
+      // second switch but whether the desktop has any road into a terminal.
+      ['writing', agents.enabled ? agentWriter.best() || 'no road — install tmux' : 'off'],
       // With the daemon down the status file knows nothing about what is
       // installed, so ask the adapters themselves rather than report none.
       ['adapters', ((agents.adapters || []).length ? agents.adapters : detectedAgents()).join(' ') || dim('none detected')],
@@ -1112,7 +1171,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} <status|answer|reject|…>  answer or place a call
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
-  ${bold('agent')} <status|enable|list|…>  read this desktop's coding agents
+  ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate

@@ -415,15 +415,18 @@ but moves no audio.
 ### agents
 
 Reading a coding agent that is already open on the desktop — what it is doing,
-and whether it is stuck waiting for an answer. Off by default; see
-**Security model**.
+whether it is stuck waiting for an answer, and answering it. Off by default;
+see **Security model**, because writing to an agent is a shell.
 
 | Method | Params | Returns |
 | --- | --- | --- |
-| `agents.list` | — | `{ sessions, adapters, write, spawn }` — every session this desktop can see. |
+| `agents.list` | — | `{ sessions, adapters, write, keys, spawn }` — every session this desktop can see. |
 | `agents.open` | `{ id, limit }` | `{ session, blocks, cursor, truncated }`, and starts streaming `agent` events for it. |
 | `agents.close` | `{ id }` | `{ ok }` — stops the desktop tailing a transcript nobody is reading. |
 | `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
+| `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. |
+| `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
+| `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. tmux only. |
 
 A session is what the phone lists and opens:
 
@@ -434,7 +437,7 @@ A session is what the phone lists and opens:
   "title": "omarchy-connect",       // basename of cwd
   "cwd": "/home/dan/Projects/omarchy-connect",
   "state": "idle" | "working" | "waiting" | "gone",
-  "writable": null,                 // "tmux" | "wtype" once writing ships
+  "writable": "tmux",               // "tmux" | "wtype" | null — how it can be answered
   "pane": "%3",                     // tmux pane, when a hook reported one
   "pid": 53316,
   "startedAt": 1756100000000,
@@ -491,7 +494,7 @@ The three `agent` event frames:
 { "t": "ev", "event": "agent", "data": { "kind": "state",   "id": "claude:2fe…", "state": "waiting",
                                          "prompt": "Allow Bash?", "preview": "…", "lastActivity": 1756100420000 } }
 { "t": "ev", "event": "agent", "data": { "kind": "blocks",  "id": "claude:2fe…", "blocks": [ … ], "cursor": 148 } }
-{ "t": "ev", "event": "agent", "data": { "kind": "control", "enabled": true, "adapters": ["claude"] } }
+{ "t": "ev", "event": "agent", "data": { "kind": "control", "enabled": true, "adapters": ["claude"], "write": "tmux" } }
 ```
 
 A `blocks` frame carries everything one drain of the transcript produced, so a
@@ -504,10 +507,46 @@ the switch on its panel, or the CLI. `capabilities.agents.enabled` was answered
 once at `hello` and this is how that answer changes without reconnecting: the
 app patches the capability in place, then lists the sessions.
 
-`capabilities.agents` is `{ enabled, adapters, read, write, spawn }`. `write` is
-`null`: nothing may push bytes into a terminal another process owns, and the
-answer — a tmux pane or the compositor typing — is not implemented yet. The app
-greys the input out rather than offering a send that would silently do nothing.
+`capabilities.agents` is `{ enabled, adapters, read, write, keys, spawn }`.
+`write` is the best road this desktop has into a terminal — `"tmux"`,
+`"wtype"`, or `null` when it has neither. A session says which road *it* is on
+in its own `writable`, and the two differ often: a desktop with tmux installed
+still has agents running outside it.
+
+#### Answering
+
+Nothing may push bytes into a terminal another process owns — `TIOCSTI` is gone
+— so whatever writes is either a multiplexer that owns the pty or the
+compositor typing on the user's behalf. Both ship, and they are not equivalent:
+
+- **`tmux`** is exact. The pane is tmux's own pty. A single-line message goes
+  through `send-keys -l`, which is literal, so UTF-8 and emoji survive; a
+  multi-line one goes through `load-buffer` + `paste-buffer -p`, because a TUI
+  with bracketed paste enabled needs it to arrive as one paste rather than as a
+  burst of Returns that would submit half a message. Nothing steals focus.
+- **`wtype`** is the honest fallback for an agent in a bare terminal. The
+  daemon remembers what was focused, focuses the agent's window, types, and
+  puts focus back. It steals focus for a moment, it interleaves with anyone
+  typing at the real keyboard, and it cannot be made atomic. The app says so
+  before the first send rather than after.
+
+`omarchy-connect agent run -- claude` starts an agent in a dedicated tmux
+session, attached in the current terminal, so the desktop experience is
+unchanged and the phone gets the good road for free.
+
+`agents.key` takes a whitelist, not a pass-through: `send-keys` would forward
+anything, and the set worth exposing to a phone is small — `Enter`, `Escape`,
+`Tab`, `Space`, `BSpace`, the four arrows, `C-c`, `C-d`, and the digits `1`–`9`
+that answer a numbered permission prompt. Anything else is refused.
+
+`agents.screen` exists because the transcript is not the whole truth: a
+permission prompt is drawn on the terminal and never written to disk, so the
+numbered options a phone is about to answer exist only on screen. It needs a
+pane; nothing else can hand over somebody else's screen.
+
+Writes are serialised per session, so two sends cannot interleave halfway
+through a paste. Nothing serialises the phone against the person at the
+keyboard — nothing can.
 
 ### input
 
@@ -551,7 +590,7 @@ machine with.
 | `POST /api/call` | `{ op, id?, number? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`. Answers `{ ok, via }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
-| `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading agents. Answers `{ ok, agents }`. |
+| `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
 
 `POST /api/agent/hook` is the bridge between a coding agent and this daemon:
 `omarchy-connect agent hook` reads the agent's JSON on stdin, adds what only
@@ -565,8 +604,9 @@ with an error inside rather than looking like a failed hook.
 
 `POST /api/agent/control` is the switch on the desktop panel, and it is
 loopback-only for the same reason the whole feature is off by default: whether
-a phone may read this desktop's agents is a decision that must be taken at the
-desktop. There is no method a phone can call to grant itself reading. The
+a phone may read and answer this desktop's agents is a decision that must be
+taken at the desktop. There is no method a phone can call to grant itself
+either. The
 daemon writes `agents.enabled` to the config *and* starts or stops the watching
 in one call, so the change lands without a restart and the phone keeps its
 link; turning it off closes every transcript held open and forgets every
@@ -588,12 +628,14 @@ moves, a pairing code is minted or used, the address or firewall verdict
 changes. It carries the daemon's identity and address, the paired device with
 its live status and telemetry, recent transfers, counters, the firewall
 verdict, whether TLS is on and under which pin, the last mirrored messages and
-calls, the coding agents this desktop can read, and the argv needed to invoke
-the CLI again.
+calls, the coding agents this desktop can read and answer, and the argv needed
+to invoke the CLI again.
 
 The `agents` block is what the panel's switch is drawn from:
-`{ enabled, adapters, hooks, running, waiting, sessions }`. `adapters` and
-`hooks` are answers a stopped daemon still has — which agents are installed
+`{ enabled, adapters, hooks, write, running, waiting, sessions }`. `write` is
+the road this desktop has into a terminal — `"tmux"`, `"wtype"` or `null` —
+which is what lets the panel say whether a session can be answered or only
+watched. `adapters` and `hooks` are answers a stopped daemon still has — which agents are installed
 here, and whether their lifecycle hooks are in `~/.claude/settings.json` — so
 the panel can offer the switch and the *Install hooks* button before anything
 is running. `running`, `waiting` and `sessions` are the live view and are
@@ -630,14 +672,19 @@ deleted. The desktop raises a notification on arrival.
   (mode 0600). Granting the permission is a deliberate act in the app, never
   something asked for at startup.
 - **Reading a coding agent is reading everything it saw** — source, tool
-  output, whatever secrets crossed a `Bash` result. It is the widest exposure
-  in the project, wider than the clipboard, so `agents.enabled` defaults to
-  **false** and is turned on by `omarchy-connect agent enable` — or the switch
-  on the desktop panel, which asks what it is about to grant before it grants
-  it. Both roads are the desktop's: the endpoint behind them answers on
-  loopback only, so no paired phone can turn on its own ability to read. Writing to an agent would be arbitrary code
-  execution — the agent runs what it is told — which is why `write` is `null`
-  rather than shipped alongside reading.
+  output, whatever secrets crossed a `Bash` result — and **writing to one is
+  arbitrary code execution**: the agent runs what it is told, so a phone that
+  can type into a Claude Code session has, in effect, a shell. Together they
+  are the widest exposure in the project, wider than the clipboard, so
+  `agents.enabled` defaults to **false** and is turned on by
+  `omarchy-connect agent enable` — or the switch on the desktop panel, which
+  names both halves before it grants either. Both roads are the desktop's: the
+  endpoint behind them answers on loopback only, so no paired phone can turn on
+  its own ability to read or write. Writing is bounded in what it can be, not
+  in what it can say: `agents.key` takes a whitelist rather than forwarding key
+  sequences, and a message is capped at 4096 characters. Neither bound makes
+  the grant smaller — it is still a shell — they only keep the surface itself
+  small enough to reason about.
 - Every method call requires a paired token. There is no anonymous access.
 - One phone is paired at a time, so exactly one token is live; pairing a
   different phone means unpairing this one first.

@@ -1,9 +1,9 @@
 # Remote agent control — design
 
 Driving a coding agent that is already open on the desktop from the phone: read
-its chat, answer it, unblock it. This document is the plan. **Stage one — the
-reading half — is implemented**; see the staged plan at the bottom for what
-that covers and what it does not.
+its chat, answer it, unblock it. This document is the plan. **Stages one and
+two — reading and writing — are implemented**; see the staged plan at the
+bottom for what that covers and what it does not.
 
 ```
 phone ──ws── daemon ──┬── adapter  ──► ~/.claude/projects/…/<session>.jsonl   read
@@ -234,9 +234,9 @@ keep working.
 { "t": "req", "id": 10, "method": "agents.open",  "params": { "id": "claude:2fe…", "limit": 60 } }  // shipped
 { "t": "req", "id": 11, "method": "agents.close", "params": { "id": "claude:2fe…" } }      // shipped
 { "t": "req", "id": 12, "method": "agents.detail","params": { "id": "claude:2fe…", "seq": 14 } }    // shipped
-{ "t": "req", "id": 13, "method": "agents.send",  "params": { "id": "claude:2fe…", "text": "так, продовжуй" } }
-{ "t": "req", "id": 14, "method": "agents.key",   "params": { "id": "claude:2fe…", "key": "Escape" } }
-{ "t": "req", "id": 15, "method": "agents.screen","params": { "id": "claude:2fe…" } }
+{ "t": "req", "id": 13, "method": "agents.send",  "params": { "id": "claude:2fe…", "text": "так, продовжуй" } }  // shipped
+{ "t": "req", "id": 14, "method": "agents.key",   "params": { "id": "claude:2fe…", "key": "Escape" } }      // shipped
+{ "t": "req", "id": 15, "method": "agents.screen","params": { "id": "claude:2fe…" } }                       // shipped
 { "t": "req", "id": 16, "method": "agents.spawn", "params": { "agent": "claude", "cwd": "…", "prompt": "…" } }
 
 { "t": "ev", "event": "agent", "data": { "id": "…", "kind": "blocks" | "state" | "session", … } }
@@ -260,7 +260,7 @@ Two integration points that are easy to miss:
 
 - `DEFAULT_EVENTS` in `daemon/src/server.js` filters `sub` frames; `agent` has
   to be added there or subscriptions are silently dropped.
-- `capabilities.agents` = `{ enabled, adapters: ["claude"], write: "tmux" | "wtype" | null, spawn }`,
+- `capabilities.agents` = `{ enabled, adapters: ["claude"], read, write: "tmux" | "wtype" | null, keys, spawn }`,
   so the app greys out what this machine cannot do rather than failing at call
   time — the convention the rest of the protocol already follows.
 
@@ -352,8 +352,31 @@ tail. Two things came out smaller than this sketch implied:
   *Install* button for the hooks, and the switch itself — which is why
   `agents.enabled` became a live change rather than a restart.
 
-**Stage 2 — write.** tmux discovery and adoption, `agent run` wrapper,
-`agents.send` / `agents.key`, the wtype fallback and its warning.
+**Stage 2 — write. Done.** `daemon/src/agents/tmux.js`,
+`daemon/src/agents/writer.js`, `daemon/src/agents/proc.js`, `agents.send` /
+`agents.key` / `agents.screen`, the `agent run` wrapper, the composer and the
+raw-screen toggle in the app, the panel's consent text. Verified against a real
+pty rather than a mock, because the point of the tmux road is that the bytes
+arrive at the far end of somebody else's terminal and only a real one can say
+whether they did. Four things came out differently from this sketch:
+
+- *Writing is not its own switch.* It arrives with `agents.enabled`, as
+  designed above, which means turning reading on now grants a shell — so
+  everything that asks for that consent says so: the panel's confirmation, what
+  `agent enable` prints, and the app's own explanation of what is off.
+- *`agents.screen` moved up from stage three.* It belongs with writing rather
+  than with breadth: a permission prompt is drawn on the terminal and never
+  written to disk, so the numbered options a phone is about to answer exist
+  nowhere else. It is captured plain — `-e` keeps the SGR sequences, and a
+  phone rendering escape codes as text is worse than one without colour.
+- *tmux discovery turned out to be adoption only.* The scan already finds every
+  `claude` in `/proc` whether or not it is in a pane, so what tmux adds is not
+  another road to discovery but the answer to "can this one be typed into" —
+  which is a walk *up* the process tree from the agent to the pane, not a walk
+  down from the pane looking for an agent.
+- *The keys are a whitelist.* `send-keys` would forward anything; the set worth
+  giving a phone is eleven names and nine digits, and `capabilities.agents.keys`
+  publishes it so the app builds its quick row from what the desktop accepts.
 
 **Stage 3 — breadth.** Codex adapter, Gemini adapter, `capture-pane` raw mode
 for everything else.
@@ -372,4 +395,8 @@ for everything else.
   is cleared by the transcript moving again rather than by an event. A
   `capture-pane` heuristic would answer both, but only inside tmux.
 - Whether one phone writing while the person at the keyboard also writes needs
-  more than a warning — a soft lock in the daemon may be worth it.
+  more than a warning. Half-answered: writes are serialised per session inside
+  the daemon, so two sends cannot interleave halfway through a paste. Nothing
+  serialises the phone against the keyboard, and on the `wtype` road nothing
+  can — the compositor has one keyboard and both are using it. Still open
+  whether the tmux road should take a soft lock while a send is in flight.

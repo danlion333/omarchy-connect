@@ -5,16 +5,20 @@ import { loadConfig, updateConfig } from '../lib/config.js'
 import { log } from '../lib/log.js'
 import { ADAPTERS, detected } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
+import * as writer from '../agents/writer.js'
+import { alive, ancestors, commOf, startTicks } from '../agents/proc.js'
 
 /**
  * The coding agent already open on the desktop, readable from the phone.
  *
- * Reading and writing are two different problems. This is the reading half:
- * every CLI agent keeps a structured transcript on disk, so a conversation can
- * be followed without touching the terminal that owns it. Writing — which is
- * genuinely hard, because nothing may push bytes into a foreign tty — is not
- * here yet, and `capabilities().write` says so rather than failing at call
- * time.
+ * Reading and writing are two different problems with different answers.
+ * Reading is easy and the agents solved it themselves: every CLI agent keeps a
+ * structured transcript on disk, so a conversation can be followed without
+ * touching the terminal that owns it. Writing is the hard half — nothing may
+ * push bytes into a foreign tty — and it lives in `agents/writer.js`, which
+ * picks between the multiplexer that owns the pty and the compositor typing on
+ * the user's behalf. This plugin owns the gate, the registry and the state
+ * machine that both halves share.
  *
  * Sessions arrive down two roads that differ in how much they can be trusted:
  *
@@ -100,7 +104,18 @@ function describe(block) {
   return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 160)
 }
 
+/** The longest message a phone may type in one go. */
+const MAX_SEND = 4096
+
 const emit = (data) => bus?.emit('event', 'agent', data)
+
+/** A session that exists and has not ended — what every write needs. */
+function liveSession(id) {
+  const entry = sessions.get(String(id))
+  if (!entry) throw new Error('no such agent session')
+  if (entry.state === 'gone') throw new Error('that session has ended')
+  return entry
+}
 
 const emitSession = (entry, removed = false) =>
   emit({ kind: 'session', id: entry.id, removed, session: removed ? null : publicSession(entry) })
@@ -151,10 +166,12 @@ function upsert(fields) {
     title: path.basename(fields.cwd || '') || fields.agent,
     cwd: fields.cwd || null,
     state: fields.state || 'idle',
-    // Stage two's problem. Saying `null` now is what lets the app grey the
-    // input out instead of offering a send that cannot work.
+    // Filled in by the survey below, which is the only thing that knows
+    // whether anything on this desktop can reach the session's terminal.
     writable: null,
     pane: fields.pane || null,
+    // The Hyprland window that owns the terminal, when there is no pane.
+    window: null,
     pid: fields.pid || null,
     transcript: fields.transcript,
     startedAt: fields.startedAt || Date.now(),
@@ -172,6 +189,7 @@ function upsert(fields) {
     opens: 0,
     openedAt: 0,
     watcher: null,
+    writeChain: null,
   }
   sessions.set(entry.id, entry)
   return { entry, created: true }
@@ -344,26 +362,6 @@ function release(entry) {
 
 /* ── discovery: the process scan ───────────────────────────────────────── */
 
-const procFile = (pid, name) => {
-  try {
-    return fs.readFileSync(`/proc/${pid}/${name}`, 'utf8')
-  } catch {
-    return null
-  }
-}
-
-const alive = (pid) => Boolean(pid) && fs.existsSync(`/proc/${pid}`)
-
-/** Boot-relative start time, so two agents in one directory can be ordered. */
-function startTicks(pid) {
-  const stat = procFile(pid, 'stat')
-  if (!stat) return 0
-  // The comm field can contain spaces and parentheses; everything after the
-  // last ')' is fixed-width, which is why this is not a plain split.
-  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
-  return Number(fields[19]) || 0
-}
-
 /**
  * Every running agent process this user owns, with its working directory.
  *
@@ -379,7 +377,7 @@ function scanProcesses() {
     return found
   }
   for (const pid of pids) {
-    const comm = procFile(pid, 'comm')?.trim()
+    const comm = commOf(pid)
     if (!comm) continue
     const adapter = ADAPTERS.find((a) => a.binaries.includes(comm))
     if (!adapter) continue
@@ -406,7 +404,7 @@ function scan() {
   const processes = scanProcesses().sort((a, b) => b.ticks - a.ticks)
   const byDir = new Map()
   for (const proc of processes) {
-    const key = `${proc.adapter.id} ${proc.cwd}`
+    const key = `${proc.adapter.id}\u0000${proc.cwd}`
     if (!byDir.has(key)) byDir.set(key, [])
     byDir.get(key).push(proc)
   }
@@ -458,17 +456,57 @@ function scan() {
   }
 }
 
+/* ── discovery: what can be typed into ─────────────────────────────────── */
+
+/**
+ * Work out how each live session could be answered, and tell the phone when
+ * that changes.
+ *
+ * Kept apart from the scan above because it asks different questions of a
+ * different subsystem — tmux and the compositor rather than `/proc` — and
+ * because it is the one part of discovery that can fail slowly: `tmux
+ * list-panes` on a busy server, `hyprctl clients` on a compositor mid-resize.
+ * The scan stays synchronous and this trails it.
+ *
+ * A session that gains or loses a way in is a session whose composer has to
+ * change on the phone, so the change is announced rather than waiting for the
+ * next list.
+ */
+async function resurvey(entries = [...sessions.values()].filter((e) => e.state !== 'gone')) {
+  const before = new Map(entries.map((e) => [e.id, e.writable]))
+  try {
+    await writer.survey(entries)
+  } catch (err) {
+    log.debug('agent write survey failed:', err.message)
+    return
+  }
+  for (const entry of entries) {
+    if (before.get(entry.id) === entry.writable) continue
+    log.debug(`agent session ${entry.id} is writable via ${entry.writable || 'nothing'}`)
+    if (sessions.has(entry.id)) emitSession(entry)
+  }
+}
+
+/** The one session a `send` is about, resolved as late as possible. */
+async function ensureWritable(entry) {
+  await resurvey([entry])
+  if (!entry.writable) {
+    throw new Error(
+      writer.best()
+        ? 'that session is not in a terminal this desktop can type into — start it with `omarchy-connect agent run`'
+        : 'this desktop has no way to type into a terminal — install tmux, or wtype for the fallback',
+    )
+  }
+  return entry
+}
+
 /* ── discovery: hooks ──────────────────────────────────────────────────── */
 
 /** From the hook process up to the agent that ran it — at most a few steps. */
 function agentPidFrom(ppid, adapter) {
-  let pid = Number(ppid) || 0
-  for (let i = 0; i < 6 && pid > 1; i += 1) {
-    const comm = procFile(pid, 'comm')?.trim()
+  for (const pid of ancestors(ppid, 6)) {
+    const comm = commOf(pid)
     if (comm && adapter.binaries.includes(comm)) return pid
-    const stat = procFile(pid, 'stat')
-    if (!stat) return null
-    pid = Number(stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1]) || 0
   }
   return null
 }
@@ -549,6 +587,9 @@ function watch() {
     } catch (err) {
       log.debug('agent scan failed:', err.message)
     }
+    // Trailing the scan rather than inside it: this one shells out, and a slow
+    // tmux server must not hold up the state machine behind it.
+    void resurvey()
   }, SCAN_MS)
   scanTimer.unref?.()
 
@@ -572,7 +613,8 @@ function watch() {
   } catch (err) {
     log.debug('agent scan failed:', err.message)
   }
-  log.info("agent control is on — phones can read this desktop's coding agents")
+  void resurvey()
+  log.info("agent control is on — phones can read and answer this desktop's coding agents")
 }
 
 /** Stop watching and forget what was seen: a transcript held open is a read. */
@@ -612,7 +654,7 @@ export function setEnabled(on) {
   }
   // The phone learned whether it could read agents from `hello`, and it is not
   // about to say hello again. This is how it finds out the answer changed.
-  emit({ kind: 'control', enabled: next, adapters: detected() })
+  emit({ kind: 'control', enabled: next, adapters: detected(), write: next ? writer.best() : null })
   return summary()
 }
 
@@ -626,6 +668,9 @@ export function summary() {
   return {
     enabled: enabled(),
     adapters: detected(),
+    // Which road this desktop has to a terminal at all — `null` means it can
+    // only ever read, and the panel says so rather than offering a send.
+    write: enabled() ? writer.best() : null,
     // Without hooks a session is found by scanning `/proc`, which can say an
     // agent is running but never that it is *waiting* — the panel offers to
     // install them for exactly that reason, so it has to know.
@@ -646,9 +691,10 @@ export default {
       enabled: enabled(),
       adapters: detected(),
       read: true,
-      // Stage two and stage four. The app greys these out rather than
-      // discovering at call time that this desktop cannot do them.
-      write: null,
+      // The best road this desktop has; a session says which one it is on.
+      // Stage four's `spawn` is still the flag it has always been.
+      write: enabled() ? writer.best() : null,
+      keys: writer.KEY_NAMES,
       spawn: spawnAllowed(),
     }
   },
@@ -665,13 +711,16 @@ export default {
 
   methods: {
     /** Every agent session this desktop can see, newest activity first. */
-    'agents.list'() {
+    async 'agents.list'() {
       requireEnabled()
       try {
         scan()
       } catch (err) {
         log.debug('agent scan failed:', err.message)
       }
+      // Awaited here, unlike on the timer: a pull-to-refresh that came back
+      // with a stale composer would be the one moment the answer mattered.
+      await resurvey()
       const list = [...sessions.values()]
         .filter((e) => e.state !== 'gone')
         .sort((a, b) => {
@@ -685,7 +734,8 @@ export default {
     'agents.capabilities'() {
       return {
         adapters: detected(),
-        write: null,
+        write: enabled() ? writer.best() : null,
+        keys: writer.KEY_NAMES,
         spawn: spawnAllowed(),
       }
     },
@@ -742,6 +792,61 @@ export default {
       const block = entry.blocks.find((b) => b.seq === Number(seq))
       if (!block) throw new Error('that block is no longer in memory')
       return { seq: block.seq, kind: block.kind, tool: block.tool ?? null, text: block.full ?? block.text ?? '' }
+    },
+
+    /* ── answering ─────────────────────────────────────────────────────── */
+
+    /**
+     * Type a message into the agent, and by default press Return.
+     *
+     * This is arbitrary code execution and the daemon does not pretend
+     * otherwise: the agent will run what it is told to run. The gate is the
+     * same switch that granted reading, which is stated in what
+     * `agent enable` prints and in `PROTOCOL.md`.
+     */
+    async 'agents.send'({ id, text = '', submit = true } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      const body = String(text ?? '')
+      if (body.length > MAX_SEND) throw new Error('that is too much text to type at once')
+      if (!body.trim() && !submit) throw new Error('nothing to send')
+      await ensureWritable(entry)
+
+      const result = await writer.serialise(entry, () => writer.send(entry, body, { submit: submit !== false }))
+      // A hook-backed session hears about this from the agent itself a moment
+      // later. A scanned one never would, and a composer that leaves the row
+      // sitting at `waiting` after a successful answer reads as a failed send.
+      if (entry.state !== 'working') setState(entry, 'working')
+      return { ok: true, ...result }
+    },
+
+    /**
+     * One named key. This is what makes answering a permission prompt from a
+     * phone possible without a keyboard: `Escape` interrupts, a digit picks a
+     * numbered option, `Enter` accepts the highlighted one.
+     */
+    async 'agents.key'({ id, key } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      await ensureWritable(entry)
+      const result = await writer.serialise(entry, () => writer.press(entry, String(key ?? '')))
+      if (entry.state === 'waiting') setState(entry, 'working')
+      return { ok: true, ...result }
+    },
+
+    /**
+     * The terminal as it actually looks.
+     *
+     * The transcript is the better read for a conversation, but a permission
+     * prompt is drawn on screen and never written to disk — so the options a
+     * phone is about to answer exist only here. tmux only: nothing else on
+     * this desktop can hand over somebody else's screen.
+     */
+    async 'agents.screen'({ id, lines = 60 } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      await resurvey([entry])
+      return { id: entry.id, pane: entry.pane, screen: await writer.screen(entry, lines) }
     },
   },
 }

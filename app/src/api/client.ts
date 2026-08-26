@@ -91,7 +91,11 @@ export type AgentSession = {
   title: string
   cwd: string | null
   state: AgentState
-  /** How a message could be typed into this session — `null` until stage two. */
+  /**
+   * How a message could be typed into this session. `tmux` is exact; `wtype`
+   * borrows the compositor's keyboard and steals focus for a moment; `null`
+   * means nothing on that desktop can reach the terminal it is running in.
+   */
   writable: 'tmux' | 'wtype' | null
   pane: string | null
   pid: number | null
@@ -102,6 +106,19 @@ export type AgentSession = {
   prompt: string | null
   /** `hook` is the agent reporting in; `scan` is us guessing from /proc. */
   via: 'hook' | 'scan'
+}
+
+/** The best road a desktop has into a terminal, whatever a session is on. */
+export type AgentWrite = 'tmux' | 'wtype' | null
+
+export type AgentCapabilities = {
+  enabled?: boolean
+  adapters?: string[]
+  read?: boolean
+  write?: AgentWrite
+  /** The named keys this desktop will accept from a phone. */
+  keys?: string[]
+  spawn?: boolean
 }
 
 export type AgentBlock = {
@@ -126,7 +143,7 @@ export type AgentEvent =
   // The desktop turning reading on or off under a live link — the switch on
   // its panel, or the CLI. `hello` answered this question once at connect
   // time; this is how the answer changes without reconnecting.
-  | { kind: 'control'; enabled: boolean; adapters: string[] }
+  | { kind: 'control'; enabled: boolean; adapters: string[]; write?: AgentWrite }
 
 type Listener = (data: any) => void
 
