@@ -17,6 +17,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { quietBluetooth } from './sandbox.mjs'
+
 import { connectPhone } from './phone.mjs'
 import { Ancs, ancs, parseBytes, parseNotification, parseAttributes, parseDate, ANCS_UUID } from '../src/lib/ancs.js'
 
@@ -153,6 +155,8 @@ fs.writeFileSync(
   { mode: 0o755 },
 )
 fs.writeFileSync(path.join(fakeBin, 'notify-send'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+quietBluetooth(sandbox)
 
 const daemon = spawn(
   process.execPath,

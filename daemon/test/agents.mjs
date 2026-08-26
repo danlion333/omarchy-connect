@@ -77,7 +77,19 @@ function writeConfig(enabled) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 })
   fs.writeFileSync(
     path.join(dir, 'config.json'),
-    JSON.stringify({ version: 1, port: PORT, deviceName: 'agents-test', agents: { enabled, spawn: false }, devices: [] }, null, 2),
+    JSON.stringify(
+      {
+        version: 1,
+        port: PORT,
+        deviceName: 'agents-test',
+        agents: { enabled, spawn: false },
+        // Same reason as every other suite — see `sandbox.mjs`.
+        handsfree: { autoConnect: 'off', address: null },
+        devices: [],
+      },
+      null,
+      2,
+    ),
   )
 }
 

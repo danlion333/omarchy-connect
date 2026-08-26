@@ -478,10 +478,26 @@ async function cmdSms(args) {
  * the phone and puts the conversation on the desktop's speakers; over the app
  * it only presses the button, and the audio stays on the handset. `call status`
  * says which one is available before you commit to it.
+ *
+ * The link that road needs is normally not something to think about — it
+ * follows the phone onto the network and is up before anything rings. `auto`
+ * is where that is turned down or off, and `connect` is the hand crank for the
+ * times it matters more than the policy does.
  */
 async function cmdCall(args) {
   const [action = 'status', ...rest] = args._
   const number = rest.join('').trim() || null
+  const value = rest.join(' ').trim() || null
+
+  /** How the link's own row reads, which is a policy and a state at once. */
+  const linkLine = (link, connected) => {
+    if (!link) return dim('—')
+    if (link.policy === 'off') return connected ? 'up · by hand' : dim('off · by hand')
+    const policy = link.policy === 'presence' ? 'follows the phone' : 'raised on a call'
+    if (link.raising) return `connecting · ${policy}`
+    if (connected) return `up · ${link.raisedBy ? policy : 'raised elsewhere'}`
+    return dim(policy)
+  }
 
   if (action === 'status') {
     const snapshot = await liveStatus()
@@ -493,7 +509,8 @@ async function cmdCall(args) {
     console.log(
       card('CALL CONTROL', [
         ['bluetooth', bt.available === false ? 'unsupported' : bt.connected ? 'connected' : 'not connected'],
-        ['handset', bt.device || dim('—')],
+        ['link', linkLine(bt.link, bt.connected)],
+        ['handset', bt.device || bt.link?.pinned || dim('—')],
         ['audio', bt.connected ? bt.audio || 'idle' : dim('—')],
         ['app', (snapshot.devices || []).some((d) => d.online) ? 'connected' : 'not connected'],
         [
@@ -509,15 +526,59 @@ async function cmdCall(args) {
         dim('\n  PipeWire is not publishing org.pipewire.Telephony — needs PipeWire 1.4+\n'),
       )
     } else if (!bt.connected) {
+      // The honest order: what went wrong last time if anything did, then the
+      // one thing that has to be true before any of this can work at all.
       console.log(
-        dim('\n  pair the phone in Bluetooth settings to answer with audio on this machine\n'),
+        dim(
+          bt.link?.error
+            ? `\n  ${bt.link.error}\n`
+            : bt.link?.policy === 'off'
+              ? '\n  the link is yours to raise — `omarchy-connect call connect`\n'
+              : '\n  pair the phone in Bluetooth settings to answer with audio on this machine\n',
+        ),
       )
     }
     return
   }
 
-  if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio'].includes(action)) {
-    log.error('usage: omarchy-connect call <status|answer|reject|hangup|audio|dial NUMBER|tones DIGITS>')
+  if (action === 'auto' || action === 'handset') {
+    if (!value) {
+      log.error(
+        action === 'auto'
+          ? 'usage: omarchy-connect call auto <presence|ring|off>'
+          : 'usage: omarchy-connect call handset <address|auto>',
+      )
+      process.exit(1)
+    }
+    const res = await daemonRequest('/api/call', { method: 'POST', body: { op: action, value }, timeout: 30_000 })
+    if (!res.status) {
+      log.error('daemon is not running — start it with `omarchy-connect start`')
+      process.exit(1)
+    }
+    if (!res.ok) {
+      log.error(res.data?.error || `could not set the ${action}`)
+      // Naming a handset is impossible without knowing what there is to name.
+      for (const h of res.data?.handsets || []) console.log(dim(`  ${h.address}  ${h.name || ''}`))
+      process.exit(1)
+    }
+    const link = res.data?.bluetooth?.link || {}
+    log.ok(
+      action === 'auto'
+        ? `the link ${link.policy === 'off' ? 'is now yours to raise' : link.policy === 'presence' ? 'now follows the phone' : 'is now raised on a call'}`
+        : link.pinned
+          ? `handset pinned to ${link.pinned}`
+          : 'handset back to whichever one is paired',
+    )
+    for (const h of res.data?.handsets || []) {
+      console.log(dim(`  ${h.address}  ${h.name || ''}${h.connected ? ' · connected' : ''}`))
+    }
+    return
+  }
+
+  if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect'].includes(action)) {
+    log.error(
+      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS>',
+    )
     process.exit(1)
   }
   if ((action === 'dial' || action === 'tones') && !number) {
@@ -528,7 +589,9 @@ async function cmdCall(args) {
   const res = await daemonRequest('/api/call', {
     method: 'POST',
     body: { op: action, id: args.id ? String(args.id) : null, number },
-    timeout: 65_000,
+    // Paging a handset that is asleep is the slowest thing here, and BlueZ
+    // gives up on its own well inside this.
+    timeout: action === 'connect' ? 30_000 : 65_000,
   })
   if (!res.status) {
     log.error(
@@ -550,6 +613,12 @@ async function cmdCall(args) {
     dial: `dialling ${number}`,
     tones: 'sent',
     audio: 'audio link opened',
+    connect: 'hands-free link up',
+    disconnect: 'hands-free link down',
+  }
+  if (action === 'connect' || action === 'disconnect') {
+    log.ok(done[action])
+    return
   }
   log.ok(`${done[action]} ${via}`)
   if (action === 'answer' && res.data?.via !== 'bluetooth') {
@@ -1169,6 +1238,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('status')} [--json]             show live daemon status
   ${bold('sms')} <number> <message…>     send an SMS through the paired phone
   ${bold('call')} <status|answer|reject|…>  answer or place a call
+  ${bold('call')} auto <presence|ring|off>  when to hold the Bluetooth link open
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents

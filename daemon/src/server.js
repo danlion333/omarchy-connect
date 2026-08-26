@@ -126,6 +126,18 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
   const publishState = () => state.publish(snapshot())
 
+  /**
+   * Whether any paired phone is on the network right now.
+   *
+   * Only one thing listens for this — the hands-free link, which holds the
+   * Bluetooth profile open for as long as the handset is in the room — but it
+   * is announced rather than reached for, because a socket lifecycle is the
+   * server's business and what anyone does about it is not.
+   */
+  const announcePresence = () => {
+    bus.emit('presence', [...clients].some((client) => client.device))
+  }
+
   async function refreshEnvironment() {
     const net = await sysinfo.network().catch(() => null)
     const ip = net?.ip || null
@@ -295,8 +307,8 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       })
       req.on('end', async () => {
         try {
-          const { op, id = null, number = null } = JSON.parse(body || '{}')
-          const result = await requestCall({ op, id, number })
+          const { op, id = null, number = null, value = null } = JSON.parse(body || '{}')
+          const result = await requestCall({ op, id, number, value })
           publishState()
           json(res, 200, { ok: true, ...result })
         } catch (err) {
@@ -596,6 +608,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       if (client.device) {
         log.info(`${client.device.name} disconnected`)
         publishState()
+        announcePresence()
       }
     })
 
@@ -674,6 +687,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     touchDevice(device.id)
     log.info(`${device.name} connected from ${peer}`)
     publishState()
+    announcePresence()
     adoptNetworkName(client, peer)
 
     send(client, {

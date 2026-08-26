@@ -4,6 +4,7 @@ import { has, run, spawn, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
 import { ancs } from '../lib/ancs.js'
+import { loadConfig, saveConfig } from '../lib/config.js'
 
 /**
  * The phone's own telephony, mirrored onto the desktop.
@@ -36,6 +37,15 @@ import { ancs } from '../lib/ancs.js'
  * `requestCall` prefers hands-free whenever a gateway is connected, because a
  * call you can answer but not hear is a worse outcome than one you walk over
  * to; then ANCS, which at least needs no app; then the app.
+ *
+ * Which makes *whether* a gateway is connected the question the whole ranking
+ * turns on, and the answer used to be "whatever the user last did in Bluetooth
+ * settings". It is not any more: the link follows the phone. While the app is
+ * on the network the profile is held open, so a call that arrives finds it
+ * already up; and a call that arrives with it down anyway raises it there and
+ * then — `anticipate` starts the page the moment the ring is reported, which
+ * buys the seconds it takes back from the ones between the ring and somebody
+ * reaching the keyboard.
  *
  * The same iPhone usually arrives down two of these at once, announcing one
  * call as a number over hands-free and as a name over ANCS. `record` folds
@@ -410,10 +420,34 @@ function record(raw, device) {
   return { entry, fresh: true }
 }
 
+/**
+ * A call, reported down a road that cannot carry it.
+ *
+ * The app and ANCS both say "this phone is ringing" without being able to put
+ * the conversation on the desktop's speakers — but the desktop can go and get
+ * a link that will, and the ringing is the signal to start. The page runs
+ * unwatched: nothing here waits for it, and by the time anybody presses Answer
+ * `requestCall` either finds a gateway or gives up on one honestly.
+ *
+ * A call arriving over Bluetooth is its own proof that the link is up, so it
+ * asks for nothing.
+ */
+function anticipate(entry) {
+  if (entry.state === 'ringing' && entry.via !== 'bluetooth' && !handsfree.connected) {
+    handsfree.raise('ring').catch(() => {})
+    return
+  }
+  // Whatever raised it, a link with no calls left under it may have a bedtime.
+  if (entry.state === 'ended') handsfree.standDown()
+}
+
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
   const { entry, fresh, named } = record(raw, device)
-  if (entry.kind === 'call') remember(entry)
+  if (entry.kind === 'call') {
+    remember(entry)
+    anticipate(entry)
+  }
   // A phone that is still ringing is announced again once its caller becomes
   // known: `ring` rewrites the notification already on screen, so "unknown
   // number" turns into a name in place rather than gaining a twin beside it.
@@ -509,17 +543,94 @@ function remember(entry) {
 }
 
 /**
- * Answer, reject, hang up, dial. One verb, whichever road is open.
+ * The paired handsets, for a caller that has to explain a choice it could not
+ * make. Never throws: an unreachable BlueZ is an empty list, not an error on
+ * top of whatever the user was actually asking about.
+ */
+async function handsets() {
+  try {
+    await handsfree.handset({ fresh: true })
+    return handsfree.handsets.list.map((d) => ({ address: d.address, name: d.name, connected: d.connected }))
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Answer, reject, hang up, dial — and the link all of that rides on. One verb,
+ * whichever road is open.
  *
  * Bluetooth wins when it is there — it is the only one of the two that brings
  * the audio, and it works whether or not the app is running. Dialling and DTMF
  * are Bluetooth-only: placing a call from the desktop is not much use if you
  * then have to pick the phone up to speak into it.
  */
-export async function requestCall({ op, id = null, number = null } = {}) {
+export async function requestCall({ op, id = null, number = null, value = null } = {}) {
   const action = String(op || '').toLowerCase()
-  if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio'].includes(action)) {
-    throw new Error(`unknown call action: ${op}`)
+  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset']
+  if (!VERBS.includes(action)) throw new Error(`unknown call action: ${op}`)
+
+  /**
+   * When the link is held open, and to which handset.
+   *
+   * Both are written through the daemon rather than into the file behind its
+   * back, because a policy the running process has not heard about is a
+   * setting that appears to have done nothing.
+   */
+  if (action === 'auto' || action === 'handset') {
+    const cfg = loadConfig()
+    const settings = { autoConnect: 'presence', address: null, ...(cfg.handsfree || {}) }
+
+    if (action === 'auto') {
+      const policy = String(value || '').toLowerCase()
+      if (!['presence', 'ring', 'off'].includes(policy)) {
+        throw new Error('the link policy is one of presence, ring or off')
+      }
+      settings.autoConnect = policy
+    } else {
+      const address = !value || value === 'auto' ? null : String(value).toUpperCase()
+      if (address && !/^([0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(address)) {
+        throw new Error('a handset is named by its Bluetooth address, or "auto" to let the desktop guess')
+      }
+      settings.address = address
+    }
+
+    cfg.handsfree = settings
+    saveConfig(cfg)
+    handsfree.configure(settings)
+    // A policy just switched off should not leave behind the link it was
+    // holding open; one just switched on should not wait for the next
+    // reconnect before it acts.
+    if (settings.autoConnect === 'off') await handsfree.drop().catch(() => {})
+    else if (settings.autoConnect === 'presence' && appCanAct()) handsfree.presence(true)
+
+    return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary(), handsets: await handsets() }
+  }
+
+  // The link itself, rather than anything travelling over it. `connect` waits
+  // on the page in full: somebody who typed it is asking for exactly that.
+  if (action === 'connect') {
+    const up = await handsfree.ensure({ wait: 20_000, why: 'manual', force: true })
+    if (!up) throw new Error(handsfree.summary().link.error || 'could not reach the handset')
+    return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary() }
+  }
+  if (action === 'disconnect') {
+    await handsfree.drop({ force: true })
+    return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary() }
+  }
+
+  /**
+   * Three of these are worth waiting on a link for and three are not.
+   *
+   * Answering, dialling and moving the audio all exist to put a conversation
+   * on this machine's speakers, and taking the app's road instead quietly
+   * fails at the only thing they were for — so they will spend a few seconds
+   * on a page first. Rejecting and hanging up move no audio and are wanted
+   * *now*; making somebody watch a progress-free pause before a call stops
+   * ringing would be a poor trade for a road that works either way.
+   */
+  if (!handsfree.connected && (action === 'answer' || action === 'dial' || action === 'audio')) {
+    await handsfree.ensure({ why: 'ring' }).catch(() => {})
   }
 
   if (handsfree.connected) {
@@ -679,11 +790,26 @@ export default {
     handsfree.on('call', (call, previous) => {
       ingest(fromHandsfree(call, previous))
     })
+    // The link's own bookkeeping — whether a page is under way, whether this
+    // desktop is the reason the profile is up — is what the panel's call card
+    // and `call status` read, and it moves without the gateway moving.
+    handsfree.on('link', () => {
+      bus?.emit('event', 'phone', { action: 'bluetooth', bluetooth: handsfree.summary() })
+    })
     handsfree.on('gateway', (gateway) => {
       if (!gateway) silence()
       log.info(gateway ? `bluetooth: ${gateway.name || gateway.address} connected` : 'bluetooth: phone disconnected')
       bus?.emit('event', 'phone', { action: 'bluetooth', bluetooth: handsfree.summary() })
     })
+
+    handsfree.configure(loadConfig().handsfree)
+    /**
+     * The phone appearing on the network is what tells the link to go up, and
+     * the socket closing is what tells it to come down again. Neither is
+     * telephony — but this is the plugin that owns the hands-free client, so
+     * this is where the server's announcement is heard.
+     */
+    bus.on('presence', (here) => handsfree.presence(here))
 
     handsfree
       .start()

@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 
 import { has, run, spawn } from './exec.js'
 import { log } from './log.js'
+import { available as bluezAvailable, connectProfile, disconnectProfile, handsets, pick } from './bluez.js'
 
 /**
  * The desktop as a Bluetooth hands-free unit.
@@ -26,6 +27,16 @@ import { log } from './log.js'
  *   - It carries the audio. Answering here means the conversation comes out of
  *     the desktop's speakers and goes back through its microphone.
  *
+ * None of that says anything about *getting* the phone onto the profile, and
+ * a link that is down publishes nothing at all. So this file also keeps the
+ * link up, from `lib/bluez.js`: while the phone is here it holds the profile
+ * open, and if a call arrives down another road with the link down anyway, it
+ * raises one in the seconds before anybody reaches the keyboard. Measured on
+ * an Intel adapter and an Android handset, BlueZ takes about 1.6s to page a
+ * bonded phone and PipeWire a further quarter-second to publish the gateway —
+ * comfortably inside a ringing phone, and the reason `ensure` is worth
+ * waiting on rather than falling straight through to the app.
+ *
  * We drive it with `busctl` rather than a D-Bus library: this daemon ships one
  * dependency on purpose, `busctl` is part of systemd and therefore already on
  * every machine that can run Omarchy, and `--json=short` is a stable, parseable
@@ -44,6 +55,18 @@ const CALL = 'org.ofono.VoiceCall'
 const SETTLE_MS = 150
 /** Only used when `gdbus` is missing and we have to fall back to asking. */
 const POLL_MS = 4000
+
+/** What PipeWire is given to publish a gateway once BlueZ says it is connected. */
+const PUBLISH_TIMEOUT_MS = 3000
+const PUBLISH_POLL_MS = 100
+/** What somebody about to answer will wait for a link that is on its way up. */
+const RAISE_WAIT_MS = 5000
+/** A link raised for one ringing call goes back down this long after it ends. */
+const LINGER_MS = 15_000
+/** Re-reading BlueZ's whole object tree on every ring would be silly. */
+const HANDSETS_TTL_MS = 30_000
+
+const POLICIES = new Set(['presence', 'ring', 'off'])
 
 const RINGING = new Set(['incoming', 'waiting'])
 const LIVE = new Set(['active', 'held', 'dialing', 'alerting'])
@@ -73,6 +96,206 @@ export class Handsfree extends EventEmitter {
     this.timer = null
     this.settle = null
     this.stopped = true
+    /**
+     * The link, as opposed to what travels over it.
+     *
+     * `wanted` is the policy's answer to "should this be up right now";
+     * `raisedBy` records whether *we* are the reason it is, which is what
+     * keeps the daemon from hanging up a link the user made themselves in
+     * Bluetooth settings.
+     */
+    this.link = {
+      policy: 'presence',
+      address: null,
+      /** What BlueZ calls the handset, which is the only place a name exists. */
+      handset: null,
+      wanted: false,
+      raisedBy: null,
+      raising: null,
+      error: null,
+    }
+    this.handsets = { at: 0, list: [] }
+    this.linger = null
+  }
+
+  /** Policy comes from the config file and can change under a running daemon. */
+  configure({ autoConnect, address } = {}) {
+    this.link.policy = POLICIES.has(autoConnect) ? autoConnect : 'presence'
+    this.link.address = address ? String(address).toUpperCase() : null
+    if (this.link.policy === 'off') this.cancelLinger()
+    this.emit('link', this.link)
+    return this.link.policy
+  }
+
+  /**
+   * The handset to page, cached.
+   *
+   * The tree it reads changes only when somebody pairs or unpairs something,
+   * and both of those are things a person does at a Bluetooth screen — so a
+   * ringing phone reads a thirty-second-old answer rather than spending a
+   * D-Bus round trip on a question whose answer has not moved since boot.
+   */
+  async handset({ fresh = false } = {}) {
+    const stale = Date.now() - this.handsets.at > HANDSETS_TTL_MS
+    if (fresh || stale) {
+      this.handsets = { at: Date.now(), list: (await bluezAvailable()) ? await handsets() : [] }
+    }
+    const chosen = pick(this.handsets.list, this.link.address)
+    // PipeWire's gateway carries an address and no name, so the only screen
+    // that ever names the handset would otherwise read `D0:49:7C:20:F9:74`.
+    // BlueZ knows what its owner called it; keep that as it goes past.
+    if (chosen) this.link.handset = { address: chosen.address, name: chosen.name }
+    return chosen
+  }
+
+  /**
+   * Raise the link, or join the raise already under way.
+   *
+   * Never throws and never runs twice at once: presence and a ringing call
+   * both want the same single link, and the second one to ask should wait on
+   * the first attempt rather than start a competing page.
+   */
+  raise(why = 'ring', { force = false } = {}) {
+    if (this.connected) return Promise.resolve(true)
+    if (this.link.raising) return this.link.raising
+    // `off` means the desktop reaches for nothing on its own. It does not mean
+    // it refuses to be asked: `force` is what somebody typing `call connect`
+    // is, and a policy about automatic behaviour has no vote on that.
+    if (!this.state.available) return Promise.resolve(false)
+    if (this.link.policy === 'off' && !force) return Promise.resolve(false)
+    const attempt = this.attempt(why).finally(() => {
+      this.link.raising = null
+      // The gateway appearing is announced from `apply`, in the middle of the
+      // attempt — which is one announcement too early to say the attempt is
+      // over. Anything watching wants both, so say so again on the way out.
+      this.emit('link', this.link)
+    })
+    this.link.raising = attempt
+    return attempt
+  }
+
+  async attempt(why) {
+    const handset = await this.handset().catch(() => null)
+    if (!handset) {
+      this.link.error = this.handsets.list.length
+        ? 'more than one paired handset — name one with `omarchy-connect call handset <address>`'
+        : 'no handset is paired over Bluetooth'
+      return false
+    }
+    const res = await connectProfile(handset.path)
+    if (!res.ok) {
+      this.link.error = res.error
+      log.debug(`handsfree: could not raise the link to ${handset.name}: ${res.error}`)
+      return false
+    }
+    /**
+     * BlueZ returning is not the same as PipeWire having noticed. The gateway
+     * shows up a beat later, and every caller of this cares about the gateway
+     * rather than the ACL, so the wait belongs here rather than in each of
+     * them.
+     */
+    const deadline = Date.now() + PUBLISH_TIMEOUT_MS
+    while (!this.stopped) {
+      await this.refresh().catch(() => {})
+      if (this.connected) break
+      if (Date.now() >= deadline) break
+      await new Promise((resolve) => setTimeout(resolve, PUBLISH_POLL_MS).unref?.())
+    }
+    if (!this.connected) {
+      this.link.error = 'the handset connected but published no hands-free gateway'
+      return false
+    }
+    this.link.error = null
+    this.link.raisedBy = why
+    log.info(`bluetooth: raised the hands-free link to ${handset.name || handset.address} (${why})`)
+    return true
+  }
+
+  /**
+   * Have a link, if one can be had within `wait`.
+   *
+   * The bound is the point. A handset in a pocket two rooms away takes BlueZ
+   * the better part of ten seconds to give up on, and somebody who has just
+   * pressed Answer is not going to spend that staring at a terminal — so the
+   * page carries on in the background while the caller gets an honest "not
+   * over Bluetooth, then" and takes the other road.
+   */
+  async ensure({ wait = RAISE_WAIT_MS, why = 'ring', force = false } = {}) {
+    if (this.connected) return true
+    if (!this.state.available) return false
+    if (this.link.policy === 'off' && !force) return false
+    const raising = this.raise(why, { force })
+    if (wait <= 0) return false
+    let timer = null
+    const capped = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(false), wait)
+      timer.unref?.()
+    })
+    await Promise.race([raising, capped])
+    if (timer) clearTimeout(timer)
+    return this.connected
+  }
+
+  /** Put down a link this daemon raised. One it did not raise is not its to drop. */
+  async drop({ force = false } = {}) {
+    this.cancelLinger()
+    if (!force && !this.link.raisedBy) return false
+    const handset = await this.handset().catch(() => null)
+    this.link.raisedBy = null
+    if (!handset) return false
+    const res = await disconnectProfile(handset.path)
+    if (!res.ok) log.debug(`handsfree: could not drop the link: ${res.error}`)
+    else log.info(`bluetooth: dropped the hands-free link to ${handset.name || handset.address}`)
+    await this.refresh().catch(() => {})
+    this.emit('link', this.link)
+    return res.ok
+  }
+
+  /**
+   * The phone appeared on the network, or left it.
+   *
+   * This is the whole of the `presence` policy: hold the profile open for as
+   * long as the handset is in the room, so that when it rings the link has
+   * been up for hours and there is no race to lose. The alternative — raising
+   * it on the ring itself — works, and is what `ring` does, but it spends the
+   * first two seconds of every call on a page.
+   */
+  presence(here) {
+    if (this.link.policy !== 'presence') return
+    this.link.wanted = Boolean(here)
+    if (here) {
+      this.cancelLinger()
+      this.raise('presence').catch(() => {})
+    } else if (this.link.raisedBy === 'presence') {
+      // Only the link presence itself put up. One raised for a call has
+      // `standDown` to answer to, and one somebody asked for by hand outlives
+      // the app that happened to be running at the time.
+      this.drop().catch(() => {})
+    }
+  }
+
+  /**
+   * A call ended.
+   *
+   * A link the desktop raised for that one call has nothing left to do, but it
+   * is dropped after a pause rather than the moment the line clears: a call
+   * that ends because the other side is calling straight back should not have
+   * to page the handset again.
+   */
+  standDown() {
+    if (this.link.raisedBy !== 'ring' || this.link.wanted) return
+    if (this.state.calls.length) return
+    this.cancelLinger()
+    this.linger = setTimeout(() => {
+      this.linger = null
+      if (!this.state.calls.length && !this.link.wanted) this.drop().catch(() => {})
+    }, LINGER_MS)
+    this.linger.unref?.()
+  }
+
+  cancelLinger() {
+    if (this.linger) clearTimeout(this.linger)
+    this.linger = null
   }
 
   /**
@@ -247,6 +470,8 @@ export class Handsfree extends EventEmitter {
 
     const was = previous.gateway?.path ?? null
     const now = next.gateway?.path ?? null
+    // A link that went away is no longer ours to put down, however it went.
+    if (!now) this.link.raisedBy = null
     if (was !== now || previous.gateway?.audio !== next.gateway?.audio) {
       this.emit('gateway', next.gateway, previous.gateway)
     }
@@ -316,13 +541,28 @@ export class Handsfree extends EventEmitter {
     return true
   }
 
+  /**
+   * Stopping the daemon does not hang up the phone.
+   *
+   * A restart in the middle of a conversation is a bad enough moment already;
+   * taking the audio with it would be worse, and the link is re-adopted on the
+   * way back up because `read` sees whatever is there.
+   */
   stop() {
     this.stopped = true
+    this.cancelLinger()
     if (this.settle) clearTimeout(this.settle)
     if (this.timer) clearInterval(this.timer)
     this.monitor?.kill()
     this.settle = this.timer = this.monitor = null
     this.removeAllListeners()
+  }
+
+  /** The handset's own name, when BlueZ has been asked about that address. */
+  named(address) {
+    if (!address) return null
+    const known = this.link.handset
+    return known && known.address === address ? known.name || address : address
   }
 
   /** What the panel and `status --json` show. */
@@ -331,12 +571,19 @@ export class Handsfree extends EventEmitter {
     return {
       available: this.state.available,
       connected: this.connected,
-      device: this.state.gateway?.name || this.state.gateway?.address || null,
+      device: this.state.gateway?.name || this.named(this.state.gateway?.address) || null,
       address: this.state.gateway?.address ?? null,
       audio: this.state.gateway?.audio ?? null,
       codec: this.state.gateway?.codec ?? null,
       calls: this.state.calls.length,
       call: call ? { id: call.id, state: call.state, from: call.from, name: call.name } : null,
+      link: {
+        policy: this.link.policy,
+        pinned: this.link.address,
+        raisedBy: this.link.raisedBy,
+        raising: Boolean(this.link.raising),
+        error: this.link.error,
+      },
     }
   }
 }

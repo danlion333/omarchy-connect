@@ -34,7 +34,7 @@ the desktop and the app repaints in the same palette.
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
-| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. |
+| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop holds that link open by itself while the phone is on the network, so a call is answerable the moment it rings. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
@@ -82,6 +82,7 @@ omarchy-connect send <file> | --pick        offer a file to connected phones
 omarchy-connect status [--json]             show live daemon status
 omarchy-connect sms <number> <message…>     send an SMS through the paired phone
 omarchy-connect call <status|answer|reject|…>  answer or place a call
+omarchy-connect call auto <presence|ring|off>  when to hold the Bluetooth link open
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
 omarchy-connect agent <status|enable|run|…>   read and answer this desktop's coding agents
@@ -258,6 +259,44 @@ the hands-free control surface on D-Bus as `org.pipewire.Telephony`, the
 > for it. `omarchy-connect call audio` opens the link explicitly. It is a
 > separate verb rather than something `answer` does on every call, because on a
 > phone that behaves normally it is unnecessary.
+
+### The link looks after itself
+
+None of the above is worth much if the phone is merely *paired* when it rings.
+A hands-free profile that is not connected publishes nothing, answers nothing
+and carries nothing — and remembering to connect the phone every time you sit
+down is exactly the kind of chore that ends with the feature unused.
+
+So the desktop does it. **While the phone is on the network the link is held
+open**, and it goes down again when the phone leaves. Nothing to configure and
+nothing to press: the app appearing is the signal, and the profile is up
+roughly a second later.
+
+Two details make that cheap rather than intrusive. Only the hands-free profile
+is raised — never the whole device — so the desktop does not quietly become
+your phone's speaker, and whatever you had A2DP doing stays where you put it.
+And a link the daemon did not raise is never one it hangs up: connect the phone
+yourself in Bluetooth settings and it stays connected, whatever the policy says.
+
+If a call does arrive with the link down — the app is closed, the phone was
+asleep, you walked in mid-ring — the daemon pages the handset the moment the
+ring is reported and answers over Bluetooth if it gets there in time. Measured
+here, BlueZ takes about 1.6 seconds to reach a bonded handset and PipeWire a
+further quarter-second to publish the gateway, against a phone that will ring
+for thirty. `call answer` waits a few seconds for that page rather than
+silently taking the app's road and leaving the conversation on the handset.
+
+```bash
+omarchy-connect call auto presence   # hold the link while the phone is here (default)
+omarchy-connect call auto ring       # raise it only when something rings
+omarchy-connect call auto off        # leave the link entirely to you
+omarchy-connect call connect         # …and the hand crank, either way
+omarchy-connect call disconnect
+```
+
+With more than one handset paired the desktop declines to guess, says so, and
+lists what it found; `omarchy-connect call handset <address>` settles it, and
+`handset auto` hands the choice back.
 
 ### Through the app — the one that only presses the button
 
@@ -560,8 +599,9 @@ daemon/         Node.js daemon — one dependency (ws)
                 how to read a line of it — plus the lifecycle hooks the desktop
                 installs into Claude Code's own settings, and the writer that
                 types back through tmux or the compositor
-  src/lib/      …including the two Bluetooth clients: hands-free call control
-                over PipeWire, and an iPhone's notifications over ANCS
+  src/lib/      …including the three Bluetooth clients: hands-free call control
+                over PipeWire, the BlueZ side that raises that link and keeps
+                it up, and an iPhone's notifications over ANCS
 shell/          Omarchy shell plugin — the desktop client (QML)
 app/            Expo app (TypeScript)
   modules/      local Expo module — Android SMS and call state (Kotlin)

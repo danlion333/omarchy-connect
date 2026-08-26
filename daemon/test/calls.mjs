@@ -14,8 +14,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { quietBluetooth } from './sandbox.mjs'
+
 import { connectPhone } from './phone.mjs'
-import { handsfree } from '../src/lib/handsfree.js'
+import { handsfree, Handsfree } from '../src/lib/handsfree.js'
 import { DEFAULT_EVENTS } from '../src/server.js'
 
 const PORT = Number(process.env.PORT || 8797)
@@ -58,6 +60,8 @@ fs.writeFileSync(
   ].join('\n'),
   { mode: 0o755 },
 )
+
+quietBluetooth(sandbox)
 
 const daemon = spawn(
   process.execPath,
@@ -153,6 +157,149 @@ handsfree.state = {
 check('a ringing call outranks one in progress', handsfree.pick()?.id === 'call2', handsfree.pick()?.id)
 check('an explicit id still wins', handsfree.pick('call1')?.id === 'call1')
 handsfree.state = { available: false, gateway: null, calls: [] }
+
+/* ── the link the whole road depends on ─────────────────────────────────── */
+
+/**
+ * When the desktop pages the handset, and when it leaves it alone.
+ *
+ * Against a stub, deliberately. The page itself is one D-Bus call and there is
+ * nothing to learn from watching it succeed — what is worth asserting is the
+ * policy around it, and asserting that for real would mean this suite reaching
+ * out and connecting to whatever phone the person running it has paired.
+ *
+ * `attempt` is the seam because it is exactly the boundary: everything above
+ * it is the decision, everything below it is BlueZ.
+ */
+function stubbed(policy = 'presence') {
+  const link = new Handsfree()
+  link.configure({ autoConnect: policy })
+  link.state = { available: true, gateway: null, calls: [] }
+  link.pages = []
+  link.attempt = async (why) => {
+    link.pages.push(why)
+    link.state = { available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] }
+    link.link.raisedBy = why
+    return true
+  }
+  return link
+}
+
+{
+  const link = stubbed('off')
+  check('a policy of off pages nothing', (await link.raise('ring')) === false && link.pages.length === 0)
+  check('and ensure does not wait around for it', (await link.ensure({ wait: 5000 })) === false)
+  // Off is about what the desktop does unasked. Being asked is different.
+  check(
+    'but the hand crank still works',
+    (await link.ensure({ why: 'manual', force: true })) === true && link.pages.join() === 'manual',
+    link.pages.join(),
+  )
+}
+
+{
+  const link = stubbed('presence')
+  link.presence(true)
+  await link.link.raising
+  check('the phone arriving raises the link', link.pages.join() === 'presence', link.pages.join())
+  check('and the desktop remembers that it was the one who did', link.link.raisedBy === 'presence')
+
+  // A ringing call while presence already holds the link needs no second page.
+  await link.raise('ring')
+  check('a link that is already up is not raised twice', link.pages.length === 1, `${link.pages.length} page(s)`)
+}
+
+{
+  // Two askers, one page: presence and a ringing call want the same link, and
+  // the second must join the attempt rather than start a competing one.
+  const link = stubbed('presence')
+  let release = null
+  link.attempt = async (why) => {
+    link.pages.push(why)
+    await new Promise((resolve) => {
+      release = resolve
+    })
+    link.state = { available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] }
+    link.link.raisedBy = why
+    return true
+  }
+  const first = link.raise('presence')
+  const second = link.raise('ring')
+  check('a second asker joins the page already under way', link.pages.length === 1, `${link.pages.length} page(s)`)
+
+  // And somebody about to answer does not wait on a handset that is not coming.
+  const gave = await link.ensure({ wait: 40 })
+  check('ensure gives up on time rather than on the page', gave === false)
+  release()
+  await Promise.all([first, second])
+  check('while the page itself carries on to the end', link.connected === true)
+}
+
+{
+  // A link somebody asked for by hand is not undone by the app that happened
+  // to be open at the time going away.
+  const link = stubbed('presence')
+  await link.raise('manual', { force: true })
+  let dropped = 0
+  link.drop = async () => {
+    dropped += 1
+    return true
+  }
+  link.presence(false)
+  check('the phone leaving does not undo a link somebody asked for', dropped === 0)
+
+  link.link.raisedBy = 'presence'
+  link.presence(false)
+  check('but it does undo the one presence put up', dropped === 1)
+}
+
+{
+  // A link the user made themselves in Bluetooth settings is not the daemon's
+  // to hang up, however the policy feels about it.
+  const link = stubbed('presence')
+  let lookups = 0
+  link.handset = async () => {
+    lookups += 1
+    return null
+  }
+  link.state = { available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] }
+  check('a link nobody here raised is left alone', (await link.drop()) === false && lookups === 0)
+  check('and forcing it is a different verb', (await link.drop({ force: true })) === false && lookups === 1)
+}
+
+{
+  // The gateway going away on its own — WirePlumber restarting, the phone
+  // walking out of range — ends the daemon's claim on it too.
+  const link = stubbed('presence')
+  link.link.raisedBy = 'presence'
+  link.apply({ available: true, gateway: null, calls: [] })
+  check('a link that vanished is no longer ours to drop', link.link.raisedBy === null)
+}
+
+{
+  // What `ring` buys and what it costs: no link until something rings, and the
+  // link goes away again a little after the call does.
+  const link = stubbed('ring')
+  link.presence(true)
+  check('presence means nothing under a ring policy', link.pages.length === 0)
+  await link.raise('ring')
+  check('but a ringing call still raises the link', link.pages.join() === 'ring')
+
+  let dropped = 0
+  link.drop = async () => {
+    dropped += 1
+    return true
+  }
+  link.state = { ...link.state, calls: [{ path: '/ag1/c1', id: 'c1', state: 'active' }] }
+  link.standDown()
+  check('a link with a call still under it keeps standing', link.linger === null && dropped === 0)
+
+  link.state = { ...link.state, calls: [] }
+  link.standDown()
+  check('and is only put down once the line is clear', link.linger !== null)
+  clearTimeout(link.linger)
+  link.stop()
+}
 
 /* ── the app road ───────────────────────────────────────────────────────── */
 

@@ -176,10 +176,20 @@ function phoneDetail(entry, now) {
  * "unsupported" and "not connected" are different answers and the difference
  * is actionable: the first means this machine's PipeWire is too old to publish
  * org.pipewire.Telephony, the second only means nothing is paired yet.
+ *
+ * The link is normally nobody's business — the desktop holds it open while the
+ * phone is on the network — so it earns a word here only in the states where
+ * something is happening or something is wrong: a page under way, and a page
+ * that failed.
  */
 function handsfreeText(bt) {
   if (!bt || bt.available !== true) return "unsupported"
-  if (bt.connected !== true) return "not connected"
+  var link = bt.link || {}
+  if (bt.connected !== true) {
+    if (link.raising === true) return "connecting…"
+    if (link.error) return link.error
+    return "not connected"
+  }
   var name = bt.device || "connected"
   // "active" is the transport state that means audio is actually on this
   // machine's speakers rather than the profile merely being up.

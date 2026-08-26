@@ -7,6 +7,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { quietBluetooth } from './sandbox.mjs'
+
 const PORT = Number(process.env.PORT || 8799)
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
@@ -26,6 +28,8 @@ fs.writeFileSync(
   `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(notifyLog)}\n`,
   { mode: 0o755 },
 )
+
+quietBluetooth(sandbox)
 
 const daemon = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'start', '--port', String(PORT)], {
   env: {

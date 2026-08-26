@@ -10,6 +10,8 @@ import crypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
+import { quietBluetooth } from './sandbox.mjs'
+
 import { connectPhone } from './phone.mjs'
 
 const PORT = Number(process.env.PORT || 8798)
@@ -59,6 +61,7 @@ const ca = fs.readFileSync(certPath)
 const spki = new crypto.X509Certificate(ca).publicKey.export({ type: 'spki', format: 'der' })
 const expectedPin = crypto.createHash('sha256').update(spki).digest('base64')
 
+quietBluetooth(sandbox)
 daemon = spawn(process.execPath, [entry, 'start'], { env, stdio: ['ignore', 'ignore', 'inherit'] })
 
 let info = null

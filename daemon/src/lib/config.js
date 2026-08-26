@@ -16,6 +16,16 @@ const DEFAULTS = {
   // Reading an agent is reading everything it saw, and writing to one is a
   // shell. Nothing here is on until `omarchy-connect agent enable` says so.
   agents: { enabled: false, spawn: false },
+  /**
+   * When the desktop holds the Bluetooth hands-free link open.
+   *
+   * `presence` keeps it up for as long as the phone is on the network, which
+   * is what makes a ringing call answerable the instant it rings; `ring`
+   * raises it only when one arrives, and spends the first seconds of the call
+   * paging the handset; `off` leaves the link entirely to the user. `address`
+   * names a handset when more than one is paired and the guess would be one.
+   */
+  handsfree: { autoConnect: 'presence', address: null },
   devices: [],
 }
 
