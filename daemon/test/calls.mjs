@@ -177,6 +177,7 @@ const req = (method, params = {}) =>
     setTimeout(() => pending.has(id) && (pending.delete(id), reject(new Error(`${method} timed out`))), 8000)
   })
 
+let token = null
 const hello = await new Promise((resolve, reject) => {
   phone.ready
     .then(() =>
@@ -188,6 +189,7 @@ const hello = await new Promise((resolve, reject) => {
     )
     .catch(reject)
   phone.on((msg) => {
+    if (msg.t === 'paired') token = msg.token
     if (msg.t === 'hello.ok') resolve(msg)
     if (msg.t === 'hello.err') reject(new Error(msg.error))
     if (msg.t === 'res') {
@@ -419,7 +421,37 @@ check('the status file carries the Bluetooth summary', 'bluetooth' in (status.ph
   `available=${status.phone?.bluetooth?.available}`)
 check('and the live call the panel puts its buttons on', 'call' in (status.phone || {}))
 
+/**
+ * The name on the panel is the one the phone answers to today. A phone
+ * renamed in its own settings — or one whose app only learned to ask after it
+ * was paired — comes back on the same token, and the desktop takes the new
+ * name rather than the one it wrote down on pairing day.
+ */
 phone.close()
+const again = connectPhone(PORT, info.publicKey)
+const rehello = await new Promise((resolve, reject) => {
+  again.ready
+    .then(() =>
+      again.send({
+        t: 'hello',
+        token,
+        device: { id: 'calls-test-device', name: "Оксанин Pixel", platform: 'android', model: 'Pixel 8' },
+      }),
+    )
+    .catch(reject)
+  again.on((msg) => {
+    if (msg.t === 'hello.ok') resolve(msg)
+    if (msg.t === 'hello.err') reject(new Error(msg.error))
+  })
+  setTimeout(() => reject(new Error('no hello')), 8000)
+}).catch((err) => err)
+check('a renamed phone keeps its pairing', rehello?.protocol === 2, rehello?.message || '')
+check('and the desktop takes the new name', rehello?.device?.name === 'Оксанин Pixel', rehello?.device?.name)
+const paired = JSON.parse(fs.readFileSync(path.join(sandbox, 'omarchy-connect', 'config.json'), 'utf8')).devices[0]
+check('the name is remembered, not just answered with', paired?.name === 'Оксанин Pixel', paired?.name)
+check('and the model it came with', paired?.model === 'Pixel 8', paired?.model)
+again.close()
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} call-control checks passed`)
 process.exit(failed.length ? 1 : 0)

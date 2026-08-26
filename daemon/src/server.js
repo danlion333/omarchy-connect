@@ -583,6 +583,14 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         send(client, { t: 'hello.err', error: 'unknown token — pair again' })
         return ws.close(4003, 'unknown token')
       }
+      // A phone that was renamed — in its own settings, or by an app update
+      // that learned to ask — says so on every hello. Keeping the name from
+      // pairing day would leave the panel showing a device nobody owns.
+      const renamed = String(info.name || '').slice(0, 64)
+      const model = String(info.model || '').slice(0, 64)
+      if (renamed && (renamed !== device.name || model !== device.model)) {
+        device = upsertDevice({ ...device, name: renamed, model })
+      }
     } else if (msg.pairCode) {
       // One phone at a time. `consumePairingCode` says the same thing, but a
       // socket that got here with a stale code should be told which phone is

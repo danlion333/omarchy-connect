@@ -17,6 +17,7 @@ import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
   linkService,
+  phoneName,
   setBackgroundLinkStatus,
   startBackgroundLink,
   stopBackgroundLink,
@@ -413,8 +414,14 @@ function reduceAgents(previous: AgentSession[], data: AgentEvent): AgentSession[
   return previous
 }
 
+/**
+ * The name the desktop puts on this phone. Whatever the phone calls itself is
+ * the answer the user recognises; the generic stand-in is only for the places
+ * that cannot say — iOS, where the system hands out "iPhone" and nothing more
+ * without an entitlement, and Expo Go, which has no native module to ask.
+ */
 function deviceName() {
-  return Platform.OS === 'ios' ? 'iPhone' : 'Android phone'
+  return phoneName() ?? (Platform.OS === 'ios' ? 'iPhone' : 'Android phone')
 }
 
 export const link = new Link()
