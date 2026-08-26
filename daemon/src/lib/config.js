@@ -21,17 +21,43 @@ const DEFAULTS = {
 
 let cache = null
 
+/**
+ * The desktop pairs one phone at a time.
+ *
+ * `devices` stays an array — it is what the status file publishes and what the
+ * panel and the app both read — but it never holds more than a single entry.
+ * A config written before that rule can hold several, so the newest one is
+ * kept and the rest lose their tokens here rather than quietly keeping a way
+ * in that no screen would ever show.
+ */
+function keepOnePhone(cfg) {
+  if (!Array.isArray(cfg.devices)) cfg.devices = []
+  if (cfg.devices.length < 2) return false
+  const [keep, ...dropped] = [...cfg.devices].sort(
+    (a, b) => (b.lastSeen || b.pairedAt || 0) - (a.lastSeen || a.pairedAt || 0),
+  )
+  cfg.devices = [keep]
+  log.warn(`only one phone can be paired — kept ${keep.name}, dropped ${dropped.map((d) => d.name).join(', ')}`)
+  return true
+}
+
 export function loadConfig() {
   if (cache) return cache
   try {
     const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
     cache = { ...DEFAULTS, ...JSON.parse(raw) }
+    if (keepOnePhone(cache)) saveConfig(cache)
   } catch (err) {
     if (err.code !== 'ENOENT') log.warn('config unreadable, starting fresh:', err.message)
     cache = { ...DEFAULTS }
     saveConfig(cache)
   }
   return cache
+}
+
+/** The paired phone, or null when the desktop is on its own. */
+export function pairedDevice() {
+  return loadConfig().devices[0] || null
 }
 
 export function saveConfig(next = cache) {
@@ -64,11 +90,11 @@ export function findDeviceByToken(token) {
   return loadConfig().devices.find((d) => tokenMatches(d.token, token)) || null
 }
 
+/** A set rather than an append: pairing replaces the list, never grows it. */
 export function upsertDevice(device) {
   updateConfig((cfg) => {
-    const i = cfg.devices.findIndex((d) => d.id === device.id)
-    if (i >= 0) cfg.devices[i] = { ...cfg.devices[i], ...device }
-    else cfg.devices.push(device)
+    const current = cfg.devices.find((d) => d.id === device.id)
+    cfg.devices = [current ? { ...current, ...device } : device]
   })
   return device
 }

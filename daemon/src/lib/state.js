@@ -15,7 +15,7 @@ import { INBOX } from '../plugins/share.js'
  * watches the usage records it never writes. Keeping the contract in a file
  * rather than in a socket means the panel needs no credentials, survives the
  * daemon restarting under it, and can still describe the desktop — name,
- * fingerprint, paired phones — while the daemon is stopped.
+ * fingerprint, the paired phone — while the daemon is stopped.
  *
  * Written with mktemp + rename so a reader never sees a half-written file.
  * That is the same write pattern `omarchy-agent-usage-update` uses, and the

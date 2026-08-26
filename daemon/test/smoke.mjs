@@ -326,6 +326,30 @@ const mirroredNotifications = fs.existsSync(notifyLog) ? fs.readFileSync(notifyL
 check('a mirrored message raises a desktop notification', /SMS/.test(mirroredNotifications))
 check('a missed call is raised as urgent', /-u critical.*Missed call/.test(mirroredNotifications))
 
+/* ── one phone at a time ────────────────────────────────────────────── */
+
+// With a phone paired there is no second way in: the daemon refuses to mint a
+// code at all, and a socket arriving with a stale one is turned away rather
+// than quietly displacing the phone already in someone's pocket.
+const secondCode = await fetch(`${base}/api/pair-code`, { method: 'POST' })
+check('a second pairing code is refused while a phone is paired', secondCode.status === 409)
+check('and it names the phone in the way', (await secondCode.json()).device?.name === 'Smoke Phone')
+
+const infoWhilePaired = await (await fetch(`${base}/api/info`)).json()
+check('/api/info says the desktop is taken', infoWhilePaired.paired === true)
+check('and no pairing window is open', infoWhilePaired.pairing === false)
+
+const secondPhoneRejected = await new Promise((resolve) => {
+  const second = connectPhone(PORT, info.publicKey)
+  second.ready
+    .then(() => second.send({ t: 'hello', pairCode: pair.code, device: { id: 'second-phone', name: 'Second Phone' } }))
+    .catch(() => resolve(-1))
+  second.ws.on('close', (code) => resolve(code))
+  setTimeout(() => resolve(0), 4000)
+})
+check('a second phone is refused at hello', secondPhoneRejected === 4003, `close code ${secondPhoneRejected}`)
+check('and the desktop still holds the first', readStatus().devices.length === 1)
+
 const unpairRemote = await fetch(`${base}/api/unpair`, {
   method: 'POST',
   headers: { 'content-type': 'application/json' },
@@ -333,6 +357,9 @@ const unpairRemote = await fetch(`${base}/api/unpair`, {
 })
 check('POST /api/unpair drops the device', unpairRemote.ok)
 check('the unpaired phone leaves the status file', readStatus().devices.length === 0)
+
+const freedCode = await fetch(`${base}/api/pair-code`, { method: 'POST' })
+check('and the desktop can pair again once it is free', freedCode.status === 200)
 
 ws.close()
 const failed = results.filter((r) => !r.ok)

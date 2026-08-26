@@ -7,7 +7,7 @@ import https from 'node:https'
 import { fileURLToPath } from 'node:url'
 
 import { createServer } from '../src/server.js'
-import { loadConfig, saveConfig, removeDevice } from '../src/lib/config.js'
+import { loadConfig, saveConfig, removeDevice, pairedDevice } from '../src/lib/config.js'
 import { CONFIG_FILE } from '../src/lib/paths.js'
 import { createPairingCode, pairingUrl, renderQr } from '../src/pairing.js'
 import { identity, fingerprint } from '../src/lib/crypto.js'
@@ -158,7 +158,7 @@ async function cmdStart(args) {
     card('OMARCHY CONNECT', [
       ['host', cfg.deviceName],
       ['address', `${ip}:${port}`],
-      ['devices', String(cfg.devices.length)],
+      ['phone', cfg.devices[0] ? cfg.devices[0].name : dim('none paired')],
       ['fingerprint', fingerprint(identity().publicKey)],
       ['inbox', INBOX.replace(os.homedir(), '~')],
       ['config', CONFIG_FILE.replace(os.homedir(), '~')],
@@ -167,11 +167,16 @@ async function cmdStart(args) {
 
   warnIfFirewalled(port, ip)
 
-  if (cfg.devices.length === 0 || args.pair) {
+  const held = pairedDevice()
+  if (!held) {
     console.log()
     await showPairing(port, ip, cfg.deviceName)
+  } else if (args.pair) {
+    console.log()
+    log.warn(`${held.name} is already paired — a desktop holds one phone at a time`)
+    console.log(dim(`  omarchy-connect unpair   to pair a different phone\n`))
   } else {
-    console.log(dim('\n  run `omarchy-connect pair` to add another device\n'))
+    console.log(dim('\n  run `omarchy-connect unpair` to pair a different phone\n'))
   }
 
   const shutdown = async () => {
@@ -197,6 +202,10 @@ function warnIfFirewalled(port, ip) {
 
 async function showPairing(port, ip, name) {
   const pairing = createPairingCode()
+  if (!pairing.ok) {
+    log.warn(pairing.error)
+    return
+  }
   const key = identity().publicKey.toString('hex')
   const cert = tls.enabled() ? tls.info() : null
   const url = pairingUrl({
@@ -226,6 +235,12 @@ async function cmdPair(args) {
   const cfg = loadConfig()
   const ip = await localAddress()
   const res = await daemonRequest('/api/pair-code', { method: 'POST' })
+  if (res.status === 409) {
+    // A desktop holds one phone. Say which one, and say the way out.
+    log.error(res.data?.error || 'a phone is already paired')
+    console.log(dim(`\n  omarchy-connect unpair   forget it and pair another\n`))
+    process.exit(1)
+  }
   if (!res.ok) {
     log.error('daemon is not running — start it with `omarchy-connect start`')
     process.exit(1)
@@ -263,7 +278,7 @@ async function cmdPair(args) {
  */
 async function waitForPairing(port, expiresAt) {
   const before = loadConfig().devices.length
-  console.log(dim('\n  waiting for a phone…  (ctrl-c to stop)'))
+  console.log(dim('\n  waiting for the phone…  (ctrl-c to stop)'))
   while (Date.now() < expiresAt) {
     await new Promise((resolve) => setTimeout(resolve, 1000))
     const { data: info } = await daemonRequest('/api/info', { port })
@@ -284,26 +299,28 @@ async function waitForPairing(port, expiresAt) {
 }
 
 function cmdDevices() {
-  const cfg = loadConfig()
-  if (!cfg.devices.length) {
-    console.log(dim('no paired devices — run `omarchy-connect pair`'))
+  const device = pairedDevice()
+  if (!device) {
+    console.log(dim('no phone paired — run `omarchy-connect pair`'))
     return
   }
   console.log(
-    card(
-      'PAIRED DEVICES',
-      cfg.devices.map((d) => [
-        d.name,
-        `${d.platform} · ${d.lastSeen ? new Date(d.lastSeen).toLocaleString() : 'never seen'}`,
-      ]),
-    ),
+    card('PAIRED PHONE', [
+      ['name', device.name],
+      ['platform', device.model ? `${device.platform} · ${device.model}` : device.platform],
+      ['paired', device.pairedAt ? new Date(device.pairedAt).toLocaleString() : 'unknown'],
+      ['last seen', device.lastSeen ? new Date(device.lastSeen).toLocaleString() : 'never'],
+    ]),
   )
+  console.log(dim('\n  a desktop pairs one phone at a time — `omarchy-connect unpair` to swap it\n'))
 }
 
 async function cmdUnpair(args) {
-  const target = args._[0]
+  // With one phone there is nothing to disambiguate, so the name is optional:
+  // `omarchy-connect unpair` on its own drops whoever is paired.
+  const target = args._[0] || pairedDevice()?.id
   if (!target) {
-    log.error('usage: omarchy-connect unpair <device-name-or-id>')
+    log.error('no phone paired — nothing to unpair')
     process.exit(1)
   }
   // Ask the daemon first: it holds a cached config and possibly an open
@@ -406,13 +423,13 @@ async function cmdStatus(args) {
     console.log(JSON.stringify(snapshot, null, 2))
     return
   }
-  const online = (snapshot.devices || []).filter((d) => d.online).length
+  const device = (snapshot.devices || [])[0] || null
   console.log(
     card('STATUS', [
       ['name', snapshot.name],
       ['daemon', snapshot.running ? 'running' : 'stopped'],
       ['address', snapshot.host ? `${snapshot.host}:${snapshot.port}` : `port ${snapshot.port}`],
-      ['devices', `${online} online / ${(snapshot.devices || []).length} paired`],
+      ['phone', device ? `${device.name} · ${device.online ? 'online' : 'offline'}` : 'none paired'],
       ['encryption', snapshot.encryption],
       ['transport', snapshot.tls?.enabled ? 'https + wss' : 'http + ws'],
       ['fingerprint', snapshot.fingerprint],
@@ -790,7 +807,7 @@ async function cmdTls(args) {
     saveConfig({ ...cfg, tls: true })
     log.ok('TLS on')
     console.log(card('TLS', [['pin', cert.pin], ['expires', cert.notAfter], ['covers', cert.sans.join(' ')]]))
-    console.log(dim('\n  phones paired before now have to pair again — the QR carries the pin\n'))
+    console.log(dim('\n  a phone paired before now has to pair again — the QR carries the pin\n'))
     restartHint()
     return
   }
@@ -815,7 +832,7 @@ async function cmdTls(args) {
   if (action === 'rotate') {
     const cert = tls.rotate()
     log.ok(`new key and certificate — pin ${cert.pin}`)
-    console.log(dim('\n  every paired phone has to pair again\n'))
+    console.log(dim('\n  the paired phone has to pair again\n'))
     restartHint()
     return
   }
@@ -1123,8 +1140,8 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
 
   ${bold('start')} [--port N] [--pair]   run the daemon
   ${bold('pair')} [--wait]               show a pairing QR code
-  ${bold('devices')}                     list paired devices
-  ${bold('unpair')} <name|id>            forget a device
+  ${bold('devices')}                     show the paired phone
+  ${bold('unpair')} [name|id]            forget the paired phone
   ${bold('send')} <file> | --pick        offer a file to connected phones
   ${bold('status')} [--json]             show live daemon status
   ${bold('sms')} <number> <message…>     send an SMS through the paired phone

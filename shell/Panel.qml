@@ -50,7 +50,7 @@ Panel {
   readonly property bool linked: bridge.online.length > 0
   readonly property bool pairing: Model.pairingActive(bridge.status, root.now)
   readonly property var phone: bridge.primary
-  readonly property bool paired: bridge.devices.length > 0
+  readonly property bool paired: bridge.paired
 
   // The bar icon carries three states and nothing else: linked, running but
   // alone, and down. Pairing borrows the bar's active color, because a code
@@ -81,7 +81,13 @@ Panel {
   readonly property var actions: buildActions()
 
   function buildActions() {
-    var list = [{ key: "pair", label: "Pair", icon: "󰐗", tooltip: "Show a pairing QR code" }]
+    // A desktop holds one phone, so this slot is either the way in or the way
+    // out — never both. Offering Pair beside a phone that is already paired
+    // would be a button whose only outcome is a refusal.
+    var list = [root.paired
+      ? { key: "unpair", label: "Unpair", icon: "󰅖",
+          tooltip: "Forget " + (bridge.device ? bridge.device.name : "this phone") + " — a desktop pairs one phone at a time" }
+      : { key: "pair", label: "Pair", icon: "󰐗", tooltip: "Show a pairing QR code" }]
     if (bridge.running) list.push({ key: "send", label: "Send", icon: "󰈤", tooltip: "Pick a file to send to the phone" })
     list.push({ key: "inbox", label: "Inbox", icon: "󰉋", tooltip: "Open the folder phones drop files into" })
     list.push(bridge.serviceEnabled
@@ -92,6 +98,7 @@ Panel {
 
   function runAction(key) {
     if (key === "pair") bridge.pair()
+    else if (key === "unpair") bridge.unpair(bridge.device)
     else if (key === "send") bridge.sendFile()
     else if (key === "inbox") bridge.openInbox()
     else if (key === "service") bridge.toggleAutostart()
@@ -151,7 +158,9 @@ Panel {
   function activateCursor() {
     ensureCursor()
     if (focusSection === "header") bridge.toggleDaemon()
-    else if (focusSection === "devices") bridge.pair()
+    // The row carries one action now — the ✕ that frees the desktop for a
+    // different phone — so enter and delete land on the same place.
+    else if (focusSection === "devices") deleteSelected()
     else if (focusSection === "actions") runAction(actions[actionIndex].key)
   }
 
@@ -296,6 +305,9 @@ Panel {
       onTabRequested: function (direction) { root.switchPanel(direction) }
       onTextKey: function (t) {
         var key = String(t).toLowerCase()
+        // Still `p` for pair. With a phone already paired the service answers
+        // with why rather than doing anything — dropping a pairing is not
+        // something a single unmodified keystroke should be able to do.
         if (key === "p") bridge.pair()
         else if (key === "s") bridge.sendFile()
         else if (key === "i") bridge.openInbox()
@@ -665,24 +677,26 @@ Panel {
             }
           }
 
-          /* ── paired phones ──────────────────────────────────────── */
+          /* ── the paired phone ───────────────────────────────────── */
 
           PanelSeparator {
-            visible: bridge.devices.length > 0
+            visible: root.paired
             foreground: root.foreground
           }
 
           Column {
-            visible: bridge.devices.length > 0
+            visible: root.paired
             width: parent.width
             spacing: Style.space(10)
 
             PanelSectionHeader {
-              text: "PAIRED PHONES"
+              text: "PAIRED PHONE"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
 
+            // Still a Repeater over a list, because that is what the status
+            // file publishes — it just never holds more than one phone.
             Column {
               id: deviceColumn
               width: parent.width
@@ -699,6 +713,15 @@ Panel {
                   rowIndex: index
                 }
               }
+            }
+
+            Text {
+              width: parent.width
+              text: "One phone at a time — unpair to swap it for another."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -925,12 +948,12 @@ Panel {
     foreground: root.foreground
     implicitHeight: deviceContent.implicitHeight + Style.spacing.rowPaddingX
 
+    // Hover moves the cursor here; the ✕ on the right is the only thing this
+    // row does, so the body of it is not a click target.
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      cursorShape: Qt.PointingHandCursor
       onEntered: root.setDeviceCursor(deviceRow.rowIndex)
-      onClicked: bridge.pair()
     }
 
     RowLayout {

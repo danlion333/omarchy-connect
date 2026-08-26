@@ -7,6 +7,8 @@ export type Discovered = {
   version: string
   protocol: number
   pairing: boolean
+  /** True when that desktop already holds a phone — it pairs one at a time. */
+  paired: boolean
   publicKey: string | null
   fingerprint: string | null
   /** Whether the daemon serves https + wss rather than http + ws. */
@@ -39,6 +41,7 @@ async function probeScheme(
       version: info.version,
       protocol: info.protocol,
       pairing: info.pairing,
+      paired: info.paired === true,
       publicKey: typeof info.publicKey === 'string' ? info.publicKey : null,
       fingerprint: typeof info.fingerprint === 'string' ? info.fingerprint : null,
       tls: scheme === 'https',

@@ -5,7 +5,15 @@ import crypto from 'node:crypto'
 import { WebSocketServer } from 'ws'
 
 import { log } from './lib/log.js'
-import { loadConfig, newToken, upsertDevice, findDeviceByToken, touchDevice, removeDevice } from './lib/config.js'
+import {
+  loadConfig,
+  newToken,
+  upsertDevice,
+  findDeviceByToken,
+  touchDevice,
+  removeDevice,
+  pairedDevice,
+} from './lib/config.js'
 import { readTheme } from './lib/theme.js'
 import { host as hostInfo } from './lib/sys.js'
 import { Bus } from './bus.js'
@@ -172,6 +180,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         name: cfg.deviceName,
         theme: readTheme(),
         pairing: Boolean(activePairing()),
+        // A desktop holds one phone, so a sweep can tell the difference
+        // between "nobody has paired yet" and "this one is taken" without
+        // making the user find that out by failing to pair.
+        paired: Boolean(pairedDevice()),
         publicKey: key,
         fingerprint: fingerprint(key),
         suite: SUITE,
@@ -185,6 +197,9 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     if (req.method === 'POST' && url.pathname === '/api/pair-code') {
       if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
       const pairing = createPairingCode()
+      if (!pairing.ok) {
+        return json(res, 409, { error: pairing.error, device: publicDevice(pairing.device) })
+      }
       publishState()
       return json(res, 200, { code: pairing.code, expiresAt: pairing.expiresAt })
     }
@@ -569,6 +584,14 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         return ws.close(4003, 'unknown token')
       }
     } else if (msg.pairCode) {
+      // One phone at a time. `consumePairingCode` says the same thing, but a
+      // socket that got here with a stale code should be told which phone is
+      // in the way rather than left guessing at a generic refusal.
+      const held = pairedDevice()
+      if (held) {
+        send(client, { t: 'hello.err', error: `${held.name} is already paired — unpair it on the desktop first` })
+        return ws.close(4003, 'already paired')
+      }
       const result = consumePairingCode(msg.pairCode)
       if (!result.ok) {
         log.warn(`pairing rejected from ${peer}: ${result.error}`)

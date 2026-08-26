@@ -52,14 +52,18 @@ replacing an existing copy.
 - **Firewall card** — appears only when the daemon reports that its port is
   closed, and carries the exact `ufw` command. The panel never runs it;
   opening a port is the user's call.
-- **Paired phones** — one row each, live ones filled, with an unpair action.
+- **Paired phone** — one row, filled while the link is live, with an unpair
+  action. A desktop pairs one phone at a time, and the row says so.
 - **From the phone** — the last few mirrored messages, calls and app
   notifications, missed calls in the urgent colour. Three sources feed one
   list: an Android build over the LAN, the hands-free link, and an iPhone's own
   notifications over low energy. Hidden entirely until something arrives, which
   in Expo Go with no Bluetooth paired is never.
 - **Recent transfers** — the last few files across the link, either direction.
-- **Actions** — Pair, Send, Inbox, and Autostart. Autostart is a checkbox, not
+- **Actions** — Pair *or* Unpair, then Send, Inbox, and Autostart. The first
+  slot is the way in while the desktop is free and the way out once it is
+  taken, never both: offering Pair next to a phone that is already paired
+  would be a button whose only outcome is a refusal. Autostart is a checkbox, not
   a button: it shows whether the daemon runs at login and flips it. Starting
   and stopping the daemon *right now* is the hero's switch, which is a separate
   decision.
@@ -75,7 +79,7 @@ The panel is strictly a display. The daemon publishes one file:
 and rewrites it, atomically, the moment anything changes — a phone connects,
 a file moves, a pairing code is minted. The panel watches that file, so it
 reacts as fast as the daemon does without polling, and still has something
-true to draw (desktop name, fingerprint, paired phones) while the daemon is
+true to draw (desktop name, fingerprint, the paired phone) while the daemon is
 stopped.
 
 The one thing a file cannot report is its own writer being killed. So while
@@ -98,7 +102,10 @@ running out of a checkout works without being installed anywhere.
 
 `j`/`k` move, `h`/`l` walk the action row, Enter activates, `x` unpairs the
 selected phone, `p` pairs, `s` sends, `i` opens the inbox, `r` refreshes, Tab
-moves to the neighbouring bar panel, Esc closes.
+moves to the neighbouring bar panel, Esc closes. On the phone row Enter does
+what `x` does — unpairing is the only thing that row is for. `p` with a phone
+already paired says which one is in the way rather than acting: dropping a
+pairing is not something one unmodified keystroke should be able to do.
 
 `a` answers a ringing call and `d` declines it — or hangs up one already in
 progress. Both do nothing when there is no call, so a mistyped key on an idle

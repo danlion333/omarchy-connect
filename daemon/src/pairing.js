@@ -1,5 +1,6 @@
 import crypto from 'node:crypto'
 import { run, has } from './lib/exec.js'
+import { pairedDevice } from './lib/config.js'
 import { log } from './lib/log.js'
 
 const TTL_MS = 3 * 60 * 1000
@@ -7,12 +8,29 @@ const MAX_ATTEMPTS = 5
 
 let active = null
 
+/**
+ * Mints a code, or explains why it will not.
+ *
+ * A desktop pairs one phone at a time, so a live code while a phone already
+ * holds a token would be a second way in — one nothing on screen would ever
+ * name. Dropping the phone you have is a deliberate act, and this refuses
+ * rather than making it a side effect of someone else scanning a QR.
+ */
 export function createPairingCode() {
+  const paired = pairedDevice()
+  if (paired) {
+    return {
+      ok: false,
+      device: paired,
+      error: `${paired.name} is already paired — run \`omarchy-connect unpair\` first`,
+    }
+  }
   // 6 digits: short enough to type, and only valid for three minutes.
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0')
   active = { code, expiresAt: Date.now() + TTL_MS, attempts: 0 }
-  return active
+  return { ok: true, code: active.code, expiresAt: active.expiresAt }
 }
+
 
 export function activePairing() {
   if (active && active.expiresAt < Date.now()) active = null
@@ -22,6 +40,14 @@ export function activePairing() {
 export function consumePairingCode(candidate) {
   const pairing = activePairing()
   if (!pairing) return { ok: false, error: 'no pairing in progress — run `omarchy-connect pair`' }
+  // The code outlives the moment it was minted, and a phone could have paired
+  // in between. One phone at a time means the second arrival is turned away
+  // here rather than overwriting the first.
+  const paired = pairedDevice()
+  if (paired) {
+    active = null
+    return { ok: false, error: `${paired.name} is already paired — unpair it on the desktop first` }
+  }
   if (pairing.attempts >= MAX_ATTEMPTS) {
     active = null
     return { ok: false, error: 'too many attempts — start pairing again' }

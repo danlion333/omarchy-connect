@@ -37,7 +37,12 @@ Item {
   readonly property bool running: !!status && status.running === true
   readonly property var devices: (status && Array.isArray(status.devices)) ? status.devices : []
   readonly property var online: Model.onlineDevices(status)
-  readonly property var primary: online.length > 0 ? online[0] : (devices.length > 0 ? devices[0] : null)
+  // A desktop pairs one phone at a time, so `devices` is a list of nothing or
+  // of one. `device` is that one; `primary` stays as the name the rest of the
+  // panel already reads it by.
+  readonly property var device: devices.length > 0 ? devices[0] : null
+  readonly property bool paired: devices.length > 0
+  readonly property var primary: online.length > 0 ? online[0] : device
   readonly property var counters: (status && status.counters) ? status.counters : ({ filesIn: 0, filesOut: 0, notifications: 0 })
   readonly property var transfers: (status && Array.isArray(status.transfers)) ? status.transfers : []
   readonly property var firewall: (status && status.firewall) ? status.firewall : ({ blocked: false })
@@ -228,6 +233,12 @@ Item {
    * which is the user closing the window themselves.
    */
   function pair() {
+    // The daemon would refuse anyway; saying so here spares the user a
+    // terminal window that opens only to print a rejection.
+    if (root.paired) {
+      note("Unpair " + root.device.name + " first — one phone at a time")
+      return
+    }
     var cmd = Model.shellQuote(Model.command(root.status, ["pair", "--wait"]))
     detach(["setsid", "uwsm-app", "--", "xdg-terminal-exec",
             "--app-id=org.omarchy.terminal", "--title=Omarchy", "-e", "bash", "-c",
@@ -248,9 +259,10 @@ Item {
     note("Opened the inbox")
   }
 
-  function unpair(device) {
-    if (!device || !device.id) return
-    invoke(Model.command(root.status, ["unpair", device.id]), "Unpairing " + device.name + "…")
+  function unpair(target) {
+    var phone = target || root.device
+    if (!phone || !phone.id) return
+    invoke(Model.command(root.status, ["unpair", phone.id]), "Unpairing " + phone.name + "…")
   }
 
   function startDaemon() {

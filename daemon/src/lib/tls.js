@@ -165,7 +165,7 @@ export function ensure({ force = false } = {}) {
   if (!reason) return current
   if (current) log.info(`renewing the TLS certificate — ${reason}`)
   const next = generate({ names })
-  if (current && current.pin !== next.pin) log.warn('the TLS pin changed — paired phones must pair again')
+  if (current && current.pin !== next.pin) log.warn('the TLS pin changed — the paired phone must pair again')
   log.ok(`TLS certificate valid until ${next.notAfter}`)
   return next
 }

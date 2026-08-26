@@ -91,6 +91,10 @@ export function PairScreen() {
             omarchy-connect start
           </Body>
         </View>
+        <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.md }}>
+          A desktop pairs with one phone at a time. If it already has one, run `omarchy-connect unpair` there to free
+          it before pairing this phone.
+        </Body>
       </Card>
     </Screen>
   )
@@ -185,6 +189,9 @@ function FindPane({ onPaired }: { onPaired: PairFn }) {
     start()
   }, [start])
 
+  // A desktop pairs one phone at a time, so one that is already taken is
+  // listed but not offered: tapping it would only end in a refusal from the
+  // far end, and the way out of it is on the desktop, not here.
   if (selected) {
     return (
       <CodeEntry
@@ -222,12 +229,14 @@ function FindPane({ onPaired }: { onPaired: PairFn }) {
           <ListRow
             key={desktop.host}
             title={desktop.name}
-            subtitle={`${desktop.host}:${desktop.port} · v${desktop.version}${desktop.pairing ? ' · pairing open' : ''}${
-              desktop.fingerprint ? `\n${desktop.fingerprint}` : ''
-            }`}
-            onPress={() => setSelected(desktop)}
-            tone={desktop.pairing ? palette.green : undefined}
-            right={<Caps tone={palette.muted}>pair</Caps>}
+            subtitle={`${desktop.host}:${desktop.port} · v${desktop.version}${
+              desktop.paired ? ' · another phone is paired' : desktop.pairing ? ' · pairing open' : ''
+            }${desktop.fingerprint ? `\n${desktop.fingerprint}` : ''}`}
+            onPress={desktop.paired ? undefined : () => setSelected(desktop)}
+            tone={desktop.paired ? palette.muted : desktop.pairing ? palette.green : undefined}
+            right={
+              <Caps tone={desktop.paired ? palette.orange : palette.muted}>{desktop.paired ? 'taken' : 'pair'}</Caps>
+            }
           />
         ))
       ) : scanning ? (
@@ -248,14 +257,19 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
   const [code, setCode] = useState('')
   const [checking, setChecking] = useState(false)
   const [reachable, setReachable] = useState<string | null>(null)
+  const [taken, setTaken] = useState(false)
 
   const check = useCallback(async () => {
     setChecking(true)
     setReachable(null)
+    setTaken(false)
     const info = await probeHost(host.trim(), Number(port) || DEFAULT_PORT)
+    setTaken(info?.paired === true)
     setReachable(
       info
-        ? `${info.name} · v${info.version}${info.tls ? ' · tls' : ''}${info.fingerprint ? ` · ${info.fingerprint}` : ''}`
+        ? info.paired
+          ? `${info.name} already has a phone paired — unpair it on the desktop first`
+          : `${info.name} · v${info.version}${info.tls ? ' · tls' : ''}${info.fingerprint ? ` · ${info.fingerprint}` : ''}`
         : 'no answer from that address',
     )
     setChecking(false)
@@ -268,7 +282,10 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
       <Field label="Port" value={port} onChange={setPort} placeholder={String(DEFAULT_PORT)} keyboardType="number-pad" />
       <Field label="Code" value={code} onChange={setCode} placeholder="123456" keyboardType="number-pad" maxLength={6} />
       {reachable ? (
-        <Body tone={reachable.startsWith('no answer') ? palette.red : palette.green} style={{ fontSize: size.label, marginBottom: space.md }}>
+        <Body
+          tone={reachable.startsWith('no answer') ? palette.red : taken ? palette.orange : palette.green}
+          style={{ fontSize: size.label, marginBottom: space.md }}
+        >
           {reachable}
         </Body>
       ) : null}
@@ -291,7 +308,7 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
               certPin: null,
             })
           }
-          disabled={!host.trim() || code.length !== 6}
+          disabled={!host.trim() || code.length !== 6 || taken}
           style={{ flex: 1 }}
         />
       </View>

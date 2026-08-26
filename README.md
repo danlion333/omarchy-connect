@@ -52,6 +52,13 @@ The first start prints a QR code, a six-digit pairing code and the desktop's key
 fingerprint. Scan it in the app, and that is the whole setup — the QR carries
 the identity key, so the pairing is verified rather than trusted blindly.
 
+A desktop pairs **one phone at a time**. While a phone holds a token the daemon
+mints no new codes at all: `omarchy-connect pair` says which phone is in the
+way, and `omarchy-connect unpair` frees the desktop for a different one. That is
+deliberate — a second live code is a second way in, and swapping phones should
+be something you did on purpose rather than something whoever scanned a QR did
+to you.
+
 Typing the address by hand instead? The app shows the fingerprint it read from
 the desktop; check it against the one in the terminal before you continue.
 
@@ -69,8 +76,8 @@ systemctl --user enable --now omarchy-connect
 ```
 omarchy-connect start [--port N] [--pair]   run the daemon
 omarchy-connect pair [--wait]               show a pairing QR code
-omarchy-connect devices                     list paired devices
-omarchy-connect unpair <name|id>            forget a device
+omarchy-connect devices                     show the paired phone
+omarchy-connect unpair [name|id]            forget the paired phone
 omarchy-connect send <file> | --pick        offer a file to connected phones
 omarchy-connect status [--json]             show live daemon status
 omarchy-connect sms <number> <message…>     send an SMS through the paired phone
@@ -107,9 +114,11 @@ That copies `shell/` into place, validates the manifest the way the shell
 would, rescans, and drops the widget on the right of the bar. Click the phone
 icon (or `omarchy-shell omarchy-connect toggle`) for the panel: link state, the
 phone's battery, how long it has been connected, files in and out, the address
-and identity fingerprint, every paired phone with an unpair button, recent
-transfers, and buttons for pair / send / inbox. A live pairing code appears at
-the top with its countdown; a closed firewall port appears with the exact `ufw`
+and identity fingerprint, the paired phone with an unpair button, recent
+transfers, and buttons for send / inbox. The first button is Pair or Unpair
+depending on whether the desktop is free — one phone at a time means the way in
+and the way out are never both on offer. A live pairing code appears at the top
+with its countdown; a closed firewall port appears with the exact `ufw`
 command and nothing that runs it for you.
 
 The panel never talks to the daemon over the network. The daemon publishes one
@@ -372,8 +381,8 @@ started before any of this was installed, and is labelled as the guess it is.
 saw: your source, the output of every command it ran, any secret that crossed a
 tool result. That is a wider exposure than the clipboard or the notification
 mirror, which is why it is off until you turn it on and why the CLI spells it
-out when you do. The channel is encrypted end to end and only paired phones can
-ask — but pair only phones you own.
+out when you do. The channel is encrypted end to end and only the paired phone
+can ask — but pair only a phone you own.
 
 Writing back — answering a prompt from the phone — is not here yet. Nothing may
 push bytes into a terminal another process owns: `TIOCSTI` is gone from the
@@ -487,8 +496,9 @@ The phone has to be able to verify it, and that is where the platforms differ:
 TLS is off by default, because switching it on without doing the phone half
 would leave you with a daemon nothing can reach.
 
-Pairing also grants control of the pointer and keyboard. Only pair phones you
-own. The full model is in [docs/PROTOCOL.md](docs/PROTOCOL.md).
+Pairing also grants control of the pointer and keyboard, and only one phone
+holds that at a time. Only pair a phone you own. The full model is in
+[docs/PROTOCOL.md](docs/PROTOCOL.md).
 
 ## Tests
 

@@ -55,8 +55,8 @@ close code `4005` unless `requireEncryption` is turned off in the config.
 
 | Path | Method | Auth | Purpose |
 | --- | --- | --- | --- |
-| `/api/info` | GET | none | Discovery probe. Returns name, version, protocol, active theme, identity key. |
-| `/api/pair-code` | POST | localhost | Mints a 6-digit pairing code (used by the CLI). |
+| `/api/info` | GET | none | Discovery probe. Returns name, version, protocol, active theme, identity key, and whether a phone is already paired. |
+| `/api/pair-code` | POST | localhost | Mints a 6-digit pairing code (used by the CLI). `409` when a phone is already paired. |
 | `/api/offer` | POST | localhost | `omarchy-connect send <file>` offers a file to phones. |
 | `/api/sms` | POST | localhost | Asks the paired phone to send an SMS; answers when it confirms. |
 | `/api/call` | POST | localhost | Answers, rejects, hangs up or places a call, over Bluetooth or through the app. |
@@ -123,7 +123,21 @@ fingerprint for the person to compare against the terminal.
 
 Codes live for 3 minutes and die after 5 wrong guesses. Codes and tokens are
 compared in constant time. The token is the only credential afterwards — revoke
-it with `omarchy-connect unpair <name>`.
+it with `omarchy-connect unpair`.
+
+### One phone at a time
+
+A desktop holds exactly one paired device. While it does, no pairing code
+exists to be guessed: `POST /api/pair-code` answers `409` naming the phone in
+the way, and a `hello` carrying a `pairCode` is closed with `4003` rather than
+displacing the phone already holding a token. `/api/info` publishes
+`"paired": true` so a subnet sweep can show a desktop as taken instead of
+letting the user discover it by failing to pair.
+
+Freeing the desktop is a deliberate act on the desktop — `omarchy-connect
+unpair`, or the panel's unpair button — never a side effect of someone else
+scanning a QR. Config files written before this rule keep their newest device
+and drop the rest, tokens included, the first time the daemon reads them.
 
 ## WebSocket messages
 
@@ -149,6 +163,8 @@ All of the frames below travel inside the encrypted channel described above.
 
 // desktop → phone, then the socket closes
 { "t": "hello.err", "error": "wrong pairing code" }
+// … or, when the desktop already holds a phone (close code 4003)
+{ "t": "hello.err", "error": "Pixel 8 is already paired — unpair it on the desktop first" }
 ```
 
 `capabilities` reports what this particular machine can actually do — whether
@@ -522,7 +538,7 @@ machine with.
 
 | Endpoint | Body | Effect |
 | --- | --- | --- |
-| `POST /api/pair-code` | — | Mints a fresh six-digit code, valid three minutes. |
+| `POST /api/pair-code` | — | Mints a fresh six-digit code, valid three minutes. `409 { error, device }` while a phone is paired. |
 | `POST /api/offer` | `{ path }` | Offers a desktop file to connected phones. |
 | `POST /api/unpair` | `{ id }` | Forgets a phone **and** hangs up its socket. |
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
@@ -552,8 +568,8 @@ The daemon publishes its whole state to
 `~/.local/state/omarchy-connect/status.json` (mode 0600, `mktemp` + rename)
 and rewrites it whenever anything changes — a phone connects or drops, a file
 moves, a pairing code is minted or used, the address or firewall verdict
-changes. It carries the daemon's identity and address, the paired devices with
-their live status and telemetry, recent transfers, counters, the firewall
+changes. It carries the daemon's identity and address, the paired device with
+its live status and telemetry, recent transfers, counters, the firewall
 verdict, whether TLS is on and under which pin, the last mirrored messages and
 calls, and the argv needed to invoke the CLI again.
 
@@ -594,7 +610,9 @@ deleted. The desktop raises a notification on arrival.
   execution — the agent runs what it is told — which is why `write` is `null`
   rather than shipped alongside reading.
 - Every method call requires a paired token. There is no anonymous access.
-- Input injection is reachable by any paired phone: pairing grants control of
+- One phone is paired at a time, so exactly one token is live; pairing a
+  different phone means unpairing this one first.
+- Input injection is reachable by the paired phone: pairing grants control of
   the pointer and keyboard, and should be treated accordingly.
 - `system.openUrl` accepts only `http(s)`, so it cannot be used as a generic
   "launch anything" primitive.
@@ -602,4 +620,4 @@ deleted. The desktop raises a notification on arrival.
 - File offers expire after 30 minutes and their tokens are single-purpose.
 
 Treat pairing the way you treat handing someone your unlocked laptop: only pair
-devices you own.
+a phone you own.
