@@ -16,6 +16,7 @@ import {
 } from './lib/config.js'
 import { readTheme } from './lib/theme.js'
 import { host as hostInfo } from './lib/sys.js'
+import { isGeneric, nameFromNetwork } from './lib/hostname.js'
 import { Bus } from './bus.js'
 import { consumePairingCode, activePairing, createPairingCode } from './pairing.js'
 import { buildMethodTable, collectCapabilities, startPlugins, stopPlugins } from './plugins/index.js'
@@ -604,6 +605,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   function handleHello(client, msg, peer, helloTimer) {
     const { ws } = client
     const info = msg.device || {}
+    // What the phone says it is, before any of it is trusted or trimmed —
+    // the only place the desktop can see whether a generic name is its own
+    // doing or the app's.
+    log.debug(`hello from ${peer}: ${JSON.stringify(info)}`)
     if (!client.secure && encryptionRequired()) {
       send(client, { t: 'hello.err', error: 'encryption required' })
       return ws.close(4005, 'encryption required')
@@ -619,10 +624,16 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // A phone that was renamed — in its own settings, or by an app update
       // that learned to ask — says so on every hello. Keeping the name from
       // pairing day would leave the panel showing a device nobody owns.
+      //
+      // A generic name is not a rename, though. An app that cannot ask the
+      // platform who it is sends "Android phone" on every single hello, and
+      // taking that would undo a better name on every reconnect — the one the
+      // network answered with, or the one an older, wiser build of the app
+      // gave before it was downgraded.
       const renamed = String(info.name || '').slice(0, 64)
       const model = String(info.model || '').slice(0, 64)
-      if (renamed && (renamed !== device.name || model !== device.model)) {
-        device = upsertDevice({ ...device, name: renamed, model })
+      if (renamed && !isGeneric(renamed) && (renamed !== device.name || model !== device.model)) {
+        device = upsertDevice({ ...device, name: renamed, model, nameSource: 'app' })
       }
     } else if (msg.pairCode) {
       // One phone at a time. `consumePairingCode` says the same thing, but a
@@ -663,6 +674,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     touchDevice(device.id)
     log.info(`${device.name} connected from ${peer}`)
     publishState()
+    adoptNetworkName(client, peer)
 
     send(client, {
       t: 'hello.ok',
@@ -676,6 +688,30 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       theme: readTheme(),
       events: DEFAULT_EVENTS,
     })
+  }
+
+  /**
+   * Give the phone the name the network has for it, when the phone itself had
+   * none to give. The lookup runs after the hello has been answered — a
+   * resolver that takes its time must not keep the app waiting — and the panel
+   * is republished if it changes anything.
+   *
+   * A name that came from here is revisited on every reconnect, because a
+   * lease renamed on the router should follow, and because the day the app
+   * learns to answer for itself its own name has to be able to win.
+   */
+  async function adoptNetworkName(client, peer) {
+    const device = client.device
+    if (!device) return
+    if (!isGeneric(device.name) && device.nameSource !== 'network') return
+
+    const name = await nameFromNetwork(peer)
+    if (!name || name === device.name) return
+
+    const updated = upsertDevice({ ...device, name, nameSource: 'network' })
+    if (client.device?.id === updated.id) client.device = updated
+    log.info(`the network calls ${device.name} "${name}"`)
+    publishState()
   }
 
   async function handleRequest(client, msg) {

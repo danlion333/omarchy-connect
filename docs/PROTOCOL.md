@@ -171,6 +171,22 @@ All of the frames below travel inside the encrypted channel described above.
 `wpctl`, `brightnessctl`, `playerctl`, `hyprctl` and the `omarchy-*` helpers are
 installed. The app greys out what is missing instead of failing at call time.
 
+### What the phone is called
+
+`device.name` travels on every `hello`, not just the first, so a phone renamed
+in its own settings is renamed on the desktop too. Only a real name counts:
+`Android phone`, `iPhone` and the app's other fallbacks are recognised as
+generic and never displace a name the desktop already has.
+
+When the phone has no name to give, the desktop asks the network instead — a
+reverse lookup on the address the socket came from, which the router answers
+with the hostname the phone put on its DHCP lease, so `OnePlus-9-Pro-5G` becomes
+`OnePlus 9 Pro 5G`. The lookup runs after the hello is answered and never blocks
+it; hostnames the network invented for itself (`android-3f2ac91b`,
+`Android_T9UWKJ01`) are refused; and a name found this way is revisited on every
+reconnect — so a lease renamed on the router follows, and the phone's own answer
+wins the moment it has one.
+
 ### Requests
 
 ```jsonc

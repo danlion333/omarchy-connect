@@ -46,26 +46,6 @@ class OmarchyLinkModule : Module() {
 
     Function("isAvailable") { true }
 
-    /**
-     * What the phone calls itself — the name in Settings, the one its owner
-     * typed and recognises. Android keeps it in two places depending on the
-     * version and the OEM, and on a phone that has never been renamed it is
-     * missing from both; the model is then the closest thing to a real name,
-     * and it still beats telling the desktop "Android phone".
-     */
-    Function("deviceName") {
-      val resolver = context.contentResolver
-      val settings = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
-        Settings.Global.getString(resolver, Settings.Global.DEVICE_NAME)
-      } else {
-        null
-      }
-      val bluetooth = Settings.Secure.getString(resolver, "bluetooth_name")
-      settings?.trim()?.ifEmpty { null }
-        ?: bluetooth?.trim()?.ifEmpty { null }
-        ?: modelName()
-    }
-
     /** Whether the service is up right now, as opposed to merely wanted. */
     Function("isRunning") { LinkService.running }
 
@@ -152,15 +132,6 @@ class OmarchyLinkModule : Module() {
         activity.startActivity(fallback)
       }
     }
-  }
-
-  /** "Pixel 8" rather than "Google Pixel 8" — the maker is usually in it. */
-  private fun modelName(): String {
-    val model = Build.MODEL?.trim().orEmpty()
-    val maker = Build.MANUFACTURER?.trim().orEmpty()
-    if (model.isEmpty()) return maker.ifEmpty { "Android phone" }
-    if (maker.isEmpty() || model.startsWith(maker, ignoreCase = true)) return model
-    return "$maker $model"
   }
 
   private fun watchNetwork() {

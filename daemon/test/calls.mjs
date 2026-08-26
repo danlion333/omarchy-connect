@@ -452,6 +452,34 @@ check('the name is remembered, not just answered with', paired?.name === 'Окс
 check('and the model it came with', paired?.model === 'Pixel 8', paired?.model)
 again.close()
 
+/**
+ * The other direction: an app that cannot ask the platform who it is sends the
+ * same generic label on every hello, and taking it would undo the real name on
+ * every reconnect — the one its owner typed, or the one the network answered
+ * with on a phone whose app never learned to ask.
+ */
+const generic = connectPhone(PORT, info.publicKey)
+const regreet = await new Promise((resolve, reject) => {
+  generic.ready
+    .then(() =>
+      generic.send({
+        t: 'hello',
+        token,
+        device: { id: 'calls-test-device', name: 'Android phone', platform: 'android', model: '34' },
+      }),
+    )
+    .catch(reject)
+  generic.on((msg) => {
+    if (msg.t === 'hello.ok') resolve(msg)
+    if (msg.t === 'hello.err') reject(new Error(msg.error))
+  })
+  setTimeout(() => reject(new Error('no hello')), 8000)
+}).catch((err) => err)
+check('a generic name does not displace a real one', regreet?.device?.name === 'Оксанин Pixel', regreet?.device?.name)
+const kept = JSON.parse(fs.readFileSync(path.join(sandbox, 'omarchy-connect', 'config.json'), 'utf8')).devices[0]
+check('and the desktop does not write it down either', kept?.name === 'Оксанин Pixel', kept?.name)
+generic.close()
+
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} call-control checks passed`)
 process.exit(failed.length ? 1 : 0)

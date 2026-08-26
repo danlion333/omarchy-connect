@@ -18,7 +18,6 @@ import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
   linkService,
-  phoneName,
   setBackgroundLinkStatus,
   startBackgroundLink,
   stopBackgroundLink,
@@ -439,13 +438,14 @@ function reduceAgents(previous: AgentSession[], data: AgentEvent): AgentSession[
 }
 
 /**
- * The name the desktop puts on this phone. Whatever the phone calls itself is
- * the answer the user recognises; the generic stand-in is only for the places
- * that cannot say — iOS, where the system hands out "iPhone" and nothing more
- * without an entitlement, and Expo Go, which has no native module to ask.
+ * A stand-in, on purpose. The phone cannot ask the platform what its owner
+ * named it — Android hides that behind a permission on the versions that
+ * matter, iOS hands out "iPhone" and nothing more without an entitlement — so
+ * the desktop does the naming instead, from the hostname the phone put on its
+ * DHCP lease. See `daemon/src/lib/hostname.js`.
  */
 function deviceName() {
-  return phoneName() ?? (Platform.OS === 'ios' ? 'iPhone' : 'Android phone')
+  return Platform.OS === 'ios' ? 'iPhone' : 'Android phone'
 }
 
 export const link = new Link()

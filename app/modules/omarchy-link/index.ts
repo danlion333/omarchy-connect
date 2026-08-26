@@ -20,7 +20,6 @@ declare class OmarchyLink extends NativeModule<Events> {
   requestNotificationPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
   isBatteryOptimized(): boolean
   openBatterySettings(): Promise<void>
-  deviceName(): string
 }
 
 /**
@@ -49,20 +48,6 @@ export function linkService(): OmarchyLink | null {
 }
 
 export const backgroundLinkSupported = () => linkService() !== null
-
-/**
- * What this phone is called in its own Settings, or null where nothing can
- * say — Expo Go, iOS, an older build of the module. The desktop shows this,
- * so a generic stand-in is the caller's decision to make, not this file's.
- */
-export function phoneName(): string | null {
-  try {
-    const name = linkService()?.deviceName()
-    return typeof name === 'string' && name.trim() ? name.trim() : null
-  } catch {
-    return null
-  }
-}
 
 /** Whether the link is wanted while the app is closed. */
 export function backgroundLinkEnabled(): boolean {
