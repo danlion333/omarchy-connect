@@ -36,7 +36,10 @@ function card(title, rows) {
   out.push(dim(`├${line('─')}┤`))
   for (const [label, value] of rows) {
     const left = String(label).toUpperCase().padEnd(16)
-    const room = width - 4 - left.length
+    // The two spaces inside the borders are already spent by the padding
+    // above, so a row is the label plus whatever is left of the width — take
+    // any more and the right border walks off the one the title row drew.
+    const room = width - 2 - left.length
     // Long values (a config path, a theme name) must not push the border out
     // of alignment — keep the tail, which is the part that identifies them.
     const text = String(value)
@@ -44,6 +47,39 @@ function card(title, rows) {
     out.push(dim('│ ') + dim(left) + right + dim(' │'))
   }
   out.push(dim(`└${line('─')}┘`))
+  return out.join('\n')
+}
+
+const ANSI = /\u001b\[[0-9;]*m/g
+const visibleWidth = (text) => text.replace(ANSI, '').length
+
+/**
+ * The pairing QR and its card, laid out for the window they landed in.
+ *
+ * Stacked they run to nearly forty lines and the floating pairing window
+ * holds about thirty-six, so the terminal scrolls — and what it scrolls away
+ * is the top of the QR, the one thing on this screen that has to survive
+ * whole. When the window is too short for the stack but wide enough to take
+ * them side by side, the card moves next to the code instead of under it.
+ */
+function pairingScreen(qr, rows) {
+  const cardLines = card('PAIRING', rows).split('\n')
+  if (!qr) return cardLines.join('\n')
+  const qrLines = qr.replace(/\n+$/, '').split('\n')
+  const stacked = `${qrLines.join('\n')}\n\n${cardLines.join('\n')}`
+  const term = process.stdout
+  if (!term.isTTY) return stacked
+  const qrWidth = Math.max(...qrLines.map(visibleWidth))
+  const cardWidth = visibleWidth(cardLines[0])
+  // Five lines of slack: the notes the callers print underneath, and the
+  // prompt the shell draws again once the command is done.
+  const fitsStacked = term.rows >= qrLines.length + cardLines.length + 5
+  if (fitsStacked || term.columns < qrWidth + 2 + cardWidth) return stacked
+  const out = []
+  for (let i = 0; i < Math.max(qrLines.length, cardLines.length); i += 1) {
+    const left = qrLines[i] ?? ' '.repeat(qrWidth)
+    out.push(`${left}  ${cardLines[i] ?? ''}`.trimEnd())
+  }
   return out.join('\n')
 }
 
@@ -173,9 +209,8 @@ async function showPairing(port, ip, name) {
     pin: cert?.pin ?? null,
   })
   const qr = await renderQr(url)
-  if (qr) console.log(qr)
   console.log(
-    card('PAIRING', [
+    pairingScreen(qr, [
       ['code', pairing.code],
       ['address', `${cert ? 'https' : 'http'}://${ip}:${port}`],
       ['fingerprint', fingerprint(key)],
@@ -209,9 +244,8 @@ async function cmdPair(args) {
     pin: cert?.pin ?? null,
   })
   const qr = await renderQr(url)
-  if (qr) console.log(qr)
   console.log(
-    card('PAIRING', [
+    pairingScreen(qr, [
       ['code', code],
       ['address', `${cert ? 'https' : 'http'}://${ip}:${cfg.port}`],
       ['fingerprint', fingerprint(key)],

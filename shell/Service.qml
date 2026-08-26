@@ -218,12 +218,20 @@ Item {
 
   /**
    * Pairing is a QR code and a wait, so it belongs in a terminal rather than
-   * in a popup that closes the moment you look away from it. Omarchy's own
-   * presentation wrapper gives it the theme and the floating window.
+   * in a popup that closes the moment you look away from it.
+   *
+   * Omarchy's presentation wrapper is how the panel opens the others, but it
+   * prints the logo first, and a dozen lines of banner in a window this size
+   * pushes the QR off the top of the screen — the one thing here that has to
+   * be readable whole. So the same window is opened without the banner, and
+   * kept from vanishing at the end the way the wrapper does. 130 is ctrl-c,
+   * which is the user closing the window themselves.
    */
   function pair() {
-    detach(["omarchy-launch-floating-terminal-with-presentation",
-            Model.shellQuote(Model.command(root.status, ["pair", "--wait"]))])
+    var cmd = Model.shellQuote(Model.command(root.status, ["pair", "--wait"]))
+    detach(["setsid", "uwsm-app", "--", "xdg-terminal-exec",
+            "--app-id=org.omarchy.terminal", "--title=Omarchy", "-e", "bash", "-c",
+            "source omarchy-restart-gum; " + cmd + "; (( $? != 130 )) && omarchy-show-done"])
     note("Pairing window opened")
   }
 
