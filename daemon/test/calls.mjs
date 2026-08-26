@@ -318,6 +318,40 @@ await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+155
 const afterRing = await req('phone.history', { limit: 5 })
 check('a call that ends takes the remote control off the screen', afterRing.call === null, JSON.stringify(afterRing.call))
 
+/**
+ * The dialler puts the number where the name goes for the first moment of
+ * every call — the notification is posted before the address book has been
+ * consulted — and Android wraps that number in invisible direction marks
+ * first, so it does not look like a number to anything checking. Left alone,
+ * the desktop reads a name it never had, decides the caller is known, and
+ * discards the post that carried the real one: the reported symptom was a
+ * ringing phone that showed a number and never turned into a contact.
+ */
+const WRAPPED = '\u202a+380 97 993 6034\u202c'
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', name: WRAPPED }] })
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+380979936034', name: 'Настьона' }] })
+const wrapped = (await req('phone.history', { limit: 10 })).items.filter((i) => /9936034/.test(i.from ?? ''))
+check('a number dressed as a name is one call, not two', wrapped.length === 1, `${wrapped.length} entr(y/ies)`)
+check('the layout marks are stripped off it', wrapped[0]?.from === '+380979936034', JSON.stringify(wrapped[0]?.from))
+check('and the contact replaces it once the dialler knows', wrapped[0]?.name === 'Настьона', wrapped[0]?.name)
+
+/**
+ * Both halves of that in one request, which is what a phone that reconnects
+ * with a backlog actually sends. The second report is handled before the
+ * notification server has said what id it gave the first, so a rewrite has
+ * nothing to name — and the anonymous card used to sit on screen beside the
+ * named one rather than being replaced by it.
+ */
+await req('phone.report', {
+  events: [
+    { kind: 'call', state: 'ringing', from: '+15553333' },
+    { kind: 'call', state: 'ringing', from: '+15553333', name: 'Богдан' },
+  ],
+})
+const batched = (await req('phone.history', { limit: 10 })).items.filter((i) => i.from === '+15553333')
+check('a batch of both reports is one call', batched.length === 1, `${batched.length} entr(y/ies)`)
+check('and ends up named', batched[0]?.name === 'Богдан', batched[0]?.name)
+
 // A ringing phone is the one notification worth putting buttons on, and the
 // buttons are the whole point — a notification without them is just a readout.
 const notifications = fs.existsSync(notifyLog) ? fs.readFileSync(notifyLog, 'utf8').split('\n') : []
@@ -357,6 +391,11 @@ check(
 const rerung = notifications.filter((line) => /Incoming call/.test(line) && /-r 4242/.test(line))
 check('the second notification replaces the first rather than joining it', rerung.length >= 1,
   `${rerung.length} replacement(s)`)
+check(
+  'a name arriving in the same batch as the number replaces it too',
+  notifications.some((line) => /Богдан/.test(line) && /-r 4242/.test(line)),
+  notifications.filter((line) => /Богдан/.test(line)).join(' | ') || 'nothing was raised',
+)
 
 /**
  * The app has to be listening on the channel the daemon talks on.

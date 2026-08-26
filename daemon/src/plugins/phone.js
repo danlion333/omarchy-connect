@@ -61,6 +61,8 @@ let janitor = null
 let ringer = null
 /** The server's id for that notification, so it can be replaced or closed. */
 let ringingId = 0
+/** A rewrite asked for before the notification it rewrites had an id yet. */
+let queuedRing = null
 /** The call a remote control should act on, from whichever road saw it. */
 let live = null
 
@@ -103,6 +105,24 @@ const ringingUids = new Map()
 const text = (value, max) => (typeof value === 'string' ? value.slice(0, max) : null)
 
 /**
+ * Android lays a phone number out before it shows it, wrapping it in invisible
+ * direction marks so a leading `+` still reads correctly beside right-to-left
+ * script. Those marks are for a phone's screen, not for this one, and a number
+ * still carrying them does not compare equal to the same number arriving over
+ * Bluetooth — which is what decides whether one ringing phone is one entry.
+ */
+const INVISIBLE = /[\u00ad\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g
+const person = (value, max) => {
+  if (typeof value !== 'string') return null
+  const clean = value.replace(INVISIBLE, '').trim()
+  return clean ? clean.slice(0, max) : null
+}
+
+/** A caller ID made of nothing but dialling characters is a number, not a name. */
+const NUMBERISH = /^[+()\-.\s\d*#]+$/
+const isNumber = (value) => typeof value === 'string' && NUMBERISH.test(value) && /\d/.test(value)
+
+/**
  * Time out the requests the phone never answered.
  *
  * This is on a timer rather than only at the head of the next request: the
@@ -135,6 +155,7 @@ const caller = (entry) => entry.name || entry.from || 'unknown number'
 function silence(close = true) {
   const child = ringer
   ringer = null
+  if (close) queuedRing = null
   if (child) {
     try {
       child.kill()
@@ -155,6 +176,13 @@ function silence(close = true) {
   ])
 }
 
+/** Raise a rewrite that was waiting on an id, now that one will never come. */
+function flushQueuedRing() {
+  const queued = queuedRing
+  queuedRing = null
+  if (queued) ring(queued.entry, queued.actionable)
+}
+
 /**
  * A ringing phone is the one desktop notification that is useless a minute
  * late, and the only one worth putting buttons on. `notify-send -A` waits for
@@ -163,6 +191,16 @@ function silence(close = true) {
  */
 function ring(entry, actionable) {
   if (!has('notify-send')) return
+  // The id of the notification already on screen arrives on the previous
+  // `notify-send`'s stdout, a moment after it was spawned. A second report
+  // landing inside that moment — two ringing events drained from the phone's
+  // backlog in one batch is exactly that — would have nothing to rewrite and
+  // would stack a second card beside the first, leaving the anonymous one on
+  // screen next to the named one. So it waits for the id rather than racing it.
+  if (ringer && !ringingId) {
+    queuedRing = { entry, actionable }
+    return
+  }
   // One ringing phone is one notification, even though it is announced twice:
   // the call arrives anonymous and is named a moment later, and the second
   // report must rewrite the first rather than stack beside it. `-r` is what
@@ -203,7 +241,9 @@ function ring(entry, actionable) {
     { stdio: ['ignore', 'pipe', 'ignore'] },
   )
   child.on('error', () => {
-    if (ringer === child) ringer = null
+    if (ringer !== child) return
+    ringer = null
+    flushQueuedRing()
   })
   child.stdout.setEncoding('utf8')
   let chosen = ''
@@ -213,13 +253,20 @@ function ring(entry, actionable) {
     // clicked action, if there is one, follows on a later line.
     if (ringer !== child) return
     const first = chosen.split('\n', 1)[0].trim()
-    if (/^\d+$/.test(first)) ringingId = Number(first)
+    if (!/^\d+$/.test(first) || ringingId) return
+    ringingId = Number(first)
+    // Whatever was waiting on this id can now rewrite the card rather than
+    // stack a second one beside it.
+    flushQueuedRing()
   })
   child.on('exit', () => {
     // Killed by `silence`, which already owns the id and has moved on.
     if (ringer !== child) return
     ringer = null
     ringingId = 0
+    // A notification that went away without ever reporting an id leaves a
+    // rewrite waiting on something that is not coming; it raises its own card.
+    flushQueuedRing()
     const action = chosen
       .split('\n')
       .map((line) => line.trim())
@@ -294,7 +341,15 @@ function twin(entry) {
 function enrich(existing, incoming) {
   const before = caller(existing)
   if (!existing.from && incoming.from) existing.from = incoming.from
-  if (!existing.name && incoming.name) existing.name = incoming.name
+  // A dialler that has not looked the caller up yet puts the number where the
+  // name goes, and older builds of the app forwarded that verbatim. A real
+  // name landing afterwards is the correction, not a second opinion — and the
+  // number it displaces is worth moving rather than dropping.
+  if (incoming.name && (!existing.name || (isNumber(existing.name) && !isNumber(incoming.name)))) {
+    if (isNumber(existing.name) && !existing.from) existing.from = existing.name
+    existing.name = incoming.name
+  }
+  if (!existing.from && isNumber(incoming.name)) existing.from = incoming.name
   if (existing.ancs == null && incoming.ancs != null) existing.ancs = incoming.ancs
   if (!existing.missed && incoming.missed) {
     existing.missed = true
@@ -321,8 +376,8 @@ function record(raw, device) {
     kind,
     at: Number.isFinite(raw.at) ? raw.at : Date.now(),
     receivedAt: Date.now(),
-    from: text(raw.from, 32),
-    name: text(raw.name, 64),
+    from: person(raw.from, 32),
+    name: person(raw.name, 64),
     via: ROADS.has(raw.via) ? raw.via : 'app',
     device: device?.name ?? null,
   }

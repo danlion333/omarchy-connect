@@ -40,6 +40,9 @@ class PhoneStateReceiver : BroadcastReceiver() {
      */
     private const val ENRICH_WINDOW_MS = 5000L
 
+    /** Whether what is held is a name, rather than a number standing in for one. */
+    private fun named() = ringingName != null && !Caller.isNumber(ringingName)
+
     /**
      * Who the dialler says is calling. Called from the notification listener,
      * which runs in this same process but on its own schedule.
@@ -53,14 +56,24 @@ class PhoneStateReceiver : BroadcastReceiver() {
     @Synchronized
     fun identify(context: Context, name: String?, number: String?) {
       if (name == null && number == null) return
-      val gained = (number != null && ringingNumber == null) || (name != null && ringingName == null)
-      if (ringingNumber == null && number != null) ringingNumber = number
-      if (ringingName == null && name != null) ringingName = name
-      if (!gained || namedOut) return
+      val hadNumber = ringingNumber
+      val hadName = ringingName
+      if (number != null && ringingNumber == null) ringingNumber = number
+      // A real name displaces a number that was standing in for one. Held
+      // rather than waited for, because on a handset with no contact for the
+      // caller that first bare post is all there is ever going to be.
+      if (name != null && (ringingName == null || Caller.isNumber(ringingName))) ringingName = name
+      // A number learned from the notification is a number the broadcast never
+      // carried, so this is the first chance the address book has had at it.
+      if (!named() && ringingNumber != null) {
+        Contacts.nameFor(context, ringingNumber)?.let { ringingName = it }
+      }
+      if (ringingNumber == hadNumber && ringingName == hadName) return
+      if (namedOut) return
       if (lastState != "ringing") return
       if (System.currentTimeMillis() - announcedAt > ENRICH_WINDOW_MS) return
       announcedAt = System.currentTimeMillis()
-      namedOut = ringingName != null
+      namedOut = named()
       OmarchyTelephonyModule.deliver(context, "onCall", ringingEvent())
     }
 
@@ -95,10 +108,10 @@ class PhoneStateReceiver : BroadcastReceiver() {
       @Suppress("DEPRECATION")
       val broadcast = intent.getStringExtra(TelephonyManager.EXTRA_INCOMING_NUMBER)?.takeIf { it.isNotBlank() }
       if (broadcast != null) ringingNumber = broadcast
-      if (ringingName == null) ringingName = Contacts.nameFor(context, ringingNumber)
+      if (!named()) Contacts.nameFor(context, ringingNumber)?.let { ringingName = it }
       // The listener may already have named the caller before the broadcast
       // arrived, in which case this first event is the named one.
-      namedOut = ringingName != null
+      namedOut = named()
       answered = false
     }
     if (state == "active") answered = true

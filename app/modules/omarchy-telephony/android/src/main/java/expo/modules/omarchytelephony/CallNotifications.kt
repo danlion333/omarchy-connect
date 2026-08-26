@@ -53,9 +53,6 @@ class CallNotifications : NotificationListenerService() {
       context.startActivity(intent)
     }
 
-    /** A title that is all digits is a number the dialler could not name. */
-    private val NUMBERISH = Regex("""^[+()\-\s\d*#]+$""")
-
     /** `tel:+380…` on the notification's Person, when the dialler attaches one. */
     private fun numberFrom(notification: Notification): String? {
       val extras = notification.extras
@@ -70,7 +67,7 @@ class CallNotifications : NotificationListenerService() {
         .firstOrNull { it.startsWith("tel:") }
         ?.removePrefix("tel:")
         ?.let(android.net.Uri::decode)
-        ?.takeIf { it.isNotBlank() }
+        ?.let(Caller::clean)
     }
   }
 
@@ -95,13 +92,16 @@ class CallNotifications : NotificationListenerService() {
     if (notification.category != Notification.CATEGORY_CALL) return
     if (!ours(sbn)) return
 
-    val title = notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString()?.trim()
+    val title = Caller.clean(notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
     var number = numberFrom(notification)
-    var name: String? = title?.takeIf { it.isNotEmpty() }
+    var name: String? = title
 
-    // The dialler shows the raw number when it has no contact for it; passing
-    // that on as a name would put the number on the desktop twice.
-    if (name != null && NUMBERISH.matches(name)) {
+    // The dialler shows the raw number when it has no contact for it — and for
+    // the first moment of a call it shows one even when it does, because the
+    // notification goes up before the address book has been consulted. Passing
+    // either on as a name would put the number on the desktop twice and, worse,
+    // convince the module the caller is already known.
+    if (Caller.isNumber(name)) {
       if (number == null) number = name
       name = null
     }
