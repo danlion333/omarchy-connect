@@ -19,7 +19,8 @@ import { run, runInteractive, has } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
 import { INBOX } from '../src/plugins/share.js'
-import { detected as detectedAgents } from '../src/plugins/agents.js'
+import { detected as detectedAgents } from '../src/agents/index.js'
+import * as agentHooks from '../src/agents/hooks.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8'))
@@ -780,7 +781,6 @@ async function cmdTls(args) {
   const restartHint = () => {
     if (live?.running) log.warn('restart the daemon for this to take effect: systemctl --user restart omarchy-connect')
   }
-
   if (action === 'status') {
     const cert = tls.info()
     console.log(
@@ -888,65 +888,10 @@ function cmdConfig(args) {
 
 /* ── coding agents ───────────────────────────────────────────────────── */
 
-const CLAUDE_SETTINGS = path.join(os.homedir(), '.claude', 'settings.json')
-/** The lifecycle events worth a hook: everything the state machine needs. */
-const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'Notification', 'SessionEnd']
-
-const shellQuote = (value) => (/[\s"'$`\\]/.test(value) ? `'${value.replace(/'/g, `'\\''`)}'` : value)
-
-/** How a hook invokes this CLI again, without depending on $PATH. */
-const hookCommand = () => [...state.execCommand().map(shellQuote), 'agent', 'hook'].join(' ')
-
-const isOurHook = (entry) =>
-  typeof entry?.command === 'string' && entry.command.includes('agent hook') && entry.command.includes('omarchy-connect')
-
-function readClaudeSettings() {
-  try {
-    return JSON.parse(fs.readFileSync(CLAUDE_SETTINGS, 'utf8'))
-  } catch (err) {
-    if (err.code === 'ENOENT') return {}
-    throw new Error(`${CLAUDE_SETTINGS} is not valid JSON — fix it first`)
-  }
-}
-
-function hooksInstalled() {
-  const hooks = readClaudeSettings().hooks || {}
-  return HOOK_EVENTS.every((event) =>
-    (hooks[event] || []).some((group) => (group.hooks || []).some(isOurHook)),
-  )
-}
-
-/**
- * Add — or remove — our hook from Claude Code's settings without disturbing
- * anybody else's. Every write strips our own entries first, so running this
- * twice leaves one hook rather than two.
- */
-function writeHooks(install) {
-  const settings = readClaudeSettings()
-  const hooks = { ...(settings.hooks || {}) }
-  const command = hookCommand()
-
-  for (const event of Object.keys(hooks)) {
-    const groups = (hooks[event] || [])
-      .map((group) => ({ ...group, hooks: (group.hooks || []).filter((h) => !isOurHook(h)) }))
-      .filter((group) => group.hooks.length)
-    if (groups.length) hooks[event] = groups
-    else delete hooks[event]
-  }
-
-  if (install) {
-    for (const event of HOOK_EVENTS) {
-      hooks[event] = [...(hooks[event] || []), { hooks: [{ type: 'command', command, timeout: 5 }] }]
-    }
-  }
-
-  const next = { ...settings }
-  if (Object.keys(hooks).length) next.hooks = hooks
-  else delete next.hooks
-  fs.mkdirSync(path.dirname(CLAUDE_SETTINGS), { recursive: true })
-  fs.writeFileSync(CLAUDE_SETTINGS, JSON.stringify(next, null, 2) + '\n')
-  return command
-}
+// The hooks themselves — where they live, what they say, how they are written
+// — belong beside the adapter they serve: the panel reports whether they are
+// installed, and the daemon publishes that in the status file.
+const { SETTINGS_FILE: CLAUDE_SETTINGS, EVENTS: HOOK_EVENTS, installed: hooksInstalled, write: writeHooks } = agentHooks
 
 /**
  * The bridge between a coding agent's hook and this daemon.
@@ -997,13 +942,22 @@ async function cmdAgent(args) {
 
   const cfg = loadConfig()
   const live = state.read()
-  const restartHint = () => {
-    if (live?.running) log.warn('restart the daemon for this to take effect: systemctl --user restart omarchy-connect')
-  }
-
   if (action === 'enable' || action === 'disable') {
     const on = action === 'enable'
-    saveConfig({ ...cfg, agents: { ...(cfg.agents || {}), enabled: on } })
+    // A running daemon owns this: it writes the config itself and starts or
+    // stops the watching in the same breath, so nothing has to be restarted
+    // and the phone keeps its link. The panel's switch comes down this road.
+    const res = await daemonRequest('/api/agent/control', { method: 'POST', body: { op: action } })
+    // Two ways the live half is simply absent, and neither is a failure: no
+    // daemon at all, and a daemon from before this endpoint existed, which
+    // answers 404. In both the config is the whole switch — it is what the
+    // next start reads — so it is written here instead.
+    const applied = res.ok === true
+    if (!applied && res.status && res.status !== 404) {
+      log.error(res.data?.error || `could not turn agent control ${on ? 'on' : 'off'}`)
+      process.exit(1)
+    }
+    if (!applied) saveConfig({ ...cfg, agents: { ...(cfg.agents || {}), enabled: on } })
     if (on) {
       log.ok('agent control on')
       console.log(
@@ -1017,7 +971,12 @@ async function cmdAgent(args) {
     } else {
       log.ok('agent control off')
     }
-    restartHint()
+    if (!applied && (live?.running || res.status)) {
+      // Either the status file claims a daemon that is not answering, or the
+      // one answering is older than this endpoint. Same sentence either way:
+      // what is on disk is right, what is running is not.
+      log.warn('the running daemon did not take it — restart it: systemctl --user restart omarchy-connect')
+    }
     return
   }
 
@@ -1078,7 +1037,12 @@ async function cmdAgent(args) {
     ]),
   )
   if (!agents.enabled) {
-    console.log(dim('\n  omarchy-connect agent enable   let a paired phone read these sessions\n'))
+    console.log(
+      dim(
+        '\n  omarchy-connect agent enable   let a paired phone read these sessions\n\n' +
+          '  the same switch is on the desktop panel, under CODING AGENTS\n',
+      ),
+    )
   } else if (!hooksInstalled()) {
     console.log(
       dim(

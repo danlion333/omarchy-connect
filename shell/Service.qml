@@ -73,6 +73,18 @@ Item {
   // mirrored events say "ringing", and both mean a phone nobody has picked up.
   readonly property bool ringing: !!liveCall
     && (liveCall.state === "incoming" || liveCall.state === "waiting" || liveCall.state === "ringing")
+  // The coding agents this desktop can read, and whether it is allowed to.
+  // Unlike TLS this one *is* switchable from here: the daemon applies it
+  // without a restart, so the link survives the click.
+  readonly property var agents: Model.agents(status)
+  readonly property bool agentsEnabled: agents.enabled
+  readonly property bool agentHooks: agents.hooks
+  readonly property var agentSessions: agents.sessions
+  readonly property int agentsWaiting: agents.waiting
+  // Worth a card at all: either an agent is installed here, or reading is on
+  // and the switch has to be reachable to be turned back off.
+  readonly property bool agentsAvailable: agents.enabled || agents.adapters.length > 0
+
   // Whether the daemon is serving https + wss. The panel only reports it —
   // switching TLS on is `omarchy-connect tls enable`, which needs a restart.
   readonly property bool tls: !!status && !!status.tls && status.tls.enabled === true
@@ -155,8 +167,21 @@ Item {
 
   /* ── actions ──────────────────────────────────────────────────────── */
 
+  /**
+   * One line of CLI output, fit for a panel.
+   *
+   * The CLI writes for a terminal: colour escapes, a timestamp and a three-
+   * character tag in front of every line. None of that means anything inside a
+   * QML Text — the escapes come out as mojibake and the stamp says nothing the
+   * panel does not already know — so both are stripped and what is left is the
+   * sentence.
+   */
   function elide(text) {
-    var value = String(text || "").replace(/\s+/g, " ").trim()
+    var value = String(text || "")
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^\d{2}:\d{2}:\d{2}\s+(?:ok|err|!!|dbg|inf)\s+/, "")
     return value.length > 140 ? value.substring(0, 137) + "…" : value
   }
 
@@ -216,6 +241,11 @@ Item {
       } else {
         root.lastError = ""
         root.actionStatus = ""
+        // A command can succeed and still have something to say — a daemon too
+        // old to take a switch live is the case this was written for. Saying it
+        // dimly beats a panel that looks like nothing happened.
+        var warning = root.elide(String(actionErr.text || ""))
+        if (warning !== "") root.note(warning)
       }
       root.refresh()
     }
@@ -295,6 +325,32 @@ Item {
     invoke(["bash", "-lc",
             cli + " && systemctl --user daemon-reload && systemctl --user enable --now omarchy-connect.service"],
            "Installing the service…")
+  }
+
+  /* ── coding agents ────────────────────────────────────────────────── */
+
+  /**
+   * The one switch on this panel that widens what the phone can see, so it is
+   * the one that waits for its command rather than firing and forgetting: the
+   * CLI writes the config and tells the running daemon in the same call, and
+   * anything that goes wrong there is worth a line on screen.
+   */
+  function enableAgents() {
+    invoke(Model.command(root.status, ["agent", "enable"]), "Letting the phone read agents…")
+  }
+
+  function disableAgents() {
+    invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent reading off…")
+  }
+
+  /**
+   * Hooks are what tell the desktop an agent has stopped and is waiting. They
+   * are written into `~/.claude/settings.json`, which is the user's file and
+   * nothing the daemon touches on its own — so this is a button, never
+   * something the panel does because reading was turned on.
+   */
+  function installAgentHooks() {
+    invoke(Model.command(root.status, ["agent", "install-hooks"]), "Installing the hooks…")
   }
 
   function copyText(text) {

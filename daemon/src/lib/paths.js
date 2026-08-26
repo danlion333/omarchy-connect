@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
@@ -14,3 +15,13 @@ export const OMARCHY_STATE = path.join(XDG_STATE, 'omarchy')
 export const OMARCHY_THEME = path.join(OMARCHY_STATE, 'current', 'theme')
 export const OMARCHY_COLORS = path.join(OMARCHY_THEME, 'colors.toml')
 export const OMARCHY_NOTIFICATIONS = path.join(OMARCHY_STATE, 'notifications', 'history')
+
+/**
+ * How this daemon can be invoked again, so neither the panel nor an agent's
+ * hook ever needs `$PATH`. A checkout runs out of the checkout; anything else
+ * is the installed name.
+ */
+export function execCommand() {
+  const entry = path.resolve(new URL('../../bin/omarchy-connect.js', import.meta.url).pathname)
+  return fs.existsSync(entry) ? [process.execPath, entry] : ['omarchy-connect']
+}

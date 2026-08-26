@@ -36,9 +36,9 @@ the desktop and the app repaints in the same palette.
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
 | **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
-| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default — see below. |
+| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
-| **Desktop client** | An Omarchy bar widget and panel: whether the phone is linked, its battery, recent transfers, and one click each to pair, send a file, or open the inbox. |
+| **Desktop client** | An Omarchy bar widget and panel: whether the phone is linked, its battery, recent transfers, the coding agents it may read, and one click each to pair, send a file, or open the inbox. |
 
 ## Install the daemon
 
@@ -363,6 +363,20 @@ omarchy-connect agent install-hooks   # so the desktop knows when it is stuck
 omarchy-connect agent status
 ```
 
+The same switch is on the desktop panel, under **Coding agents** — with the
+sessions, which of them is waiting, and a button for the hooks. It asks before
+it turns on, naming what the phone is about to be able to see, and it lands
+without restarting anything: the daemon writes the config and starts watching
+in one call, so the phone keeps its link and its Agents screen fills where it
+stands. Turning it off is one click and takes effect at once — every transcript
+held open is closed, every session forgotten.
+
+One case does need a restart, and says so rather than failing: a daemon started
+before this switch existed does not know the endpoint behind it. The config is
+written either way — it is what the next start reads — and both the CLI and the
+panel report that what is running has not taken it:
+`systemctl --user restart omarchy-connect`.
+
 Nothing is scraped off a terminal. Claude Code already keeps every session as
 JSONL under `~/.claude/projects/`, so the daemon reads the file the agent
 writes for itself and collapses it into something a phone screen can carry: one
@@ -380,9 +394,11 @@ started before any of this was installed, and is labelled as the guess it is.
 **Read this before you enable it.** Reading an agent is reading everything it
 saw: your source, the output of every command it ran, any secret that crossed a
 tool result. That is a wider exposure than the clipboard or the notification
-mirror, which is why it is off until you turn it on and why the CLI spells it
-out when you do. The channel is encrypted end to end and only the paired phone
-can ask — but pair only a phone you own.
+mirror, which is why it is off until you turn it on and why both the CLI and
+the panel spell it out when you do. The switch is the desktop's alone — it
+answers on loopback, and there is no call a phone can make to grant itself
+reading. The channel is encrypted end to end and only the paired phone can ask
+— but pair only a phone you own.
 
 Writing back — answering a prompt from the phone — is not here yet. Nothing may
 push bytes into a terminal another process owns: `TIOCSTI` is gone from the
@@ -525,7 +541,8 @@ daemon/         Node.js daemon — one dependency (ws)
   src/plugins/  system, clipboard, notifications, media, desktop, share,
                 input, device telemetry, SMS and calls, coding agents
   src/agents/   one adapter per coding agent — where its transcript lives and
-                how to read a line of it
+                how to read a line of it, plus the lifecycle hooks the desktop
+                installs into Claude Code's own settings
   src/lib/      …including the two Bluetooth clients: hands-free call control
                 over PipeWire, and an iPhone's notifications over ANCS
 shell/          Omarchy shell plugin — the desktop client (QML)

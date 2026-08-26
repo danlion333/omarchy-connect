@@ -29,6 +29,9 @@ Panel {
   property bool cursorActive: false
   property int phraseIndex: 0
   property real now: Date.now()
+  // Letting a phone read the coding agents on this desktop is the widest door
+  // this panel can open, so the switch asks first. Nothing else here does.
+  property bool agentConfirmOpen: false
 
   readonly property var activePhrases: [
     "Bridging devices",
@@ -96,6 +99,22 @@ Panel {
     return list
   }
 
+  /**
+   * The agent switch. Off is immediate — closing a door never needs a second
+   * thought — and on goes through the confirmation, because the click that
+   * turns it on is the click that hands a phone every line of source, every
+   * command and every command's output that an agent has seen.
+   */
+  function requestAgents(on) {
+    if (!on) {
+      agentConfirmOpen = false
+      bridge.disableAgents()
+      return
+    }
+    agentConfirm.selectedIndex = 0
+    agentConfirmOpen = true
+  }
+
   function runAction(key) {
     if (key === "pair") bridge.pair()
     else if (key === "unpair") bridge.unpair(bridge.device)
@@ -107,8 +126,9 @@ Panel {
   /* ── cursor ────────────────────────────────────────────────────────── */
 
   function sectionsBelow(section) {
-    if (section === "header") return bridge.devices.length > 0 ? "devices" : "actions"
-    if (section === "devices") return "actions"
+    if (section === "header") return bridge.devices.length > 0 ? "devices" : sectionsBelow("devices")
+    if (section === "devices") return bridge.agentsAvailable ? "agents" : "actions"
+    if (section === "agents") return "actions"
     return ""
   }
 
@@ -118,6 +138,7 @@ Panel {
     if (actionIndex >= actions.length) actionIndex = Math.max(0, actions.length - 1)
     if (actionIndex < 0) actionIndex = 0
     if (focusSection === "devices" && bridge.devices.length === 0) focusSection = "actions"
+    if (focusSection === "agents" && !bridge.agentsAvailable) focusSection = "actions"
   }
 
   function moveCursor(dx, dy) {
@@ -142,14 +163,26 @@ Panel {
         return
       }
       if (next >= bridge.devices.length) {
-        focusSection = "actions"
+        focusSection = sectionsBelow("devices")
         return
       }
       deviceIndex = next
       scrollCursorIntoView()
       return
     }
+    if (focusSection === "agents") {
+      if (dy > 0) focusSection = "actions"
+      else {
+        focusSection = bridge.devices.length > 0 ? "devices" : "header"
+        deviceIndex = Math.max(0, bridge.devices.length - 1)
+      }
+      return
+    }
     if (focusSection === "actions" && dy < 0) {
+      if (bridge.agentsAvailable) {
+        focusSection = "agents"
+        return
+      }
       focusSection = bridge.devices.length > 0 ? "devices" : "header"
       deviceIndex = Math.max(0, bridge.devices.length - 1)
     }
@@ -161,6 +194,9 @@ Panel {
     // The row carries one action now — the ✕ that frees the desktop for a
     // different phone — so enter and delete land on the same place.
     else if (focusSection === "devices") deleteSelected()
+    // Enter on the agent switch opens the question rather than answering it,
+    // which is why the cursor is allowed here at all.
+    else if (focusSection === "agents") requestAgents(!bridge.agentsEnabled)
     else if (focusSection === "actions") runAction(actions[actionIndex].key)
   }
 
@@ -181,6 +217,11 @@ Panel {
     focusSection = "devices"
     deviceIndex = index
     scrollCursorIntoView()
+  }
+
+  function setAgentsCursor() {
+    cursorActive = true
+    focusSection = "agents"
   }
 
   function setActionCursor(index) {
@@ -215,6 +256,7 @@ Panel {
   visible: !(root.setting("hideWhenUnpaired", false) === true && bridge.loaded && !paired && !bridge.running)
 
   onOpenedChanged: {
+    agentConfirmOpen = false
     if (!opened) return
     cursorActive = false
     focusSection = "header"
@@ -295,15 +337,33 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // A question on screen owns the keyboard until it is answered: the
+      // cursor, the letter keys and Esc all mean something about the question
+      // rather than about the panel behind it.
       onMoveRequested: function (dx, dy) {
+        if (root.agentConfirmOpen) {
+          if (dx !== 0) agentConfirm.selectedIndex = agentConfirm.selectedIndex === 0 ? 1 : 0
+          return
+        }
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
       }
-      onActivateRequested: if (root.cursorActive) root.activateCursor()
-      onCloseRequested: root.close()
-      onDeleteRequested: root.deleteSelected()
+      onActivateRequested: {
+        if (root.agentConfirmOpen) {
+          if (agentConfirm.selectedIndex === 0) root.agentConfirmOpen = false
+          else { root.agentConfirmOpen = false; bridge.enableAgents() }
+          return
+        }
+        if (root.cursorActive) root.activateCursor()
+      }
+      onCloseRequested: {
+        if (root.agentConfirmOpen) root.agentConfirmOpen = false
+        else root.close()
+      }
+      onDeleteRequested: if (!root.agentConfirmOpen) root.deleteSelected()
       onTabRequested: function (direction) { root.switchPanel(direction) }
       onTextKey: function (t) {
+        if (root.agentConfirmOpen) return
         var key = String(t).toLowerCase()
         // Still `p` for pair. With a phone already paired the service answers
         // with why rather than doing anything — dropping a pairing is not
@@ -725,6 +785,146 @@ Panel {
             }
           }
 
+          /* ── coding agents ──────────────────────────────────────── */
+
+          // The desktop half of the agent feature: the switch that decides
+          // whether a paired phone may read the coding agent already open
+          // here, and — once it is on — what that agent is doing. The card
+          // stays out of the way on a machine with no agent installed, because
+          // a switch for a thing that does not exist is only a question.
+          PanelSeparator {
+            visible: bridge.agentsAvailable
+            foreground: root.foreground
+          }
+
+          Column {
+            visible: bridge.agentsAvailable
+            width: parent.width
+            spacing: Style.space(8)
+
+            PanelSectionHeader {
+              text: "CODING AGENTS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Toggle {
+              width: parent.width
+              label: bridge.agentsEnabled ? "The phone can read them" : "Let the phone read them"
+              description: Model.agentsText(bridge.agents, bridge.running)
+              checked: bridge.agentsEnabled
+              hasCursor: root.cursorActive && root.focusSection === "agents"
+              onHovered: function (on) { if (on) root.setAgentsCursor() }
+              foreground: root.foreground
+              // An agent that has stopped to ask you something is the one
+              // thing on this card worth interrupting for.
+              accent: bridge.agentsWaiting > 0 ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestAgents(!bridge.agentsEnabled)
+            }
+
+            // Reading works without hooks; knowing that an agent is *stuck*
+            // does not, because a permission prompt is drawn on a terminal and
+            // never written to a transcript. The hooks live in the user's own
+            // Claude settings, so this stays a button rather than something
+            // turning the switch on quietly did.
+            CursorSurface {
+              visible: bridge.agentsEnabled && !bridge.agentHooks
+              width: parent.width
+              bordered: true
+              foreground: root.foreground
+              implicitHeight: hooksRow.implicitHeight + Style.spacing.rowPaddingX
+
+              RowLayout {
+                id: hooksRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(10)
+                anchors.rightMargin: Style.space(10)
+                spacing: Style.space(10)
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "No hooks yet — the desktop can see an agent working, but not that it has stopped to ask you something."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                Button {
+                  text: "Install"
+                  iconText: "󰐗"
+                  tooltipText: "Add the lifecycle hooks to ~/.claude/settings.json"
+                  bordered: true
+                  foreground: root.foreground
+                  accent: root.foreground
+                  fontFamily: root.fontFamily
+                  Layout.alignment: Qt.AlignVCenter
+                  onClicked: bridge.installAgentHooks()
+                }
+              }
+            }
+
+            Column {
+              visible: bridge.agentsEnabled && bridge.agentSessions.length > 0
+              width: parent.width
+              spacing: Style.space(4)
+
+              Repeater {
+                model: bridge.agentSessions.slice(0, 3)
+
+                delegate: Row {
+                  required property var modelData
+                  width: parent.width
+                  spacing: Style.space(8)
+
+                  readonly property bool waiting: modelData.state === "waiting"
+
+                  Text {
+                    id: agentGlyph
+                    text: Model.agentGlyph(modelData)
+                    color: waiting ? root.urgent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Text {
+                    id: agentName
+                    text: Model.agentTitle(modelData)
+                    color: waiting ? root.urgent : root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+
+                  Text {
+                    width: Math.max(0, parent.width - agentGlyph.width - agentName.width - parent.spacing * 2)
+                    text: Model.agentDetail(modelData, root.now)
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    horizontalAlignment: Text.AlignRight
+                    elide: Text.ElideRight
+                    anchors.verticalCenter: parent.verticalCenter
+                  }
+                }
+              }
+            }
+
+            Text {
+              visible: bridge.agentsEnabled
+              width: parent.width
+              text: "Reading only — the phone cannot answer an agent yet."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+          }
+
           /* ── recent transfers ───────────────────────────────────── */
 
           PanelSeparator {
@@ -907,6 +1107,26 @@ Panel {
             font.pixelSize: Style.font.caption
             wrapMode: Text.WordWrap
           }
+        }
+      }
+
+      // The one question this panel asks. Everything else here either reports
+      // or does something you can undo with the same click; this one widens
+      // what leaves the machine, and it is worth a sentence and a second click.
+      ConfirmDialog {
+        id: agentConfirm
+        anchors.fill: parent
+        z: 10
+        opened: root.agentConfirmOpen
+        message: "Let " + (bridge.device ? bridge.device.name : "the paired phone")
+          + " read the coding agents on this desktop? It sees everything they saw — your source, the commands they ran, and the output of those commands."
+        confirmText: "Let it read"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onCanceled: root.agentConfirmOpen = false
+        onConfirmed: {
+          root.agentConfirmOpen = false
+          bridge.enableAgents()
         }
       }
     }

@@ -5,6 +5,7 @@
 // a paired phone gets nothing until someone says otherwise.
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -172,6 +173,17 @@ const hook = (event, extra = {}) =>
     }),
   }).then((r) => r.json())
 
+/** The desktop's own switch: loopback only, and no phone can reach it. */
+const control = (op) =>
+  fetch(`${base}/api/agent/control`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op }),
+  }).then((r) => r.json())
+
+const readStatus = () => JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+const readStoredConfig = () => JSON.parse(fs.readFileSync(path.join(sandbox, 'omarchy-connect', 'config.json'), 'utf8'))
+
 const settle = (ms = 350) => new Promise((r) => setTimeout(r, ms))
 const waitFor = async (events, predicate, ms = 4000) => {
   const until = Date.now() + ms
@@ -187,13 +199,45 @@ const waitFor = async (events, predicate, ms = 4000) => {
 
 await startDaemon(false)
 {
-  const { hello, req, close } = await connect()
+  const { hello, req, events, close } = await connect()
   check('capabilities say agents are off', hello.capabilities.agents?.enabled === false)
   check('capabilities admit writing is not implemented', hello.capabilities.agents?.write === null)
   const refused = await req('agents.list').then(() => null, (e) => e.message)
   check('agents.list is refused while disabled', String(refused).includes('agent enable'), refused)
   const ignored = await hook('SessionStart')
   check('a hook is ignored while disabled', ignored.ok === false, ignored.error)
+
+  /* ── the switch on the desktop panel ─────────────────────────────────── */
+
+  // The panel shells out to `omarchy-connect agent enable`, which comes down
+  // this road. The whole point is that it lands without a restart: the phone
+  // above stays connected across the next four checks.
+  const denied = await req('agents.enable').then(() => 'answered', (e) => e.message)
+  check('a phone cannot turn on its own reading', denied !== 'answered', String(denied))
+
+  const on = await control('enable')
+  check('the desktop switch turns reading on', on.ok === true && on.agents.enabled === true)
+  check('the switch says whether the hooks are in place', typeof on.agents.hooks === 'boolean')
+  check(
+    'the phone is told the answer changed',
+    Boolean(await waitFor(events, (e) => e.kind === 'control' && e.enabled === true)),
+  )
+  const allowed = await req('agents.list')
+  check('the same link can read agents now — no reconnect', Array.isArray(allowed.sessions))
+  const accepted = await hook('SessionStart', { ppid: process.pid })
+  check('a hook lands once the switch is on', accepted.ok === true, accepted.id)
+  check('the status file tells the panel it is on', readStatus().agents.enabled === true)
+  check('the decision survives a restart', readStoredConfig().agents?.enabled === true)
+
+  const off = await control('disable')
+  check('the switch turns it off again', off.ok === true && off.agents.enabled === false)
+  const refusedAgain = await req('agents.list').then(() => null, (e) => e.message)
+  check('reading stops the moment it is turned off', String(refusedAgain).includes('agent enable'), refusedAgain)
+  check(
+    'the phone is told it stopped',
+    Boolean(await waitFor(events, (e) => e.kind === 'control' && e.enabled === false)),
+  )
+  check('the status file follows', readStatus().agents.enabled === false)
   close()
 }
 await stopDaemon()
@@ -258,7 +302,7 @@ const waiting = await waitFor(events, (e) => e.kind === 'state' && e.state === '
 check('a permission prompt means waiting', Boolean(waiting), waiting?.prompt)
 check('the waiting session sorts to the top', (await req('agents.list')).sessions[0].state === 'waiting')
 
-const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+const status = readStatus()
 check('the status file tells the panel', status.agents.waiting === 1 && status.agents.running === 1)
 
 // Answering at the keyboard fires no hook we subscribe to, so the transcript
@@ -284,6 +328,44 @@ check(
 
 close()
 await stopDaemon()
+
+/* ── a CLI newer than the daemon it is talking to ──────────────────────── */
+
+// The first version of the desktop switch shipped this bug: `agent enable`
+// posts to the daemon, and a daemon from before that endpoint existed answers
+// 404 — which the CLI read as a refusal and turned into a red line on the
+// panel with nothing written anywhere. A daemon that cannot take the live half
+// is not a daemon saying no: the config is the durable half of the switch and
+// has to be written regardless.
+{
+  const stale = http.createServer((req, res) => {
+    res.writeHead(404, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: 'not found' }))
+  })
+  await new Promise((resolve) => stale.listen(PORT, '127.0.0.1', resolve))
+
+  writeConfig(false)
+  // Asynchronously, because the stub above is served by this very process:
+  // `spawnSync` would block the loop it needs to answer on, and the CLI would
+  // time out instead of being told 404 — which is a different bug entirely.
+  const cli = await new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'agent', 'enable'], {
+      env: { ...process.env, HOME: sandbox, XDG_CONFIG_HOME: sandbox, OMARCHY_CONNECT_STATE: path.join(sandbox, 'state') },
+    })
+    let err = ''
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk) => {
+      err += chunk
+    })
+    child.stdout.resume()
+    child.on('exit', (code) => resolve({ code, err }))
+  })
+  check('a daemon that does not know the switch is not a refusal', cli.code === 0, cli.err.trim())
+  check('the config is written anyway', readStoredConfig().agents?.enabled === true)
+  check('and the CLI says the running daemon is stale', cli.err.includes('restart'), cli.err.trim())
+
+  await new Promise((resolve) => stale.close(resolve))
+}
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

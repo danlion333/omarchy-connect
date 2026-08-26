@@ -123,6 +123,10 @@ export type AgentEvent =
   | { kind: 'session'; id: string; removed: boolean; session: AgentSession | null }
   | { kind: 'state'; id: string; state: AgentState; prompt: string | null; preview: string; lastActivity: number }
   | { kind: 'blocks'; id: string; blocks: AgentBlock[]; cursor: number; reset?: boolean }
+  // The desktop turning reading on or off under a live link — the switch on
+  // its panel, or the CLI. `hello` answered this question once at connect
+  // time; this is how the answer changes without reconnecting.
+  | { kind: 'control'; enabled: boolean; adapters: string[] }
 
 type Listener = (data: any) => void
 

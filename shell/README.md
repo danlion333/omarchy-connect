@@ -54,6 +54,19 @@ replacing an existing copy.
   opening a port is the user's call.
 - **Paired phone** — one row, filled while the link is live, with an unpair
   action. A desktop pairs one phone at a time, and the row says so.
+- **Coding agents** — the one card that changes what the phone is allowed to
+  see. A switch decides whether a paired phone may read the coding agent open
+  on this desktop; under it, whatever is running, with an agent that has
+  stopped to ask you something in the urgent colour, and the line that says
+  reading is all this does so far. Turning it *on* asks first, naming what the
+  phone will be able to see — source, commands, the output of those commands —
+  because that is a wider door than anything else on this panel and one click
+  is not enough thought for it. Turning it off is immediate. When the hooks are
+  missing a row says what that costs — the desktop can see an agent working but
+  not that it is stuck — and offers to install them. The whole card stays
+  hidden on a machine with no coding agent installed, where the switch would
+  only be a question. It follows the daemon's own gate: reading is off until
+  someone here turns it on.
 - **From the phone** — the last few mirrored messages, calls and app
   notifications, missed calls in the urgent colour. Three sources feed one
   list: an Android build over the LAN, the hands-free link, and an iPhone's own
@@ -89,7 +102,12 @@ That interval is the plugin's only setting.
 
 TLS is reported, never switched: turning it on means minting a certificate and
 restarting the daemon, which is `omarchy-connect tls enable` and not something a
-bar widget should do behind a click. Both Bluetooth rows are reported the same
+bar widget should do behind a click. Agent reading is the counter-example, and
+the difference is exactly that: the daemon applies it live — it writes the
+config and starts or stops watching in the same call — so the switch costs
+nothing but the click, and the phone does not lose its link over it. It is also
+a decision that belongs on the desktop rather than in the app, which is the
+other half of why it is here. Both Bluetooth rows are reported the same
 way — pairing a handset belongs in Bluetooth settings, and opening a window in
 which this machine advertises itself to the neighbourhood (`omarchy-connect ios
 pair`) is even less of a thing to hide behind a click.
@@ -97,6 +115,14 @@ pair`) is even less of a thing to hide behind a click.
 Every action shells out to the same CLI a person would use. The argv is read
 from the `exec` field of the status file rather than from `$PATH`, so a daemon
 running out of a checkout works without being installed anywhere.
+
+What that CLI writes for a terminal is not what a panel can draw, so its output
+is cleaned before it is shown: colour escapes and the timestamped tag in front
+of every line are stripped, and one sentence is left. A command that fails puts
+that sentence in the urgent colour; a command that *succeeds* and still warns —
+a daemon too old to take a switch live is the case this exists for — shows it
+dimly, because a panel that looks like nothing happened is worse than a line
+that says what did.
 
 ## Keyboard
 
@@ -110,6 +136,12 @@ pairing is not something one unmodified keystroke should be able to do.
 `a` answers a ringing call and `d` declines it — or hangs up one already in
 progress. Both do nothing when there is no call, so a mistyped key on an idle
 panel is harmless.
+
+The agent switch has no key of its own, deliberately: every letter on this panel
+is one keystroke away from something, and widening what leaves this machine is
+not a thing to hand to a mistyped key. While its question is on screen it owns
+the keyboard — `h`/`l` move between the answers, Enter takes the highlighted
+one, Esc says no — and the panel behind it stays put.
 
 ## IPC
 

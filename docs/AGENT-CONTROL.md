@@ -279,9 +279,10 @@ A new `Agents` tab (`app/src/screens/AgentsScreen.tsx` + `AgentChatScreen.tsx`):
 The `unreadCount` badge machinery in `App.tsx` already exists for alerts and
 generalises to "an agent is waiting for you".
 
-The Omarchy shell panel (`shell/Panel.qml`, fed by `status.json`) should show
-the same thing on the desktop: how many agents are running, how many are
-blocked.
+The Omarchy shell panel (`shell/Panel.qml`, fed by `status.json`) shows the
+same thing on the desktop — running sessions, which of them is waiting, and
+whether the hooks are in place — and carries the switch itself. See *The switch
+on the desktop* below.
 
 ## Security
 
@@ -301,6 +302,35 @@ per-device rather than global, reusing the `devices[]` array. `agents.spawn`
 gets its own flag — joining a session someone opened is a smaller step than
 starting one from a phone.
 
+### The switch on the desktop
+
+The decision is the desktop's, and the desktop client is where a decision like
+this belongs — so the panel carries it under **CODING AGENTS**, and it is the
+one control there that asks before it acts.
+
+Three properties keep that from widening the surface:
+
+- **Loopback only.** The panel's switch runs `omarchy-connect agent enable`,
+  which reaches the daemon on `POST /api/agent/control` — the same
+  localhost-only door the lifecycle hook uses. There is no method a phone can
+  call to grant itself reading; `agents.enable` does not exist, and the test
+  suite asserts that a paired phone asking for it gets *unknown method*.
+- **The daemon owns both halves.** It writes `agents.enabled` to the config, so
+  the decision survives a restart, *and* starts or stops the watching in the
+  same call. Nothing needs restarting, which matters more than it sounds: a
+  switch that costs you the phone's link is a switch nobody flips, and a
+  feature only reachable by restarting the daemon would have stayed a CLI
+  feature in practice.
+- **Off is immediate and total.** Turning it off closes every transcript held
+  open, forgets every session, and refuses the next `agents.list` — a held file
+  descriptor is a read.
+
+Turning it *on* goes through a confirmation naming what the phone will see;
+turning it off does not, because closing a door needs no second thought. The
+same event that flips the switch (`agent` / `kind: "control"`) is pushed to the
+connected phone, so the app's Agents screen fills without reconnecting — the
+capabilities it learned from `hello` are patched in place.
+
 ## Staged plan
 
 **Stage 1 — read. Done.** `daemon/src/plugins/agents.js`,
@@ -317,9 +347,10 @@ tail. Two things came out smaller than this sketch implied:
   `agent` event does arrive on a pocketed phone. What is still missing is the
   local notification to raise when it does — a piece of app work, no longer a
   piece of infrastructure.
-- The Omarchy bar panel does not show agent counts yet. The data is already in
-  `status.json` (`agents.running`, `agents.waiting`), so this is a QML change
-  with nothing behind it left to design.
+- The Omarchy bar panel now carries the whole thing: the counts from
+  `status.json` (`agents.running`, `agents.waiting`), the session list, an
+  *Install* button for the hooks, and the switch itself — which is why
+  `agents.enabled` became a live change rather than a restart.
 
 **Stage 2 — write.** tmux discovery and adoption, `agent run` wrapper,
 `agents.send` / `agents.key`, the wtype fallback and its warning.

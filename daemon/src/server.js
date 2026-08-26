@@ -28,7 +28,7 @@ import {
   requestCall,
   trackConnections,
 } from './plugins/phone.js'
-import { summary as agentsSummary, hook as agentHook } from './plugins/agents.js'
+import { summary as agentsSummary, hook as agentHook, setEnabled as setAgentsEnabled } from './plugins/agents.js'
 import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
 import * as state from './lib/state.js'
@@ -362,6 +362,39 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           json(res, 200, result)
         } catch (err) {
           json(res, 200, { ok: false, error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * Localhost only: the switch the desktop panel flips.
+     *
+     * Reading an agent is the widest exposure this daemon offers, so the
+     * decision stays on the desktop — this endpoint is reachable from
+     * loopback and nowhere else, and no paired phone can turn on its own
+     * ability to read. The daemon owns the write to the config file as well
+     * as the live half, so a running daemon never needs restarting for the
+     * change to take effect and the phone keeps its link across it.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/agent/control') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 4096) req.destroy()
+      })
+      req.on('end', () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          if (op !== 'enable' && op !== 'disable' && op !== 'status') {
+            return json(res, 400, { error: `unknown agent action: ${op}` })
+          }
+          const agents = op === 'status' ? agentsSummary() : setAgentsEnabled(op === 'enable')
+          publishState()
+          json(res, 200, { ok: true, agents })
+        } catch (err) {
+          json(res, 400, { error: err.message })
         }
       })
       return undefined

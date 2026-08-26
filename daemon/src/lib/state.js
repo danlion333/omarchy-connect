@@ -1,11 +1,13 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { XDG_STATE, XDG_CONFIG } from './paths.js'
+import { XDG_STATE, XDG_CONFIG, execCommand } from './paths.js'
 import { loadConfig } from './config.js'
 import { identity, fingerprint, SUITE } from './crypto.js'
 import * as tls from './tls.js'
 import { INBOX } from '../plugins/share.js'
+import { detected as detectedAgents } from '../agents/index.js'
+import * as hooks from '../agents/hooks.js'
 
 /**
  * The desktop client's data file.
@@ -30,10 +32,7 @@ export const STATUS_FILE = path.join(STATE_DIR, 'status.json')
 export const STATE_VERSION = 1
 
 /** How this daemon can be invoked again, so the panel never needs $PATH. */
-export function execCommand() {
-  const entry = path.resolve(new URL('../../bin/omarchy-connect.js', import.meta.url).pathname)
-  return fs.existsSync(entry) ? [process.execPath, entry] : ['omarchy-connect']
-}
+export { execCommand }
 
 /**
  * Whether `install-service` has been run. The desktop client offers to start
@@ -128,9 +127,19 @@ export function baseSnapshot({ version = null, port = null } = {}) {
       // Same for the low-energy link an iPhone mirrors its notifications over.
       ios: { available: false, connected: false, subscribed: false, device: null, paired: false, pairing: null },
     },
-    // Coding agents are discovered by a running daemon and nothing else, so
-    // with it stopped the panel shows the switch rather than a stale list.
-    agents: { enabled: cfg.agents?.enabled === true, adapters: [], running: 0, waiting: 0, sessions: [] },
+    // Sessions are discovered by a running daemon and nothing else, so with it
+    // stopped the panel shows the switch and an empty list rather than a stale
+    // one. Which agents are *installed*, and whether their hooks are in place,
+    // are both answers a stopped daemon still has — and they are what the panel
+    // needs to decide whether to offer the switch at all.
+    agents: {
+      enabled: cfg.agents?.enabled === true,
+      adapters: detectedAgents(),
+      hooks: hooks.installed(),
+      running: 0,
+      waiting: 0,
+      sessions: [],
+    },
   }
 }
 

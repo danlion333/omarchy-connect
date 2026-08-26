@@ -491,12 +491,18 @@ The three `agent` event frames:
 { "t": "ev", "event": "agent", "data": { "kind": "state",   "id": "claude:2fe…", "state": "waiting",
                                          "prompt": "Allow Bash?", "preview": "…", "lastActivity": 1756100420000 } }
 { "t": "ev", "event": "agent", "data": { "kind": "blocks",  "id": "claude:2fe…", "blocks": [ … ], "cursor": 148 } }
+{ "t": "ev", "event": "agent", "data": { "kind": "control", "enabled": true, "adapters": ["claude"] } }
 ```
 
 A `blocks` frame carries everything one drain of the transcript produced, so a
 turn that ran six tools arrives as one frame rather than twelve. `reset: true`
 means the transcript was rewritten under the daemon and the reader should
 replace what it has rather than append.
+
+A `control` frame is the desktop turning reading on or off under a live link —
+the switch on its panel, or the CLI. `capabilities.agents.enabled` was answered
+once at `hello` and this is how that answer changes without reconnecting: the
+app patches the capability in place, then lists the sessions.
 
 `capabilities.agents` is `{ enabled, adapters, read, write, spawn }`. `write` is
 `null`: nothing may push bytes into a terminal another process owns, and the
@@ -545,6 +551,7 @@ machine with.
 | `POST /api/call` | `{ op, id?, number? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`. Answers `{ ok, via }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
+| `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading agents. Answers `{ ok, agents }`. |
 
 `POST /api/agent/hook` is the bridge between a coding agent and this daemon:
 `omarchy-connect agent hook` reads the agent's JSON on stdin, adds what only
@@ -555,6 +562,16 @@ for `SessionStart`, `UserPromptSubmit`, `Stop`, `Notification` and
 cost the agent anything, so the post has a one-second timeout, a daemon that is
 not running is a silent no-op, and a payload the daemon cannot use answers 200
 with an error inside rather than looking like a failed hook.
+
+`POST /api/agent/control` is the switch on the desktop panel, and it is
+loopback-only for the same reason the whole feature is off by default: whether
+a phone may read this desktop's agents is a decision that must be taken at the
+desktop. There is no method a phone can call to grant itself reading. The
+daemon writes `agents.enabled` to the config *and* starts or stops the watching
+in one call, so the change lands without a restart and the phone keeps its
+link; turning it off closes every transcript held open and forgets every
+session before the call returns. `omarchy-connect agent enable` posts here
+first and only falls back to editing the config when no daemon answers.
 
 `unpair` goes through the daemon rather than editing the config file directly
 because the running process holds a cached config and possibly an open
@@ -571,7 +588,17 @@ moves, a pairing code is minted or used, the address or firewall verdict
 changes. It carries the daemon's identity and address, the paired device with
 its live status and telemetry, recent transfers, counters, the firewall
 verdict, whether TLS is on and under which pin, the last mirrored messages and
-calls, and the argv needed to invoke the CLI again.
+calls, the coding agents this desktop can read, and the argv needed to invoke
+the CLI again.
+
+The `agents` block is what the panel's switch is drawn from:
+`{ enabled, adapters, hooks, running, waiting, sessions }`. `adapters` and
+`hooks` are answers a stopped daemon still has — which agents are installed
+here, and whether their lifecycle hooks are in `~/.claude/settings.json` — so
+the panel can offer the switch and the *Install hooks* button before anything
+is running. `running`, `waiting` and `sessions` are the live view and are
+cleared when the daemon stops, because with nothing watching they are not
+stale, they are unknown.
 
 It is the contract the Omarchy shell plugin reads; anything else that wants to
 watch this daemon can read it too. `OMARCHY_CONNECT_STATE` moves it aside for
@@ -605,8 +632,10 @@ deleted. The desktop raises a notification on arrival.
 - **Reading a coding agent is reading everything it saw** — source, tool
   output, whatever secrets crossed a `Bash` result. It is the widest exposure
   in the project, wider than the clipboard, so `agents.enabled` defaults to
-  **false** and is turned on by `omarchy-connect agent enable`, which says what
-  it grants before it grants it. Writing to an agent would be arbitrary code
+  **false** and is turned on by `omarchy-connect agent enable` — or the switch
+  on the desktop panel, which asks what it is about to grant before it grants
+  it. Both roads are the desktop's: the endpoint behind them answers on
+  loopback only, so no paired phone can turn on its own ability to read. Writing to an agent would be arbitrary code
   execution — the agent runs what it is told — which is why `write` is `null`
   rather than shipped alongside reading.
 - Every method call requires a paired token. There is no anonymous access.

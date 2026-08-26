@@ -1,9 +1,10 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-import { loadConfig } from '../lib/config.js'
+import { loadConfig, updateConfig } from '../lib/config.js'
 import { log } from '../lib/log.js'
-import claude from '../agents/claude.js'
+import { ADAPTERS, detected } from '../agents/index.js'
+import * as hooks from '../agents/hooks.js'
 
 /**
  * The coding agent already open on the desktop, readable from the phone.
@@ -31,10 +32,9 @@ import claude from '../agents/claude.js'
  *
  * Reading an agent is reading everything it saw — source, tool output, any
  * secret that crossed a Bash result — so the whole plugin is off until
- * `omarchy-connect agent enable` turns it on.
+ * someone turns it on — `omarchy-connect agent enable`, or the switch on the
+ * desktop panel, which is the same decision through a different door.
  */
-
-const ADAPTERS = [claude]
 
 /** Blocks kept in memory per open session — a phone scrolls back, not forever. */
 const RING = 500
@@ -529,18 +529,107 @@ export function hook(payload = {}) {
   return { ok: true, id, state: entry.state }
 }
 
+/* ── the switch ────────────────────────────────────────────────────────── */
+
+/**
+ * Start watching: the periodic scan for agents nobody hooked, and the poll
+ * that backs up `fs.watch` on filesystems where it misses writes. Neither
+ * costs anything while no phone is subscribed, and both are torn down the
+ * moment the feature goes off.
+ */
+function watch() {
+  if (scanTimer) return
+
+  scanTimer = setInterval(() => {
+    // Nobody is watching: the scan is the only thing here that costs
+    // anything, and hooks keep the registry current for free.
+    if (!bus?.hasSubscribers('agent')) return
+    try {
+      scan()
+    } catch (err) {
+      log.debug('agent scan failed:', err.message)
+    }
+  }, SCAN_MS)
+  scanTimer.unref?.()
+
+  pollTimer = setInterval(() => {
+    const open = openedSessions()
+    if (!open.length) return
+    // A phone that walked away takes its subscription with it.
+    if (!bus?.hasSubscribers('agent')) {
+      for (const entry of open) {
+        entry.opens = 0
+        release(entry)
+      }
+      return
+    }
+    for (const entry of open) drain(entry)
+  }, POLL_MS)
+  pollTimer.unref?.()
+
+  try {
+    scan()
+  } catch (err) {
+    log.debug('agent scan failed:', err.message)
+  }
+  log.info("agent control is on — phones can read this desktop's coding agents")
+}
+
+/** Stop watching and forget what was seen: a transcript held open is a read. */
+function unwatch() {
+  clearInterval(scanTimer)
+  clearInterval(pollTimer)
+  scanTimer = null
+  pollTimer = null
+  for (const entry of sessions.values()) closeTail(entry)
+  sessions.clear()
+}
+
+/**
+ * Turn reading on or off while the daemon runs.
+ *
+ * The desktop panel is the reason this exists. Writing the config file and
+ * asking for a restart would drop the phone's link — and a switch on a bar
+ * widget that costs you the connection is not a switch anyone will use — so
+ * the daemon owns both halves of the change: it writes the config, so the
+ * decision survives a restart, and it starts or stops the watching itself.
+ *
+ * Turning it off is the half that has to be immediate: every open transcript
+ * is closed and every session forgotten before this returns, and the phone is
+ * told so it stops offering a screen it can no longer fill.
+ */
+export function setEnabled(on) {
+  const next = on === true
+  const was = enabled()
+  updateConfig((cfg) => {
+    cfg.agents = { ...(cfg.agents || {}), enabled: next }
+  })
+  if (next === was) return summary()
+  if (next) watch()
+  else {
+    unwatch()
+    log.info('agent control is off — nothing is reading this desktop\'s coding agents')
+  }
+  // The phone learned whether it could read agents from `hello`, and it is not
+  // about to say hello again. This is how it finds out the answer changed.
+  emit({ kind: 'control', enabled: next, adapters: detected() })
+  return summary()
+}
+
 /* ── what the panel and the CLI read ───────────────────────────────────── */
 
-/** Which agents are installed on this desktop, daemon or no daemon. */
-export function detected() {
-  return ADAPTERS.filter((a) => a.detect()).map((a) => a.id)
-}
+/** Which agents are installed on this desktop — re-exported for the CLI. */
+export { detected }
 
 export function summary() {
   const list = [...sessions.values()].filter((e) => e.state !== 'gone')
   return {
     enabled: enabled(),
     adapters: detected(),
+    // Without hooks a session is found by scanning `/proc`, which can say an
+    // agent is running but never that it is *waiting* — the panel offers to
+    // install them for exactly that reason, so it has to know.
+    hooks: hooks.installed(),
     running: list.length,
     waiting: list.filter((e) => e.state === 'waiting').length,
     sessions: list.map(publicSession),
@@ -566,50 +655,11 @@ export default {
 
   start(eventBus) {
     bus = eventBus
-    if (!enabled()) return
-
-    scanTimer = setInterval(() => {
-      // Nobody is watching: the scan is the only thing here that costs
-      // anything, and hooks keep the registry current for free.
-      if (!bus?.hasSubscribers('agent')) return
-      try {
-        scan()
-      } catch (err) {
-        log.debug('agent scan failed:', err.message)
-      }
-    }, SCAN_MS)
-    scanTimer.unref?.()
-
-    pollTimer = setInterval(() => {
-      const open = openedSessions()
-      if (!open.length) return
-      // A phone that walked away takes its subscription with it.
-      if (!bus?.hasSubscribers('agent')) {
-        for (const entry of open) {
-          entry.opens = 0
-          release(entry)
-        }
-        return
-      }
-      for (const entry of open) drain(entry)
-    }, POLL_MS)
-    pollTimer.unref?.()
-
-    try {
-      scan()
-    } catch (err) {
-      log.debug('agent scan failed:', err.message)
-    }
-    log.info('agent control is on — phones can read this desktop\'s coding agents')
+    if (enabled()) watch()
   },
 
   stop() {
-    clearInterval(scanTimer)
-    clearInterval(pollTimer)
-    scanTimer = null
-    pollTimer = null
-    for (const entry of sessions.values()) closeTail(entry)
-    sessions.clear()
+    unwatch()
     bus = null
   },
 

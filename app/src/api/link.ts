@@ -203,7 +203,14 @@ class Link {
        * while the phone is on another screen entirely. Block traffic is not
        * handled here — only the chat that asked for it cares.
        */
-      client.on('ev:agent', (data: AgentEvent) => this.patch({ agents: reduceAgents(this.state.agents, data) })),
+      client.on('ev:agent', (data: AgentEvent) => {
+        // The desktop flipped its own switch. Capabilities came from `hello`
+        // and nothing is about to say hello again, so they are patched in
+        // place — otherwise the screen would keep telling the user to run a
+        // command they have already run.
+        if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters)
+        this.patch({ agents: reduceAgents(this.state.agents, data) })
+      }),
       client.on('ev:clipboard', (data: ClipboardEvent) => this.patch({ clipboard: data })),
       client.on('ev:file', (data: FileEvent) =>
         this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) }),
@@ -224,6 +231,22 @@ class Link {
    * the backoff would otherwise leave the app looking dead for fifteen seconds
    * after the user opens it.
    */
+  /**
+   * Reading was turned on or off on the desktop while this phone was linked.
+   * On, the list is fetched at once so the screen fills without a visit; off,
+   * it is dropped, because nothing on it can be opened any more.
+   */
+  private agentsSwitched(enabled: boolean, adapters: string[]) {
+    const hello = this.state.hello
+    if (hello) {
+      const capabilities = { ...(hello.capabilities || {}) } as Record<string, any>
+      capabilities.agents = { ...(capabilities.agents || {}), enabled, adapters }
+      this.patch({ hello: { ...hello, capabilities } as Hello })
+    }
+    if (enabled) void this.refreshAgents()
+    else this.patch({ agents: [] })
+  }
+
   private attachGlobalListeners() {
     if (this.listening) return
     this.listening = true

@@ -232,3 +232,67 @@ function callDetail(call, bt) {
   }
   return state
 }
+
+/* ── coding agents ────────────────────────────────────────────────────── */
+
+/**
+ * The coding-agent half of the status file, with every field defaulted.
+ *
+ * A daemon old enough not to publish this at all is the same case as a desktop
+ * with the feature off: nothing to show, and a switch that says so.
+ */
+function agents(status) {
+  var value = isObject(status) && isObject(status.agents) ? status.agents : {}
+  return {
+    enabled: value.enabled === true,
+    hooks: value.hooks === true,
+    adapters: Array.isArray(value.adapters) ? value.adapters : [],
+    running: num(value.running, 0),
+    waiting: num(value.waiting, 0),
+    sessions: Array.isArray(value.sessions) ? value.sessions : []
+  }
+}
+
+/** The one line under the header: what reading agents is doing right now. */
+function agentsText(value, running) {
+  if (!value.enabled) return "off · the phone sees nothing"
+  if (!running) return "on · nothing is watching while the daemon is stopped"
+  if (value.waiting > 0) return value.waiting === 1 ? "one agent is waiting for you" : value.waiting + " agents are waiting for you"
+  if (value.running > 0) return value.running === 1 ? "one session · reading only" : value.running + " sessions · reading only"
+  if (value.adapters.length === 0) return "on · no coding agent is installed here"
+  return "on · nothing running"
+}
+
+/** What a session is called: its own title, or the directory it works in. */
+function agentTitle(session) {
+  if (!isObject(session)) return ""
+  var title = String(session.title || "").trim()
+  if (title !== "") return title
+  var parts = String(session.cwd || "").split("/").filter(function (p) { return p !== "" })
+  return parts.length > 0 ? parts[parts.length - 1] : String(session.agent || "agent")
+}
+
+/**
+ * The dim second line. `waiting` is the whole reason this panel carries agents
+ * at all, so it says what the agent asked rather than when it last moved.
+ */
+function agentDetail(session, now) {
+  if (!isObject(session)) return ""
+  if (session.state === "waiting") {
+    var prompt = String(session.prompt || "").replace(/\s+/g, " ").trim()
+    return prompt !== "" ? prompt : "waiting for an answer"
+  }
+  // Right-aligned and elided from the right, so the order is what survives
+  // being cut: what it is doing, when it last did it, and only then that the
+  // session was a guess — a scan matched a transcript to a directory rather
+  // than a hook naming it. The agent's own name is not here at all; one line
+  // under a header that says CODING AGENTS does not need to repeat it.
+  var parts = [session.state === "working" ? "working" : "idle", since(session.lastActivity, now)]
+  if (session.via === "scan") parts.push("scanned")
+  return parts.join(" · ")
+}
+
+/** One glyph per session: the alert is the whole point of the card. */
+function agentGlyph(session) {
+  return isObject(session) && session.state === "waiting" ? "󰀦" : "󰆍"
+}

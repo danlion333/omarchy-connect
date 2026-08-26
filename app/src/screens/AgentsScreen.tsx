@@ -59,6 +59,9 @@ export function AgentsScreen() {
             deliberately on the desktop:
           </Body>
           <Body style={{ marginTop: space.md }}>omarchy-connect agent enable</Body>
+          <Body tone={palette.muted} style={{ marginTop: space.md }}>
+            Or flip the switch under Coding agents on the desktop panel — this screen fills the moment it does.
+          </Body>
         </Card>
       </Screen>
     )
