@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { Alert, AppState, Platform, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
+import * as Clipboard from 'expo-clipboard'
 
 import { useConnection } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Screen } from '../ui/kit'
@@ -26,6 +27,7 @@ import {
   startBackgroundLink,
   stopBackgroundLink,
 } from '../../modules/omarchy-link'
+import { datagramsSupported } from '../../modules/omarchy-link'
 import { font, size, space } from '../theme'
 
 export function SettingsScreen() {
@@ -169,6 +171,8 @@ export function SettingsScreen() {
         )}
       </Card>
 
+      <WakeOnLan />
+
       <BackgroundLink />
 
       <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} />
@@ -190,6 +194,79 @@ export function SettingsScreen() {
         Omarchy Connect · everything stays on your network
       </Body>
     </Screen>
+  )
+}
+
+/**
+ * What it would take to wake this desktop, and whether it would work.
+ *
+ * This is the diagnostic half of the feature — the button itself is on Remote,
+ * with the other power controls. It is here because everything it says is a
+ * thing to be fixed on the desktop rather than on the phone, and because the
+ * answers were all given by the desktop while it was still awake: once it is
+ * asleep there is nobody to ask.
+ */
+function WakeOnLan() {
+  const { desktop, palette } = useConnection()
+  const [copied, setCopied] = useState(false)
+  const wake = desktop?.wake
+
+  if (!wake?.supported) return null
+
+  const armed = wake.armed === null ? 'cannot tell' : wake.armed ? 'yes' : 'no'
+  const copy = async (command: string) => {
+    await Clipboard.setStringAsync(command)
+    setCopied(true)
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon="zap"
+        title="Wake on LAN"
+        subtitle={wake.armed === true ? 'this desktop can be woken from sleep' : 'not ready yet'}
+        tone={wake.armed === true ? palette.green : palette.orange}
+      />
+      {/* One column: a MAC and a broadcast address are the two facts this card
+          exists to carry, and two columns cut both of them off. */}
+      <DataGrid
+        pairs={[
+          { label: 'Card', value: wake.interface ? `${wake.interface} (${wake.type})` : '—' },
+          { label: 'Armed', value: armed, tone: wake.armed === true ? palette.green : palette.orange },
+          { label: 'MAC', value: wake.mac ?? '—' },
+          { label: 'Packet to', value: wake.broadcast ? `${wake.broadcast}:${wake.port}` : '—' },
+        ]}
+        columns={1}
+      />
+      {!datagramsSupported() ? (
+        <Body tone={palette.orange} style={{ fontSize: size.label, marginTop: space.md }}>
+          this phone cannot send the packet — there is no UDP socket in Expo Go or on iOS, so waking needs the
+          Android build
+        </Body>
+      ) : null}
+      {wake.note ? (
+        <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+          {wake.note}
+        </Body>
+      ) : null}
+      {wake.command ? (
+        <>
+          <Divider />
+          <Body tone={palette.muted} style={{ fontSize: size.micro }}>
+            run this on the desktop — nothing here can change a setting on it
+          </Body>
+          <Body tone={palette.light_foreground} style={{ fontFamily: font.medium, fontSize: size.label, marginTop: space.xs }}>
+            {wake.command}
+          </Body>
+          <View style={{ height: space.md }} />
+          <Button
+            icon={copied ? 'check' : 'copy'}
+            label={copied ? 'Copied' : 'Copy the command'}
+            onPress={() => copy(wake.command!)}
+          />
+        </>
+      ) : null}
+    </Card>
   )
 }
 

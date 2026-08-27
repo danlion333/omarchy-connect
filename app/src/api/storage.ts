@@ -1,5 +1,7 @@
 import * as SecureStore from 'expo-secure-store'
 
+import type { WakeInfo } from '../lib/wol'
+
 const KEY = 'omarchy-connect.desktop'
 const DEVICE_KEY = 'omarchy-connect.device-id'
 
@@ -15,6 +17,12 @@ export type SavedDesktop = {
   tls?: boolean
   /** Its certificate pin, pinned at the same moment as the identity key. */
   certPin?: string | null
+  /**
+   * What it would take to wake this desktop, as it described itself at the
+   * last `hello`. Kept here rather than asked for because the moment it is
+   * wanted is the moment there is nothing to ask.
+   */
+  wake?: WakeInfo | null
 }
 
 export async function loadDesktop(): Promise<SavedDesktop | null> {

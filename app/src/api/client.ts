@@ -1,4 +1,5 @@
 import type { Palette } from '../theme'
+import type { WakeInfo } from '../lib/wol'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
 
 export type ConnectionStatus = 'idle' | 'connecting' | 'pairing' | 'connected' | 'reconnecting' | 'error'
@@ -30,6 +31,8 @@ export type Hello = {
   server: { name: string; version: string }
   device: { id: string; name: string; platform: string; pairedAt: number }
   host: HostInfo
+  /** How this desktop could be woken once it is asleep. Absent on older daemons. */
+  wake?: WakeInfo
   capabilities: Capabilities
   theme: Palette
   events: string[]
@@ -54,6 +57,8 @@ export type Stats = {
     ip: string | null
     ipv6: string | null
     mac: string | null
+    netmask?: string | null
+    broadcast?: string | null
     gateway: string | null
     dns: string[]
     dnsProvider: string

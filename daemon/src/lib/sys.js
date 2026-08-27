@@ -135,7 +135,7 @@ function ifaceType(name) {
   return 'ethernet'
 }
 
-function primaryInterface() {
+export function primaryInterface() {
   let candidates = []
   try {
     candidates = fs.readdirSync(netBase)
@@ -149,11 +149,33 @@ function primaryInterface() {
   return usable.find((n) => ifaceType(n) === 'ethernet') || usable[0] || null
 }
 
+/**
+ * `192.168.1.42` + `255.255.255.0` → `192.168.1.255`.
+ *
+ * The directed broadcast address of the subnet the desktop is on, which is
+ * where a magic packet has to be addressed: the machine it is meant for is
+ * asleep, so it holds no ARP entry and nothing can be unicast to it.
+ */
+export function broadcastFor(ip, netmask) {
+  if (typeof ip !== 'string' || typeof netmask !== 'string') return null
+  const a = ip.split('.').map(Number)
+  const m = netmask.split('.').map(Number)
+  if (a.length !== 4 || m.length !== 4) return null
+  if ([...a, ...m].some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null
+  return a.map((octet, i) => octet | (~m[i] & 255)).join('.')
+}
+
 function addressesFor(name) {
   const nets = os.networkInterfaces()[name] || []
   const v4 = nets.find((n) => n.family === 'IPv4' && !n.internal)
   const v6 = nets.find((n) => n.family === 'IPv6' && !n.internal && !n.address.startsWith('fe80'))
-  return { ip: v4?.address || null, mac: v4?.mac || nets[0]?.mac || null, ipv6: v6?.address || null }
+  return {
+    ip: v4?.address || null,
+    mac: v4?.mac || nets[0]?.mac || null,
+    netmask: v4?.netmask || null,
+    broadcast: broadcastFor(v4?.address, v4?.netmask),
+    ipv6: v6?.address || null,
+  }
 }
 
 async function gatewayFor(name) {

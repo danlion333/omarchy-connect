@@ -36,6 +36,7 @@ the desktop and the app repaints in the same palette.
 | **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop holds that link open by itself while the phone is on the network, so a call is answerable the moment it rings. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
+| **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
 
@@ -88,6 +89,7 @@ omarchy-connect agent <status|enable|run|…>   read and answer this desktop's c
 omarchy-connect tls <status|enable|…>       serve https + wss with a pinned certificate
 omarchy-connect config [key] [value]        read or change configuration
 omarchy-connect firewall                    check the port is reachable
+omarchy-connect wake                        whether a phone could wake this desktop
 omarchy-connect panel <status|install|remove>  the Omarchy bar client
 omarchy-connect install-service             write a systemd user unit
 ```
@@ -528,6 +530,7 @@ handshake and the app greys out whatever is missing.
 | Notification history (`notifications.*`, protocol only) | Omarchy's notification history in `~/.local/state/omarchy/` |
 | Screenshot, themes, OSD | the `omarchy-*` helpers |
 | Pairing QR | `qrencode` |
+| Waking it from the phone | a wired card set to wake the machine — `omarchy-connect wake` says whether yours is, and prints the command |
 
 ### Firewall
 
@@ -550,6 +553,39 @@ sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp comment 'omarchy-c
 pairing code. Testing through Expo Go needs the Metro port open too
 (`8081`); that one is worth removing again afterwards with `sudo ufw delete
 allow …`.
+
+### Wake on LAN
+
+A desktop that is asleep runs no daemon, so nothing can be asked of it at the
+moment it is wanted. The answers are handed over earlier instead: every `hello`
+carries this machine's MAC, the broadcast address of its subnet and whether its
+card is set to wake it, and the phone keeps that copy beside the pairing. The
+button is on the Remote screen, under Sleep, and it is the one control there
+that comes alive when the desktop does not answer.
+
+Check the desktop half with:
+
+```bash
+omarchy-connect wake
+```
+
+It reads the card's own wakeup flag — no root, nothing changed — and if the
+card is not armed it prints the command that arms it for good:
+
+```bash
+nmcli connection modify "Wired connection 1" 802-3-ethernet.wake-on-lan magic
+```
+
+NetworkManager is the road worth taking because it re-applies the setting every
+time the link comes up; `sudo ethtool -s enp8s0 wol g` does the same thing until
+the next reboot and then quietly stops. The other half is in the BIOS — usually
+"Wake on LAN" or "Power on by PCI-E" — and no command here can read or set it.
+
+Two honest limits. Wi-Fi cards almost never wake a machine from a magic packet,
+so this is a feature for a wired desktop. And the phone needs a UDP socket,
+which the React Native runtime does not have — the packet goes out through this
+project's own Android module, so waking works in the Android build and nowhere
+else.
 
 ### DNS switching
 
@@ -651,8 +687,7 @@ docs/           protocol specification
 Adapters for the other coding agents — Codex, Gemini CLI — and a raw
 `capture-pane` view for the ones nothing can parse; encrypted file bodies for
 the platforms that cannot pin a certificate (iOS and Expo Go), so TLS is not
-the only way to close that gap; wake-on-LAN so a
-sleeping desktop can be woken from the couch; a real scroll wheel without
+the only way to close that gap; a real scroll wheel without
 depending on `ydotool`; replying to a mirrored message from the desktop
 notification itself rather than from the CLI; and drag-and-drop onto the bar
 widget to send a file.

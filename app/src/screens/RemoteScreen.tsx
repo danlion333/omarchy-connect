@@ -4,6 +4,7 @@ import * as Haptics from 'expo-haptics'
 
 import { useConnection } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Chip, Divider, LevelBar, ListRow, Screen, Value } from '../ui/kit'
+import { canWake } from '../api/wake'
 import { space, size } from '../theme'
 
 type MediaState = {
@@ -17,7 +18,7 @@ type Workspace = { id: number; name: string; windows: number }
 type Window = { address: string; title: string; class: string; workspace: number; focused: boolean }
 
 export function RemoteScreen() {
-  const { call, can, palette, status } = useConnection()
+  const { call, can, palette, status, desktop, wake, waking } = useConnection()
   const [media, setMedia] = useState<MediaState | null>(null)
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [activeWorkspace, setActiveWorkspace] = useState<number | null>(null)
@@ -98,6 +99,33 @@ export function RemoteScreen() {
     },
     [act],
   )
+
+  /**
+   * The one control on this screen that is for a desktop that is *not*
+   * answering — so it is the one that comes alive when everything else greys
+   * out. Nothing acknowledges a magic packet, so the button waits for the
+   * daemon itself rather than claiming success the moment it is sent.
+   */
+  const wakeable = canWake(desktop?.wake)
+  const [woke, setWoke] = useState<string | null>(null)
+
+  const onWake = useCallback(async () => {
+    setWoke(null)
+    setError(null)
+    try {
+      Haptics.selectionAsync().catch(() => {})
+      const answered = await wake()
+      setWoke(
+        answered
+          ? 'the desktop is back'
+          : desktop?.wake?.armed === false
+            ? 'no answer — this desktop\'s card is not set to wake it, see Setup'
+            : 'no answer yet — it may still be starting up',
+      )
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [wake, desktop?.wake?.armed])
 
   const player = media?.player
   const volume = media?.output?.percent ?? 0
@@ -232,6 +260,22 @@ export function RemoteScreen() {
             <Button icon="lock" label="Lock" onPress={() => act('lock', 'system.power', { action: 'lock' })} style={{ flex: 1 }} disabled={!connected} />
             <Button icon="moon" label="Sleep" onPress={() => act('sleep', 'system.power', { action: 'sleep' })} style={{ flex: 1 }} disabled={!connected} />
           </View>
+          {wakeable ? (
+            <>
+              <Button
+                icon="zap"
+                label={waking ? 'Waking…' : 'Wake'}
+                onPress={onWake}
+                loading={waking}
+                disabled={connected || waking}
+              />
+              {woke && !connected ? (
+                <Body tone={palette.muted} style={{ fontSize: size.label }}>
+                  {woke}
+                </Body>
+              ) : null}
+            </>
+          ) : null}
           <View style={{ flexDirection: 'row', gap: space.sm }}>
             <Button
               icon="camera"

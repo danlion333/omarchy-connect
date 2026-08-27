@@ -25,10 +25,14 @@ type ConnectionValue = {
   latencyMs: number | null
   fingerprint: string | null
   relocating: boolean
+  /** A magic packet is out and the desktop has not answered yet. */
+  waking: boolean
   client: ConnectClient | null
   call: <T = any>(method: string, params?: Record<string, unknown>) => Promise<T>
   pair: (target: PairingTarget) => Promise<void>
   reconnect: () => void
+  /** Sends the magic packet, then waits for the desktop to answer again. */
+  wake: () => Promise<boolean>
   forget: () => Promise<void>
   can: (plugin: string, feature: string) => boolean
 }
@@ -60,6 +64,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const pair = useCallback((target: PairingTarget) => link.pair(target), [])
   const forget = useCallback(() => link.forget(), [])
   const reconnect = useCallback(() => link.reconnectNow(), [])
+  const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
 
   const can = useCallback(
@@ -84,10 +89,11 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       call,
       pair,
       reconnect,
+      wake,
       forget,
       can,
     }),
-    [state, agentsWaiting, refreshAgents, fingerprint, call, pair, reconnect, forget, can],
+    [state, agentsWaiting, refreshAgents, fingerprint, call, pair, reconnect, wake, forget, can],
   )
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>

@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ConnectClient } from '../src/api/client.ts'
+import { magicPacket, wakeTargets } from '../src/lib/wol.ts'
 
 const PORT = Number(process.env.PORT || 8801)
 const results = []
@@ -74,6 +75,17 @@ check('the channel is encrypted end to end', hello.secure === true && hello.fing
 check('token is stored on the client', typeof client.token === 'string' && client.token.length === 64)
 check('capabilities arrive', Object.keys(hello.capabilities).length >= 6)
 check('theme arrives', typeof hello.theme.background === 'string', hello.theme.name)
+
+// Wake-on-LAN is the one thing the phone has to be told before it needs it:
+// once the desktop is asleep there is nothing left to ask.
+check('the desktop says how it could be woken', hello.wake && typeof hello.wake.supported === 'boolean',
+  hello.wake ? `${hello.wake.interface ?? 'no link'} ${hello.wake.mac ?? ''}`.trim() : 'absent')
+check(
+  'and what it says is enough to build a packet with',
+  hello.wake?.supported !== true ||
+    (magicPacket(hello.wake.mac).length === 102 && wakeTargets(hello.wake, null, null).length > 0),
+  hello.wake?.broadcast ? `${hello.wake.broadcast}:${hello.wake.port}` : 'no broadcast address',
+)
 
 const stats = await client.call('system.stats')
 check('client.call round trip', stats.memory.total > 0, `${stats.network.type} ${stats.network.ip ?? ''}`)

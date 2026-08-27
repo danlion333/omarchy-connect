@@ -11,6 +11,7 @@ import {
 } from './client'
 import { deviceId, forgetDesktop, loadDesktop, saveDesktop, type SavedDesktop } from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
+import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
 import {
@@ -57,6 +58,8 @@ export type LinkState = {
   files: FileEvent[]
   latencyMs: number | null
   relocating: boolean
+  /** A magic packet is out and the desktop has not answered yet. */
+  waking: boolean
   client: ConnectClient | null
 }
 
@@ -77,6 +80,7 @@ const INITIAL: LinkState = {
   files: [],
   latencyMs: null,
   relocating: false,
+  waking: false,
   client: null,
 }
 
@@ -91,6 +95,7 @@ class Link {
   private starting: Promise<void> | null = null
   private started = false
   private relocatingNow = false
+  private wakingNow = false
   private listening = false
 
   /* ── subscription ────────────────────────────────────────────────── */
@@ -182,6 +187,10 @@ class Link {
       }),
       client.on('hello', (msg: Hello) => {
         this.patch({ hello: msg, ...(msg.theme ? { palette: { ...FALLBACK_PALETTE, ...msg.theme } } : {}) })
+        // Written down every time rather than once at pairing: the card can
+        // be armed, swapped or given a new subnet long after, and the copy
+        // that matters is the one taken while the desktop was still awake.
+        void this.rememberWake(msg.wake ?? null)
         // The desktop client puts this phone's battery in the Omarchy bar.
         // Only a desktop that says it wants the report gets one.
         stopReporting?.()
@@ -289,6 +298,20 @@ class Link {
     }
   }
 
+  /**
+   * Keeps the stored pairing's wake block in step with what the desktop just
+   * said about itself. A no-op when nothing moved — this writes to secure
+   * storage, and doing that once a reconnect for no reason is a waste.
+   */
+  private async rememberWake(wake: Hello['wake'] | null) {
+    const desktop = this.state.desktop
+    if (!desktop || !wake) return
+    if (JSON.stringify(desktop.wake ?? null) === JSON.stringify(wake)) return
+    const next = { ...desktop, wake }
+    await saveDesktop(next).catch(() => {})
+    this.patch({ desktop: next })
+  }
+
   /** Keeps the foreground service's notification honest. */
   private announce(status: ConnectionStatus) {
     const text =
@@ -387,6 +410,39 @@ class Link {
 
   reconnectNow() {
     this.client?.reconnectNow()
+  }
+
+  /**
+   * Wakes the desktop, then waits for it to come back.
+   *
+   * Nothing acknowledges a magic packet, so the only honest confirmation is
+   * the daemon answering `/api/info` again — which is what this waits for, and
+   * what it reports. A desktop that came up on a new address is not a failure
+   * either: the socket's own retry hands over to `relocate()`, which finds it
+   * by the key the phone pinned.
+   */
+  async wake(): Promise<boolean> {
+    const desktop = this.state.desktop
+    if (!desktop) throw new Error('not paired with a desktop yet')
+    if (!canWake(desktop.wake)) {
+      throw new Error(
+        desktop.wake?.mac
+          ? 'waking a desktop needs the Android app — nothing in Expo Go or on iOS can send this packet'
+          : 'this desktop has not told the app how to wake it — connect once and try again',
+      )
+    }
+    if (this.wakingNow) return false
+    this.wakingNow = true
+    this.patch({ waking: true })
+    try {
+      await sendWakePacket(desktop.wake!, desktop.host)
+      const answered = await waitForDesktop(() => probeHost(desktop.host, desktop.port))
+      this.client?.reconnectNow()
+      return answered
+    } finally {
+      this.wakingNow = false
+      this.patch({ waking: false })
+    }
   }
 
   call<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {

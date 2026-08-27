@@ -10,6 +10,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Base64
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
 import expo.modules.interfaces.permissions.Permissions
 import expo.modules.kotlin.Promise
 import expo.modules.kotlin.exception.CodedException
@@ -34,6 +38,9 @@ class OmarchyLinkModule : Module() {
     get() = appContext.reactContext ?: throw CodedException("no android context")
 
   private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+  /** A magic packet is 102 bytes; nothing this sends has any business being large. */
+  private val MAX_DATAGRAM = 1024
 
   override fun definition() = ModuleDefinition {
     Name("OmarchyLink")
@@ -131,6 +138,37 @@ class OmarchyLinkModule : Module() {
           .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         activity.startActivity(fallback)
       }
+    }
+
+    /**
+     * One UDP datagram, at an address that is usually a broadcast one.
+     *
+     * This exists for Wake-on-LAN, and it is deliberately dumber than that:
+     * the magic packet is built in TypeScript, where it can be tested by the
+     * suite rather than only by a sleeping desktop. All that is left for the
+     * native half is the one thing React Native has no answer for — there is
+     * no UDP socket in the runtime, at any price.
+     *
+     * `AsyncFunction` bodies run off the JS thread, so the socket is opened on
+     * a background thread and `NetworkOnMainThreadException` never applies.
+     * Broadcasting needs no Android permission beyond `INTERNET`; the multicast
+     * lock everybody remembers is for *receiving*.
+     */
+    AsyncFunction("sendDatagram") { payload: String, host: String, port: Int ->
+      if (port !in 1..65535) throw CodedException("port out of range: $port")
+      val bytes = try {
+        Base64.decode(payload, Base64.DEFAULT)
+      } catch (error: IllegalArgumentException) {
+        throw CodedException("payload is not base64")
+      }
+      if (bytes.isEmpty() || bytes.size > MAX_DATAGRAM) {
+        throw CodedException("a datagram of ${bytes.size} bytes is not one this sends")
+      }
+      DatagramSocket().use { socket ->
+        socket.broadcast = true
+        socket.send(DatagramPacket(bytes, bytes.size, InetAddress.getByName(host), port))
+      }
+      bytes.size
     }
   }
 

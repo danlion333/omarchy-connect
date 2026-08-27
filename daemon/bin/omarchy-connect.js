@@ -12,6 +12,7 @@ import { CONFIG_FILE } from '../src/lib/paths.js'
 import { createPairingCode, pairingUrl, renderQr } from '../src/pairing.js'
 import { identity, fingerprint } from '../src/lib/crypto.js'
 import * as firewall from '../src/lib/firewall.js'
+import * as wol from '../src/lib/wol.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
@@ -768,6 +769,54 @@ async function cmdFirewall() {
 }
 
 /**
+ * Wake-on-LAN is the one feature that is used when this daemon is not running,
+ * so there is nothing to check at the moment it matters — only now. This says
+ * what the phone was handed, and whether the card would act on it.
+ */
+async function cmdWake() {
+  const net = await sys.network()
+  const wake = await wol.check(net)
+
+  console.log(
+    card('WAKE ON LAN', [
+      ['interface', wake.interface ? `${wake.interface} (${wake.type})` : 'none up'],
+      ['mac', wake.mac ?? '—'],
+      ['broadcast', wake.broadcast ? `${wake.broadcast}:${wake.port}` : '—'],
+      ['armed', wake.armed === null ? 'cannot tell' : wake.armed ? 'yes' : 'no'],
+    ]),
+  )
+
+  if (!wake.supported) {
+    console.log(dim('\n  nothing here can be woken — no interface is up\n'))
+    return
+  }
+  if (wake.note) console.log(dim(`\n  ${wake.note}`))
+  if (wake.armed === true) {
+    console.log(dim('\n  the paired phone can wake this desktop from sleep\n'))
+    return
+  }
+  if (wake.armed === null) {
+    console.log(
+      dim(
+        '\n  this card exposes no wakeup flag, so whether it would answer a magic\n' +
+          '  packet is something only trying it will tell you\n',
+      ),
+    )
+    return
+  }
+  console.log(dim('\n  run this to let a magic packet wake this desktop:\n'))
+  console.log(`  ${wake.command}`)
+  console.log(
+    dim(
+      '\n  it takes effect the next time the link comes up — right away with\n' +
+        '  `nmcli connection up` on that profile — and it survives a reboot.\n\n' +
+        '  the other half is in the BIOS, usually "Wake on LAN" or "Power on by\n' +
+        '  PCI-E", and no command here can read or set it\n',
+    ),
+  )
+}
+
+/**
  * The desktop client: an Omarchy shell plugin that puts this daemon in the
  * bar. It is a plain folder of QML the shell loads on demand, so installing
  * is a copy, a rescan, and an enable — all in user space.
@@ -1244,6 +1293,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('firewall')}                    check whether the port is reachable
+  ${bold('wake')}                        whether a phone could wake this desktop
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate
   ${bold('panel')} <status|install|remove>  the Omarchy bar client
   ${bold('install-service')}             write a systemd user unit
@@ -1266,6 +1316,7 @@ const commands = {
   agent: cmdAgent,
   config: cmdConfig,
   firewall: cmdFirewall,
+  wake: cmdWake,
   tls: cmdTls,
   panel: cmdPanel,
   'install-service': cmdInstallService,
