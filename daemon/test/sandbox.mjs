@@ -13,6 +13,11 @@
  * test-shaped back door: every suite gets a config with the policy off, and
  * the link's own behaviour is tested against a stub in `calls.mjs` where it
  * can be checked without a handset in the room.
+ *
+ * The ringtone is the same kind of reach. A suite that mirrors a ringing call
+ * would otherwise ring out loud on the machine running it, so it is off here
+ * too — and `calls.mjs`, which does assert on it, turns it back on against a
+ * stand-in player rather than the sound card.
  */
 import fs from 'node:fs'
 import path from 'node:path'
@@ -29,7 +34,16 @@ export function quietBluetooth(configHome, extra = {}) {
   }
   fs.writeFileSync(
     file,
-    JSON.stringify({ ...current, handsfree: { autoConnect: 'off', address: null }, ...extra }, null, 2),
+    JSON.stringify(
+      {
+        ...current,
+        handsfree: { autoConnect: 'off', address: null },
+        ringtone: { enabled: false, sound: null },
+        ...extra,
+      },
+      null,
+      2,
+    ),
     { mode: 0o600 },
   )
   return file

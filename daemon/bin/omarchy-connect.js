@@ -490,13 +490,24 @@ async function cmdCall(args) {
   const number = rest.join('').trim() || null
   const value = rest.join(' ').trim() || null
 
+  /** What a ringing phone will sound like, if anything. */
+  const ringtoneLine = (tone) => {
+    if (!tone) return dim('—')
+    if (!tone.enabled) return dim('off')
+    if (!tone.player) return dim('no player on this machine')
+    return tone.custom ? tone.sound.replace(/^.*\//, '') : 'the sound theme'
+  }
+
   /** How the link's own row reads, which is a policy and a state at once. */
   const linkLine = (link, connected) => {
     if (!link) return dim('—')
     if (link.policy === 'off') return connected ? 'up · by hand' : dim('off · by hand')
-    const policy = link.policy === 'presence' ? 'follows the phone' : 'raised on a call'
+    const policy = link.policy === 'presence' ? 'follows the phone' : 'only during a call'
     if (link.raising) return `connecting · ${policy}`
-    if (connected) return `up · ${link.raisedBy ? policy : 'raised elsewhere'}`
+    if (connected) {
+      const how = link.raisedBy ? policy : 'raised elsewhere'
+      return link.standingDown ? `up · ${how} · going down` : `up · ${how}`
+    }
     return dim(policy)
   }
 
@@ -513,6 +524,7 @@ async function cmdCall(args) {
         ['link', linkLine(bt.link, bt.connected)],
         ['handset', bt.device || bt.link?.pinned || dim('—')],
         ['audio', bt.connected ? bt.audio || 'idle' : dim('—')],
+        ['ringtone', ringtoneLine(snapshot.phone?.ringtone)],
         ['app', (snapshot.devices || []).some((d) => d.online) ? 'connected' : 'not connected'],
         [
           'in progress',
@@ -542,6 +554,34 @@ async function cmdCall(args) {
     return
   }
 
+  if (action === 'ringtone') {
+    if (!value) {
+      log.error('usage: omarchy-connect call ringtone <on|off|test|default|FILE>')
+      process.exit(1)
+    }
+    const res = await daemonRequest('/api/call', { method: 'POST', body: { op: action, value }, timeout: 10_000 })
+    if (!res.status) {
+      log.error('daemon is not running — start it with `omarchy-connect start`')
+      process.exit(1)
+    }
+    if (!res.ok) {
+      log.error(res.data?.error || 'could not set the ringtone')
+      process.exit(1)
+    }
+    const tone = res.data?.ringtone || {}
+    log.ok(
+      value.toLowerCase() === 'test'
+        ? `playing ${tone.sound}`
+        : tone.enabled
+          ? `a ringing phone plays ${tone.custom ? tone.sound : "the desktop's own ring"}`
+          : 'a ringing phone stays quiet',
+    )
+    if (tone.enabled && !tone.player) {
+      console.log(dim('  nothing on this machine can play it — install pipewire-pulse or libcanberra'))
+    }
+    return
+  }
+
   if (action === 'auto' || action === 'handset') {
     if (!value) {
       log.error(
@@ -565,7 +605,7 @@ async function cmdCall(args) {
     const link = res.data?.bluetooth?.link || {}
     log.ok(
       action === 'auto'
-        ? `the link ${link.policy === 'off' ? 'is now yours to raise' : link.policy === 'presence' ? 'now follows the phone' : 'is now raised on a call'}`
+        ? `the link ${link.policy === 'off' ? 'is now yours to raise' : link.policy === 'presence' ? 'now follows the phone' : 'now exists only while a call does'}`
         : link.pinned
           ? `handset pinned to ${link.pinned}`
           : 'handset back to whichever one is paired',
@@ -578,7 +618,7 @@ async function cmdCall(args) {
 
   if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect'].includes(action)) {
     log.error(
-      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS>',
+      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS|ringtone on|off|test|FILE>',
     )
     process.exit(1)
   }
@@ -1288,6 +1328,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('sms')} <number> <message…>     send an SMS through the paired phone
   ${bold('call')} <status|answer|reject|…>  answer or place a call
   ${bold('call')} auto <presence|ring|off>  when to hold the Bluetooth link open
+  ${bold('call')} ringtone <on|off|FILE>     what a ringing phone sounds like here
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents

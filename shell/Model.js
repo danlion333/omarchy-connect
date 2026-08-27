@@ -177,10 +177,10 @@ function phoneDetail(entry, now) {
  * is actionable: the first means this machine's PipeWire is too old to publish
  * org.pipewire.Telephony, the second only means nothing is paired yet.
  *
- * The link is normally nobody's business — the desktop holds it open while the
- * phone is on the network — so it earns a word here only in the states where
- * something is happening or something is wrong: a page under way, and a page
- * that failed.
+ * The link is normally nobody's business — it goes up for a call and comes
+ * down after it — so it earns a word here only in the states where something
+ * is happening or something is wrong: a page under way, and a page that
+ * failed.
  */
 function handsfreeText(bt) {
   if (!bt || bt.available !== true) return "unsupported"

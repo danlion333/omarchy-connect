@@ -19,13 +19,25 @@ const DEFAULTS = {
   /**
    * When the desktop holds the Bluetooth hands-free link open.
    *
+   * `ring` is the default: the link exists while a call does and not
+   * otherwise. It costs the first second or two of a call on a page, and it
+   * buys back the rest of the day — a phone left on the hands-free profile is
+   * a phone whose audio is stuck in a headset codec whether or not anybody is
+   * talking, and BlueZ raises that link on its own the moment the handset is
+   * in range. Under this policy the desktop puts it back down.
+   *
    * `presence` keeps it up for as long as the phone is on the network, which
-   * is what makes a ringing call answerable the instant it rings; `ring`
-   * raises it only when one arrives, and spends the first seconds of the call
-   * paging the handset; `off` leaves the link entirely to the user. `address`
-   * names a handset when more than one is paired and the guess would be one.
+   * makes a ringing call answerable the instant it rings; `off` leaves the
+   * link entirely to the user. `address` names a handset when more than one is
+   * paired and the guess would be one.
    */
-  handsfree: { autoConnect: 'presence', address: null },
+  handsfree: { autoConnect: 'ring', address: null },
+  /**
+   * The sound a ringing phone makes here. `sound` is a path to a file, or null
+   * for the desktop's own sound theme; `enabled` false leaves the ringing to
+   * the notification card alone.
+   */
+  ringtone: { enabled: true, sound: null },
   devices: [],
 }
 

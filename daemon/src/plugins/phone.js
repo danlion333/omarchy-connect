@@ -1,8 +1,10 @@
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 
 import { has, run, spawn, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
+import { ringtone } from '../lib/ringtone.js'
 import { ancs } from '../lib/ancs.js'
 import { loadConfig, saveConfig } from '../lib/config.js'
 
@@ -40,12 +42,12 @@ import { loadConfig, saveConfig } from '../lib/config.js'
  *
  * Which makes *whether* a gateway is connected the question the whole ranking
  * turns on, and the answer used to be "whatever the user last did in Bluetooth
- * settings". It is not any more: the link follows the phone. While the app is
- * on the network the profile is held open, so a call that arrives finds it
- * already up; and a call that arrives with it down anyway raises it there and
- * then — `anticipate` starts the page the moment the ring is reported, which
- * buys the seconds it takes back from the ones between the ring and somebody
- * reaching the keyboard.
+ * settings". It is not any more: the link belongs to the call. `anticipate`
+ * starts the page the moment a ring is reported down a road that carries no
+ * audio, which buys the seconds it takes back from the ones between the ring
+ * and somebody reaching the keyboard; and when the call is over the link goes
+ * back down, so the handset is not held in a hands-free codec for the rest of
+ * the day by a desktop that wanted a microphone for four minutes.
  *
  * The same iPhone usually arrives down two of these at once, announcing one
  * call as a number over hands-free and as a name over ANCS. `record` folds
@@ -165,7 +167,13 @@ const caller = (entry) => entry.name || entry.from || 'unknown number'
 function silence(close = true) {
   const child = ringer
   ringer = null
-  if (close) queuedRing = null
+  // `close` false is `ring` rewriting its own card in place — the phone is
+  // still ringing, and the melody carries on from where it is rather than
+  // starting over on the beat the caller's name arrives.
+  if (close) {
+    queuedRing = null
+    ringtone.stop()
+  }
   if (child) {
     try {
       child.kill()
@@ -289,6 +297,10 @@ function ring(entry, actionable) {
 }
 
 function notify(entry) {
+  // The sound comes first and does not depend on libnotify: a machine with no
+  // `notify-send` can still be in another room from the handset, and that is
+  // the whole case for a ringing desktop.
+  if (entry.kind === 'call' && entry.state === 'ringing') ringtone.start(RING_TIMEOUT_MS)
   if (!has('notify-send')) return
   const from = caller(entry)
   if (entry.kind === 'notification') {
@@ -461,7 +473,14 @@ export function recent(limit = 10) {
 }
 
 export function summary() {
-  return { ...counters, recent: recent(5), call: liveCall(), bluetooth: handsfree.summary(), ios: ancs.summary() }
+  return {
+    ...counters,
+    recent: recent(5),
+    call: liveCall(),
+    bluetooth: handsfree.summary(),
+    ios: ancs.summary(),
+    ringtone: ringtone.summary(),
+  }
 }
 
 /**
@@ -567,7 +586,7 @@ async function handsets() {
  */
 export async function requestCall({ op, id = null, number = null, value = null } = {}) {
   const action = String(op || '').toLowerCase()
-  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset']
+  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset', 'ringtone']
   if (!VERBS.includes(action)) throw new Error(`unknown call action: ${op}`)
 
   /**
@@ -579,7 +598,7 @@ export async function requestCall({ op, id = null, number = null, value = null }
    */
   if (action === 'auto' || action === 'handset') {
     const cfg = loadConfig()
-    const settings = { autoConnect: 'presence', address: null, ...(cfg.handsfree || {}) }
+    const settings = { autoConnect: 'ring', address: null, ...(cfg.handsfree || {}) }
 
     if (action === 'auto') {
       const policy = String(value || '').toLowerCase()
@@ -605,6 +624,36 @@ export async function requestCall({ op, id = null, number = null, value = null }
     else if (settings.autoConnect === 'presence' && appCanAct()) handsfree.presence(true)
 
     return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary(), handsets: await handsets() }
+  }
+
+  /**
+   * What a ringing phone sounds like here.
+   *
+   * `on` and `off` are the switch, `test` plays one pass for somebody choosing
+   * between files, and anything else is taken as the path to the file — with
+   * `default` handing the choice back to the desktop's sound theme.
+   */
+  if (action === 'ringtone') {
+    const word = String(value || '').toLowerCase()
+    if (word === 'test') return { ok: true, ...ringtone.once(), ringtone: ringtone.summary() }
+
+    const cfg = loadConfig()
+    const settings = { enabled: true, sound: null, ...(cfg.ringtone || {}) }
+    if (word === 'on' || word === 'off') settings.enabled = word === 'on'
+    else if (word === 'default') settings.sound = null
+    else if (value) {
+      const file = String(value)
+      if (!fs.existsSync(file)) throw new Error(`${file} is not there`)
+      settings.sound = file
+      settings.enabled = true
+    } else {
+      throw new Error('the ringtone is on, off, test, default, or the path to a sound file')
+    }
+
+    cfg.ringtone = settings
+    saveConfig(cfg)
+    ringtone.configure(settings)
+    return { ok: true, ringtone: ringtone.summary() }
   }
 
   // The link itself, rather than anything travelling over it. `connect` waits
@@ -798,11 +847,25 @@ export default {
     })
     handsfree.on('gateway', (gateway) => {
       if (!gateway) silence()
+      // Some handsets send their own ringing tone down the audio link as soon
+      // as it opens. Two ringtones at once is worse than either, and theirs is
+      // the one that is actually in step with the call.
+      else if (gateway.audio === 'active' && ringtone.ringing) ringtone.stop()
       log.info(gateway ? `bluetooth: ${gateway.name || gateway.address} connected` : 'bluetooth: phone disconnected')
       bus?.emit('event', 'phone', { action: 'bluetooth', bluetooth: handsfree.summary() })
     })
 
+    /**
+     * What the link's own bedtime consults. `liveCall` is the desktop's whole
+     * belief about a call in progress — the hands-free profile's view of it
+     * when there is one, and the app's or the iPhone's when the handset
+     * carries audio without ever saying a call exists. Without this a link
+     * raised for a silent handset would be put down mid-conversation.
+     */
+    handsfree.busy = () => Boolean(liveCall())
+
     handsfree.configure(loadConfig().handsfree)
+    ringtone.configure(loadConfig().ringtone)
     /**
      * The phone appearing on the network is what tells the link to go up, and
      * the socket closing is what tells it to come down again. Neither is

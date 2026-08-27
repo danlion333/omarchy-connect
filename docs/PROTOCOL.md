@@ -380,6 +380,28 @@ harder to break when the backend's signal set changes.
 stock Omarchy needs no configuration. If `GetManagedObjects` has no gateway, no
 phone is paired; if the bus name has no owner, PipeWire is older than 1.4.
 
+None of that surface exists until the profile is connected, which is BlueZ's
+business rather than PipeWire's: `Device1.ConnectProfile` with the phone's
+`0000111f-…` UUID raises the one link this needs and leaves the rest of the
+device — A2DP, AVRCP — where the user put it. `handsfree.autoConnect` in the
+config decides when that happens. Under `ring`, the default, the link is raised
+when a call is reported and dropped fifteen seconds after the last one clears,
+and a link found idle that this daemon did not raise — BlueZ reconnects a
+bonded handset on its own — is dropped after three seconds. That last rule
+gives up after three drops inside a minute, so a handset determined to hold the
+profile open is not argued with forever — while one that reconnects an hour
+later is treated as a phone walking back into the room rather than the same
+argument. Under `presence` the link follows the app onto the
+network instead; under `off` nothing is raised or dropped unasked. A link
+raised by hand through `op: "connect"` is never dropped by policy.
+
+`ringtone` in the config is what a ringing phone sounds like on the desktop:
+the freedesktop sound theme's `phone-incoming-call` by default, played on a
+loop through `paplay`, `pw-play` or `canberra-gtk-play` until the call is
+answered, declined or rings out. It stops early if the handset opens the audio
+link while still ringing, because that is a phone sending its own ringing tone
+and one ring is enough.
+
 #### ANCS — the iPhone's own notifications
 
 The hands-free reasoning above has a second half. iOS publishes no messages, no
@@ -676,7 +698,7 @@ machine with.
 | `POST /api/offer` | `{ path }` | Offers a desktop file to connected phones. |
 | `POST /api/unpair` | `{ id }` | Forgets a phone **and** hangs up its socket. |
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
-| `POST /api/call` | `{ op, id?, number? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`. Answers `{ ok, via }`. |
+| `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |

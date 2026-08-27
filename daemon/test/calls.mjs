@@ -60,7 +60,25 @@ fs.writeFileSync(
   { mode: 0o755 },
 )
 
-quietBluetooth(sandbox)
+/**
+ * A stand-in for the sound card.
+ *
+ * The ringtone is off in every other suite because a test that mirrors a
+ * ringing call would otherwise ring out loud on whoever's machine is running
+ * it. Here it is switched on against a fake `paplay`, which turns the one side
+ * effect worth asserting on — that a ringing phone rings, and stops when the
+ * call does — into a log file.
+ */
+const ringLog = path.join(sandbox, 'ring.log')
+fs.writeFileSync(
+  path.join(fakeBin, 'paplay'),
+  ['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(ringLog)}`, ''].join('\n'),
+  { mode: 0o755 },
+)
+const ringFile = path.join(sandbox, 'ring.oga')
+fs.writeFileSync(ringFile, 'not really a sound, and never opened by the stand-in')
+
+quietBluetooth(sandbox, { ringtone: { enabled: true, sound: ringFile } })
 
 const daemon = spawn(
   process.execPath,
@@ -296,6 +314,119 @@ function stubbed(policy = 'presence') {
   link.state = { ...link.state, calls: [] }
   link.standDown()
   check('and is only put down once the line is clear', link.linger !== null)
+  clearTimeout(link.linger)
+  link.stop()
+}
+
+{
+  /**
+   * The link that was already up before the daemon was.
+   *
+   * BlueZ pages a bonded handset the moment it is in range, so a desktop that
+   * only wants the profile for the length of a call finds it up at login, at
+   * every reconnect, and for the rest of the day — with the phone's audio held
+   * in a headset codec the whole time. Under `ring` that link is not adopted,
+   * it is put back down, and `raisedBy` staying null is the whole reason this
+   * needs `force`: nobody here raised it.
+   */
+  const link = stubbed('ring')
+  const dropped = []
+  link.drop = async (opts = {}) => {
+    dropped.push(opts.force === true)
+    link.state = { available: true, gateway: null, calls: [] }
+    return true
+  }
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+  check('a stray hands-free link is noticed', link.linger !== null)
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  check('and put back down, without pretending the daemon raised it', dropped.join() === 'true', dropped.join() || 'nothing')
+  link.stop()
+}
+
+{
+  /**
+   * A handset that carries the audio and never says a call exists.
+   *
+   * PipeWire publishes a gateway with nothing under it for those, so "no call
+   * objects" is not "no call" — the app or the iPhone is the only witness, and
+   * a bedtime that ignored them would hang up on a conversation in progress.
+   */
+  const link = stubbed('ring')
+  link.busy = () => true
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+  check('a call the desktop heard about elsewhere keeps the link up', link.linger === null)
+
+  link.busy = () => false
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'active' }, calls: [] })
+  check('and so does audio actually flowing', link.linger === null)
+
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+  check('once neither is true it goes down like any other stray', link.linger !== null)
+  clearTimeout(link.linger)
+  link.stop()
+}
+
+{
+  // The same, one step later: the call starts inside the wait rather than
+  // before it, and the timer that was already set must not fire through it.
+  const link = stubbed('ring')
+  let dropped = 0
+  link.drop = async () => {
+    dropped += 1
+    return true
+  }
+  link.state = { available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] }
+  link.standDown()
+  link.busy = () => true
+  await new Promise((resolve) => setTimeout(resolve, 3200))
+  check('a call arriving inside the wait cancels the drop', dropped === 0)
+  link.stop()
+}
+
+{
+  // The same link under the other policies is somebody else's business: one
+  // the user made in Bluetooth settings outlives whatever this daemon thinks.
+  for (const policy of ['presence', 'off']) {
+    const link = stubbed(policy)
+    link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+    check(`a link nobody here raised is left alone under ${policy}`, link.linger === null)
+    link.stop()
+  }
+}
+
+{
+  // A call under the link is the one thing that certainly keeps it up, however
+  // it got there — and the bedtime is cancelled rather than merely ignored.
+  const link = stubbed('ring')
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+  check('an idle stray link is on its way down', link.linger !== null)
+  link.apply({
+    available: true,
+    gateway: { path: '/ag1', address: 'AA', audio: 'active' },
+    calls: [{ path: '/ag1/c1', id: 'c1', state: 'incoming' }],
+  })
+  check('and a call arriving under it cancels that', link.linger === null)
+  link.stop()
+}
+
+{
+  // A handset that raises the profile again every time it is dropped would be
+  // argued with forever; the desktop gives in instead, and says so once.
+  const link = stubbed('ring')
+  link.state = { available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] }
+  link.standDown()
+  check('a stray link is put down while the argument is winnable', link.linger !== null)
+  clearTimeout(link.linger)
+  link.linger = null
+  link.strays = { count: 3, at: Date.now() }
+  link.standDown()
+  check('and left alone once it has come back too many times', link.linger === null)
+
+  // An hour later the same reconnect is a phone walking back into the room,
+  // not the same argument, and the desktop tries again.
+  link.strays = { count: 3, at: Date.now() - 120_000 }
+  link.standDown()
+  check('but an argument that stopped is not held against it', link.linger !== null)
   clearTimeout(link.linger)
   link.stop()
 }
@@ -545,10 +676,38 @@ check(
   notifications.filter((line) => /Богдан/.test(line)).join(' | ') || 'nothing was raised',
 )
 
+/**
+ * A ringing phone rings.
+ *
+ * The notification card is the wrong instrument for a call: answering from the
+ * desktop is worth having precisely when the handset is in another room, and
+ * something you have to be looking at the screen to notice does not survive
+ * that. So the desktop plays a ring — on a loop, because one three-second file
+ * is not a ringing phone — and stops the moment the call is over.
+ */
+const ringLines = () => (fs.existsSync(ringLog) ? fs.readFileSync(ringLog, 'utf8').trim().split('\n').filter(Boolean) : [])
+
+await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+15553333' }] })
+await new Promise((resolve) => setTimeout(resolve, 200))
+const before = ringLines().length
+await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+15554444' }] })
+await new Promise((resolve) => setTimeout(resolve, 1500))
+const during = ringLines()
+check('a ringing call plays the ringtone', during.length > before, `${during.length - before} pass(es)`)
+check('and plays the file it was given', during.at(-1)?.includes(ringFile), during.at(-1) || 'nothing was played')
+check('and keeps ringing rather than playing once', during.length - before > 1, `${during.length - before} pass(es)`)
+
+await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+15554444' }] })
+const settled = ringLines().length
+await new Promise((resolve) => setTimeout(resolve, 1600))
+check('a call that ends stops it', ringLines().length === settled, `${ringLines().length - settled} pass(es) after the call`)
+
 const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
 check('the status file carries the Bluetooth summary', 'bluetooth' in (status.phone || {}),
   `available=${status.phone?.bluetooth?.available}`)
 check('and the live call the panel puts its buttons on', 'call' in (status.phone || {}))
+check('and what a ringing phone will sound like', status.phone?.ringtone?.enabled === true,
+  JSON.stringify(status.phone?.ringtone))
 
 /**
  * The name on the panel is the one the phone answers to today. A phone

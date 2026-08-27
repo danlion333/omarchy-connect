@@ -28,14 +28,17 @@ import { available as bluezAvailable, connectProfile, disconnectProfile, handset
  *     the desktop's speakers and goes back through its microphone.
  *
  * None of that says anything about *getting* the phone onto the profile, and
- * a link that is down publishes nothing at all. So this file also keeps the
- * link up, from `lib/bluez.js`: while the phone is here it holds the profile
- * open, and if a call arrives down another road with the link down anyway, it
- * raises one in the seconds before anybody reaches the keyboard. Measured on
- * an Intel adapter and an Android handset, BlueZ takes about 1.6s to page a
- * bonded phone and PipeWire a further quarter-second to publish the gateway —
- * comfortably inside a ringing phone, and the reason `ensure` is worth
- * waiting on rather than falling straight through to the app.
+ * a link that is down publishes nothing at all. So this file also decides when
+ * the link is up, through `lib/bluez.js`. By default that is: for the length
+ * of a call and no longer. A ring reported down another road raises one in the
+ * seconds before anybody reaches the keyboard, and the line clearing takes it
+ * back down — including a link this daemon never raised, because BlueZ pages a
+ * bonded handset on its own and a phone left on the hands-free profile is a
+ * phone stuck in a voice codec all day. Measured on an Intel adapter and an
+ * Android handset, BlueZ takes about 1.6s to page a bonded phone and PipeWire
+ * a further quarter-second to publish the gateway — comfortably inside a
+ * ringing phone, and the reason `ensure` is worth waiting on rather than
+ * falling straight through to the app.
  *
  * We drive it with `busctl` rather than a D-Bus library: this daemon ships one
  * dependency on purpose, `busctl` is part of systemd and therefore already on
@@ -63,6 +66,27 @@ const PUBLISH_POLL_MS = 100
 const RAISE_WAIT_MS = 5000
 /** A link raised for one ringing call goes back down this long after it ends. */
 const LINGER_MS = 15_000
+/**
+ * A link nobody here asked for goes down sooner: there is no call to come
+ * back, and the whole reason it is being put down is that it should not have
+ * been up in the first place.
+ */
+const STRAY_MS = 3000
+/**
+ * How many times a stray link is put back down before the desktop gives in.
+ *
+ * BlueZ and the handset both reconnect on their own, and a phone determined to
+ * hold the hands-free profile open would otherwise be fought over forever.
+ * Losing that argument quietly, once, in the log, is better than a disconnect
+ * every three seconds for the rest of the session.
+ */
+const STRAY_LIMIT = 3
+/**
+ * And how close together those have to be to count as an argument. A handset
+ * that reconnects once an hour, every hour, is a phone walking in and out of
+ * range rather than one refusing to let go.
+ */
+const STRAY_WINDOW_MS = 60_000
 /** Re-reading BlueZ's whole object tree on every ring would be silly. */
 const HANDSETS_TTL_MS = 30_000
 
@@ -105,7 +129,7 @@ export class Handsfree extends EventEmitter {
      * Bluetooth settings.
      */
     this.link = {
-      policy: 'presence',
+      policy: 'ring',
       address: null,
       /** What BlueZ calls the handset, which is the only place a name exists. */
       handset: null,
@@ -116,13 +140,30 @@ export class Handsfree extends EventEmitter {
     }
     this.handsets = { at: 0, list: [] }
     this.linger = null
+    /**
+     * "Is there a call on, as far as anybody knows?"
+     *
+     * PipeWire's own answer is `state.calls`, and it is not always the whole
+     * one: plenty of handsets connect, carry the audio and never publish a
+     * call object at all. For those the only evidence is the mirrored entry
+     * the app or ANCS reported, which this library has no business reading —
+     * so the plugin that does own it replaces this.
+     */
+    this.busy = () => false
+    /** Stray links put back down in a row, so a losing argument is visible. */
+    this.strays = { count: 0, at: 0 }
   }
 
   /** Policy comes from the config file and can change under a running daemon. */
   configure({ autoConnect, address } = {}) {
-    this.link.policy = POLICIES.has(autoConnect) ? autoConnect : 'presence'
+    this.link.policy = POLICIES.has(autoConnect) ? autoConnect : 'ring'
     this.link.address = address ? String(address).toUpperCase() : null
     if (this.link.policy === 'off') this.cancelLinger()
+    // A policy that has just become "only during a call" has an opinion about
+    // the link that is up right now, and should not wait for the next call to
+    // act on it.
+    this.strays = { count: 0, at: 0 }
+    if (this.link.policy === 'ring') this.standDown()
     this.emit('link', this.link)
     return this.link.policy
   }
@@ -175,6 +216,8 @@ export class Handsfree extends EventEmitter {
   }
 
   async attempt(why) {
+    // Whatever the link was scheduled to do, it is wanted now.
+    this.cancelLinger()
     const handset = await this.handset().catch(() => null)
     if (!handset) {
       this.link.error = this.handsets.list.length
@@ -275,21 +318,69 @@ export class Handsfree extends EventEmitter {
   }
 
   /**
-   * A call ended.
+   * Every reason the link is doing something right now.
    *
-   * A link the desktop raised for that one call has nothing left to do, but it
-   * is dropped after a pause rather than the moment the line clears: a call
-   * that ends because the other side is calling straight back should not have
-   * to page the handset again.
+   * A call PipeWire published, audio actually flowing — which is what a
+   * conversation looks like on a handset that publishes no calls — or a call
+   * the desktop heard about down one of the other roads.
+   */
+  inUse() {
+    if (this.state.calls.length) return true
+    if (this.state.gateway?.audio === 'active') return true
+    try {
+      return this.busy() === true
+    } catch {
+      return false
+    }
+  }
+
+  /**
+   * The link has nothing under it. Should it still be up?
+   *
+   * Two roads lead here. A call ended, and the link raised for that one call
+   * has nothing left to do — it is dropped after a pause rather than the
+   * moment the line clears, because a call that ends with the other side
+   * ringing straight back should not have to page the handset again.
+   *
+   * And, under `ring`, a link nobody here asked for turned up idle. BlueZ
+   * pages a bonded handset the moment it is in range and the phone does the
+   * same from its side, which is how a desktop that wants a microphone for
+   * the length of a call ends up wearing the hands-free profile all day —
+   * holding the handset in narrowband and the desktop's own output in
+   * whatever a headset profile does to it. Under that policy the link exists
+   * while a call does and not otherwise, so this puts it back down.
+   *
+   * A link somebody asked for by hand is nobody's business but theirs, and
+   * one presence is holding open has `presence` to answer to.
    */
   standDown() {
-    if (this.link.raisedBy !== 'ring' || this.link.wanted) return
-    if (this.state.calls.length) return
-    this.cancelLinger()
+    if (this.link.wanted || !this.connected) return
+    if (this.inUse()) return
+    const mine = this.link.raisedBy
+    if (mine && mine !== 'ring') return
+    if (!mine && this.link.policy !== 'ring') return
+    // Far enough from the last one that this is a handset coming back rather
+    // than a handset arguing.
+    if (Date.now() - this.strays.at > STRAY_WINDOW_MS) this.strays = { count: 0, at: 0 }
+    if (!mine && this.strays.count >= STRAY_LIMIT) return
+    // A bedtime already set is not moved: the timers differ only in how long
+    // they wait, and restarting one on every D-Bus signal would mean a link
+    // that is always three seconds from going down and never goes.
+    if (this.linger) return
     this.linger = setTimeout(() => {
       this.linger = null
-      if (!this.state.calls.length && !this.link.wanted) this.drop().catch(() => {})
-    }, LINGER_MS)
+      // The wait is the point: a call can start inside it, and a link with
+      // something under it is not put down whatever this timer was for.
+      if (this.link.wanted || this.inUse()) return
+      const stray = !this.link.raisedBy
+      if (stray) {
+        this.strays = { count: this.strays.count + 1, at: Date.now() }
+        if (this.strays.count >= STRAY_LIMIT) {
+          log.info('bluetooth: the handset keeps raising the hands-free link — leaving it where it is')
+        }
+      }
+      this.drop({ force: stray }).catch(() => {})
+    }, mine === 'ring' ? LINGER_MS : STRAY_MS)
     this.linger.unref?.()
   }
 
@@ -486,6 +577,17 @@ export class Handsfree extends EventEmitter {
     for (const gone of before.values()) {
       this.emit('call', { ...gone, state: 'disconnected' }, gone)
     }
+
+    // A call under the link is the one reason it is certainly wanted; without
+    // one it may have a bedtime, and this is the only place that sees every
+    // link — including the one BlueZ raised on its own before this daemon was
+    // even started.
+    if (next.gateway && this.inUse()) {
+      this.cancelLinger()
+      this.strays = { count: 0, at: 0 }
+    } else if (next.gateway) {
+      this.standDown()
+    }
   }
 
   /** Coalesce a burst of D-Bus traffic into a single re-read. */
@@ -582,6 +684,7 @@ export class Handsfree extends EventEmitter {
         pinned: this.link.address,
         raisedBy: this.link.raisedBy,
         raising: Boolean(this.link.raising),
+        standingDown: Boolean(this.linger),
         error: this.link.error,
       },
     }

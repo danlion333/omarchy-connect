@@ -33,7 +33,7 @@ the desktop and the app repaints in the same palette.
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
-| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop holds that link open by itself while the phone is on the network, so a call is answerable the moment it rings. |
+| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
@@ -83,6 +83,7 @@ omarchy-connect status [--json]             show live daemon status
 omarchy-connect sms <number> <message…>     send an SMS through the paired phone
 omarchy-connect call <status|answer|reject|…>  answer or place a call
 omarchy-connect call auto <presence|ring|off>  when to hold the Bluetooth link open
+omarchy-connect call ringtone <on|off|FILE>  what a ringing phone sounds like here
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
 omarchy-connect agent <status|enable|run|…>   read and answer this desktop's coding agents
@@ -273,39 +274,76 @@ the hands-free control surface on D-Bus as `org.pipewire.Telephony`, the
 > separate verb rather than something `answer` does on every call, because on a
 > phone that behaves normally it is unnecessary.
 
-### The link looks after itself
+### The link exists while a call does
 
 None of the above is worth much if the phone is merely *paired* when it rings.
 A hands-free profile that is not connected publishes nothing, answers nothing
 and carries nothing — and remembering to connect the phone every time you sit
 down is exactly the kind of chore that ends with the feature unused.
 
-So the desktop does it. **While the phone is on the network the link is held
-open**, and it goes down again when the phone leaves. Nothing to configure and
-nothing to press: the app appearing is the signal, and the profile is up
-roughly a second later.
+But the opposite chore is real too, and it is the one you actually notice: a
+handset left on the hands-free profile is a handset held in a narrowband voice
+codec all day, with the desktop's own output dragged along beside it. BlueZ
+raises that link on its own the moment a bonded phone is in range — at login,
+after every reconnect — so "leave it up" is not a decision anybody made, it is
+just what happens.
 
-Two details make that cheap rather than intrusive. Only the hands-free profile
-is raised — never the whole device — so the desktop does not quietly become
-your phone's speaker, and whatever you had A2DP doing stays where you put it.
-And a link the daemon did not raise is never one it hangs up: connect the phone
-yourself in Bluetooth settings and it stays connected, whatever the policy says.
+So the default is **the link goes up for a call and comes down after it**. The
+daemon pages the handset the moment a ring is reported, answers over Bluetooth
+if it gets there in time, and drops the profile fifteen seconds after the line
+clears — long enough that a call ending because the other side is ringing
+straight back does not pay for a second page. A link that was already up when
+the daemon started, or that BlueZ raised behind its back, is put back down the
+same way: idle, under this policy, means it should not be there.
 
-If a call does arrive with the link down — the app is closed, the phone was
-asleep, you walked in mid-ring — the daemon pages the handset the moment the
-ring is reported and answers over Bluetooth if it gets there in time. Measured
-here, BlueZ takes about 1.6 seconds to reach a bonded handset and PipeWire a
-further quarter-second to publish the gateway, against a phone that will ring
-for thirty. `call answer` waits a few seconds for that page rather than
-silently taking the app's road and leaving the conversation on the handset.
+Measured here, BlueZ takes about 1.6 seconds to reach a bonded handset and
+PipeWire a further quarter-second to publish the gateway, against a phone that
+will ring for thirty. `call answer` waits a few seconds for that page rather
+than silently taking the app's road and leaving the conversation on the
+handset.
+
+Three details keep that from being intrusive. Only the hands-free profile is
+raised or dropped — never the whole device — so the desktop does not quietly
+become your phone's speaker and whatever you had A2DP doing stays where you
+put it. A link somebody asked for by hand is never one the daemon hangs up.
+And a handset that insists on re-raising the profile wins: after the third
+time in a minute the desktop stops arguing and says so in the log.
 
 ```bash
-omarchy-connect call auto presence   # hold the link while the phone is here (default)
-omarchy-connect call auto ring       # raise it only when something rings
+omarchy-connect call auto ring       # up for a call, down after it (default)
+omarchy-connect call auto presence   # hold it open while the phone is here
 omarchy-connect call auto off        # leave the link entirely to you
 omarchy-connect call connect         # …and the hand crank, either way
 omarchy-connect call disconnect
 ```
+
+`presence` is the trade in the other direction: the profile is up for as long
+as the app is on the network, so a ringing call is answerable instantly and
+never spends its first second on a page — at the cost of the phone wearing the
+hands-free profile the whole time it is in the room.
+
+### The ring
+
+A notification card is the wrong instrument for a call. Answering from the
+desktop earns its keep exactly when the handset is in another room, and
+something you have to be looking at the screen to notice does not survive
+that — so a ringing phone rings here too, on a loop, until the call is
+answered, declined or rings out.
+
+It is the desktop's own sound theme by default, which is one less file to
+carry and the sound the rest of the system already uses for this. Point it at
+anything you would rather hear:
+
+```bash
+omarchy-connect call ringtone ~/Music/ring.ogg
+omarchy-connect call ringtone test      # play it once
+omarchy-connect call ringtone default   # back to the sound theme
+omarchy-connect call ringtone off
+```
+
+Handsets that send their own ringing tone down the audio link once it opens
+take over from ours the moment they do: two ringtones at once is worse than
+either, and theirs is the one in step with the call.
 
 With more than one handset paired the desktop declines to guess, says so, and
 lists what it found; `omarchy-connect call handset <address>` settles it, and
@@ -669,8 +707,9 @@ daemon/         Node.js daemon — one dependency (ws)
                 installs into Claude Code's own settings, and the writer that
                 types back through tmux or the compositor
   src/lib/      …including the three Bluetooth clients: hands-free call control
-                over PipeWire, the BlueZ side that raises that link and keeps
-                it up, and an iPhone's notifications over ANCS
+                over PipeWire, the BlueZ side that raises that link for a call
+                and puts it down after, and an iPhone's notifications over
+                ANCS — plus the ring a call makes on the desktop's speakers
 shell/          Omarchy shell plugin — the desktop client (QML)
 app/            Expo app (TypeScript)
   modules/      local Expo module — Android SMS and call state (Kotlin)
