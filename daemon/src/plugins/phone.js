@@ -326,19 +326,53 @@ function notify(entry) {
 }
 
 /**
- * One ringing phone, announced more than once.
+ * Whether two reports could be about the same person. Anonymous counts as
+ * compatible on purpose: a modern Android puts the number in none of its call
+ * broadcasts, so most reports have nothing to compare, and refusing to match
+ * them would put every call on the desktop two or three times over.
+ */
+const sameParty = (a, b) =>
+  (!a.from || !b.from || a.from === b.from) && (!a.name || !b.name || a.name === b.name)
+
+/**
+ * The line in the history this report belongs to, if it belongs to one.
  *
- * With hands-free and the app both live it is the same number twice. With an
- * iPhone it is worse than that: hands-free knows `+380…` and ANCS knows
- * `Тарас`, so the two reports have nothing in common but their timing — which
- * is why a call already in the history counts as the same call when it shares
- * a state and either a number or a road it has not been seen on yet.
+ * Two different questions wear the same coat here. One is a call announced
+ * twice at once — hands-free and the app both saw the phone ring — and that is
+ * settled by timing. The other is the *same* call reported again as it moves
+ * from ringing to answered to over, which is minutes apart, and which used to
+ * fill the panel with three lines about one conversation.
  *
- * A second genuinely different call within six seconds, on the same handset,
- * in the same state, is not a thing that happens.
+ * Three answers, in the order they can be trusted:
+ *
+ *   1. The token the phone stamps on every report of one call. Exact, however
+ *      far apart the reports land, and it needs no guess about the caller.
+ *   2. The call already up on this desktop, moving on. Timing cannot decide
+ *      this one — a phone rings for half a minute before anybody answers it,
+ *      a long way outside the window two simultaneous reports share.
+ *   3. Timing, for the roads that carry no token: hands-free knows `+380…`
+ *      while ANCS knows `Тарас`, so those two have nothing in common but the
+ *      moment they arrived. A second genuinely different call within six
+ *      seconds, on the same handset, in the same state, does not happen.
  */
 function twin(entry) {
   if (entry.kind !== 'call') return null
+  if (entry.call) {
+    const stamped = history.find((old) => old.kind === 'call' && old.call === entry.call)
+    if (stamped) return stamped
+  }
+  // Only for a report that carries no token of its own: one that does and
+  // matched nothing above is a new call, whoever it is with.
+  if (
+    !entry.call &&
+    live &&
+    live.state !== 'ended' &&
+    entry.state !== 'ringing' &&
+    history.includes(live) &&
+    sameParty(live, entry)
+  ) {
+    return live
+  }
   const cutoff = entry.receivedAt - DEDUPE_MS
   return (
     history.find(
@@ -346,6 +380,10 @@ function twin(entry) {
         old.kind === 'call' &&
         old.receivedAt >= cutoff &&
         old.state === entry.state &&
+        // A line stamped with a different call is a different call, whatever
+        // the clock says. A line with no stamp at all is the road that cannot
+        // give one — hands-free — reporting the ring the app also just saw.
+        (!old.call || !entry.call || old.call === entry.call) &&
         (!old.from || !entry.from || old.from === entry.from),
     ) ?? null
   )
@@ -358,10 +396,12 @@ function twin(entry) {
  *
  * Returns whether what the user would be shown has changed, which is the one
  * thing worth telling them a second time: "unknown number" becoming a number
- * is worth a replacement, and so is that number becoming a name.
+ * is worth a replacement, and so is that number becoming a name. And whether
+ * the call moved on, which is what takes the ringing card back off the screen.
  */
 function enrich(existing, incoming) {
   const before = caller(existing)
+  const wasState = existing.state
   if (!existing.from && incoming.from) existing.from = incoming.from
   // A dialler that has not looked the caller up yet puts the number where the
   // name goes, and older builds of the app forwarded that verbatim. A real
@@ -377,8 +417,18 @@ function enrich(existing, incoming) {
     existing.missed = true
     counters.missed += 1
   }
+  // Ringing, answered, over: one conversation walking through its states. The
+  // line follows it instead of a second line being written underneath.
+  if (incoming.state && incoming.state !== existing.state) existing.state = incoming.state
+  // `record` calls a call incoming when nobody said otherwise, so only a road
+  // that actually knows better is allowed to overrule what is already there.
+  if (incoming.direction && incoming.direction !== 'incoming' && existing.direction === 'incoming') {
+    existing.direction = incoming.direction
+  }
+  if (!existing.call && incoming.call) existing.call = incoming.call
+  if (existing.seconds == null && Number.isFinite(incoming.seconds)) existing.seconds = incoming.seconds
   existing.receivedAt = Date.now()
-  return { entry: existing, named: caller(existing) !== before }
+  return { entry: existing, named: caller(existing) !== before, advanced: existing.state !== wasState }
 }
 
 const KINDS = new Set(['call', 'sms', 'notification'])
@@ -418,13 +468,17 @@ function record(raw, device) {
     entry.missed = raw.missed === true
     entry.seconds = Number.isFinite(raw.seconds) ? raw.seconds : null
     entry.ancs = Number.isFinite(raw.ancs) ? raw.ancs : null
+    entry.call = text(raw.call, 64)
     const already = twin(entry)
     if (already) {
-      const { entry: merged, named } = enrich(already, entry)
-      return { entry: merged, fresh: false, named }
+      const { entry: merged, named, advanced } = enrich(already, entry)
+      return { entry: merged, fresh: false, named, advanced }
     }
-    // `active` and `ended` are transitions, not events worth counting twice.
-    if (entry.state !== 'active' && entry.state !== 'ended') counters.calls += 1
+    // Once per conversation, wherever in its life the desktop caught it. It
+    // used to skip anything that arrived `active` or `ended` to avoid counting
+    // a call three times — which meant an outgoing call, which never rings and
+    // so never arrives any other way, was never counted at all.
+    counters.calls += 1
     if (entry.missed) counters.missed += 1
   }
   history.unshift(entry)
@@ -455,7 +509,7 @@ function anticipate(entry) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh, named } = record(raw, device)
+  const { entry, fresh, named, advanced } = record(raw, device)
   if (entry.kind === 'call') {
     remember(entry)
     anticipate(entry)
@@ -463,7 +517,9 @@ function ingest(raw, device = null) {
   // A phone that is still ringing is announced again once its caller becomes
   // known: `ring` rewrites the notification already on screen, so "unknown
   // number" turns into a name in place rather than gaining a twin beside it.
-  if (fresh || (named && entry.state === 'ringing')) notify(entry)
+  // A call that moves on is news too, even though its line was already there —
+  // it is what takes the ringing card down and stops the ringtone.
+  if (fresh || advanced || (named && entry.state === 'ringing')) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
   return { entry, fresh }
 }

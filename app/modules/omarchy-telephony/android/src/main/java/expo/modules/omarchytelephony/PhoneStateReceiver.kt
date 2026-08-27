@@ -19,6 +19,11 @@ import android.telephony.TelephonyManager
  * which may land either just before this broadcast or just after it. Both
  * orders are handled: whoever arrives first is used, and a late identification
  * re-announces the ringing call so the desktop can fill in what it was missing.
+ *
+ * Which way a call went is read off the same three states, because Android
+ * offers an ordinary app nothing better: there is no broadcast for "dialling"
+ * and no number in any of them. A call that rang before it went off-hook came
+ * in; one that went off-hook out of nowhere was placed from this handset.
  */
 class PhoneStateReceiver : BroadcastReceiver() {
   companion object {
@@ -26,6 +31,19 @@ class PhoneStateReceiver : BroadcastReceiver() {
     @Volatile private var ringingName: String? = null
     @Volatile private var lastState: String? = null
     @Volatile private var answered = false
+    /**
+     * One conversation, one token, carried by every report of it.
+     *
+     * Ringing, answered and over are three broadcasts about a single call, and
+     * the desktop used to write down three lines. It cannot tell them apart by
+     * the caller either — the number is in none of them — so all three arrive
+     * anonymous and only their timing separates one call from the next. The
+     * phone therefore says which call each report is about, and the desktop
+     * keeps one line and moves it along.
+     */
+    @Volatile private var callId: String? = null
+    /** "incoming" or "outgoing", once there is enough to say which. */
+    @Volatile private var direction: String? = null
     /** When the last ringing event went out, named or not. */
     @Volatile private var announcedAt = 0L
     /** Whether that event carried a name, which is as good as it gets. */
@@ -42,6 +60,15 @@ class PhoneStateReceiver : BroadcastReceiver() {
 
     /** Whether what is held is a name, rather than a number standing in for one. */
     private fun named() = ringingName != null && !Caller.isNumber(ringingName)
+
+    /**
+     * A conversation starts: a token the desktop can gather its reports under,
+     * and which way it went if that is knowable yet.
+     */
+    private fun begin(way: String?) {
+      callId = java.util.UUID.randomUUID().toString()
+      direction = way
+    }
 
     /**
      * Who the dialler says is calling. Called from the notification listener,
@@ -80,7 +107,9 @@ class PhoneStateReceiver : BroadcastReceiver() {
     private fun ringingEvent() = mapOf(
       "kind" to "call",
       "at" to System.currentTimeMillis(),
+      "call" to callId,
       "state" to "ringing",
+      "direction" to "incoming",
       "from" to ringingNumber,
       "name" to ringingName,
       "missed" to false,
@@ -102,6 +131,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
     lastState = state
 
     if (state == "ringing") {
+      begin("incoming")
       announcedAt = System.currentTimeMillis()
       // Empty on every modern build; kept because it costs nothing and is
       // still the most direct answer on the handsets that do send it.
@@ -114,17 +144,29 @@ class PhoneStateReceiver : BroadcastReceiver() {
       namedOut = named()
       answered = false
     }
-    if (state == "active") answered = true
+    if (state == "active") {
+      // Off-hook with no ring before it is this handset placing the call. The
+      // absence of a ring is the whole of the evidence available: no ordinary
+      // app is told that a number is being dialled, only that a line is open.
+      if (callId == null) begin("outgoing")
+      answered = true
+    }
+    // A process Android started for the IDLE of a call it never saw begin still
+    // has a call to report; it just cannot say which way that one went.
+    if (state == "ended" && callId == null) begin(null)
 
     val event = mapOf(
       "kind" to "call",
       "at" to System.currentTimeMillis(),
+      "call" to callId,
       "state" to state,
+      "direction" to direction,
       "from" to ringingNumber,
       "name" to ringingName,
       // A call that goes straight from ringing to idle was never picked up —
-      // which is the one the desktop most wants to tell you about.
-      "missed" to (state == "ended" && !answered),
+      // which is the one the desktop most wants to tell you about. A call this
+      // phone placed and nobody took is not a missed call on this phone.
+      "missed" to (state == "ended" && direction == "incoming" && !answered),
     )
     OmarchyTelephonyModule.deliver(context, "onCall", event)
 
@@ -134,6 +176,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
       answered = false
       namedOut = false
       announcedAt = 0L
+      callId = null
+      direction = null
     }
   }
 }

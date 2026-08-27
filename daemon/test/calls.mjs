@@ -702,6 +702,74 @@ const settled = ringLines().length
 await new Promise((resolve) => setTimeout(resolve, 1600))
 check('a call that ends stops it', ringLines().length === settled, `${ringLines().length - settled} pass(es) after the call`)
 
+/* ── one conversation, one line ─────────────────────────────────────────── */
+
+/**
+ * Ringing, answered and over are three separate broadcasts on Android, and the
+ * desktop used to write all three down. One call therefore filled the panel's
+ * four rows on its own and read as three calls with the same person — which is
+ * what the duplicates in the phone list actually were.
+ *
+ * The phone now stamps every report of one call with the same token, and the
+ * entry follows that call through its states instead of a second line being
+ * written underneath it.
+ */
+await req('phone.report', { events: [{ kind: 'call', call: 'one', state: 'ringing', from: '+15556001', name: 'Ярина' }] })
+await req('phone.report', { events: [{ kind: 'call', call: 'one', state: 'active', from: '+15556001', name: 'Ярина' }] })
+const answeredCall = (await req('phone.history', { limit: 10 })).items.filter((i) => i.name === 'Ярина')
+check('a call that is answered stays one line', answeredCall.length === 1, `${answeredCall.length} entr(y/ies)`)
+check('and the line follows it', answeredCall[0]?.state === 'active', answeredCall[0]?.state)
+
+await req('phone.report', { events: [{ kind: 'call', call: 'one', state: 'ended', from: '+15556001', name: 'Ярина' }] })
+const endedCall = (await req('phone.history', { limit: 10 })).items.filter((i) => i.name === 'Ярина')
+check('and a call that is over is still that line', endedCall.length === 1, `${endedCall.length} entr(y/ies)`)
+check('marked as over', endedCall[0]?.state === 'ended', endedCall[0]?.state)
+check('and not as a call nobody took', endedCall[0]?.missed === false, String(endedCall[0]?.missed))
+
+/**
+ * A call this phone placed, which reaches the desktop as `active` out of
+ * nowhere: there is no ring, and Android tells an ordinary app nothing else
+ * about it. It used to be filed as an incoming call — the panel drew the
+ * incoming glyph beside every number the user had dialled themselves — and it
+ * was never counted, because counting skipped everything that was not a ring.
+ */
+const dialledBefore = (await req('phone.history', { limit: 1 })).counters.calls
+await req('phone.report', {
+  events: [{ kind: 'call', call: 'out', state: 'active', direction: 'outgoing', from: '+15556002', name: 'Богдана' }],
+})
+await req('phone.report', {
+  events: [{ kind: 'call', call: 'out', state: 'ended', direction: 'outgoing', from: '+15556002', name: 'Богдана' }],
+})
+const placed = await req('phone.history', { limit: 10 })
+const dialled = placed.items.filter((i) => i.name === 'Богдана')
+check('a call this phone placed is one line too', dialled.length === 1, `${dialled.length} entr(y/ies)`)
+check('and is marked as going out', dialled[0]?.direction === 'outgoing', dialled[0]?.direction)
+check('and is counted like any other call', placed.counters.calls === dialledBefore + 1,
+  `${dialledBefore} → ${placed.counters.calls}`)
+
+/**
+ * A ring that went to voicemail: one line, and the one flag the panel colours
+ * red. Two lines here was the worst of the duplicates, because the second one
+ * was not marked missed and made the call look answered.
+ */
+await req('phone.report', { events: [{ kind: 'call', call: 'gone', state: 'ringing', from: '+15556003', name: 'Устим' }] })
+await req('phone.report', { events: [{ kind: 'call', call: 'gone', state: 'ended', missed: true, from: '+15556003', name: 'Устим' }] })
+const unanswered = (await req('phone.history', { limit: 10 })).items.filter((i) => i.name === 'Устим')
+check('a call nobody took is one line', unanswered.length === 1, `${unanswered.length} entr(y/ies)`)
+check('and it is marked missed', unanswered[0]?.missed === true, String(unanswered[0]?.missed))
+
+/**
+ * The token is what makes the fold work, rather than timing. A phone rings for
+ * half a minute before anybody reaches the desk, which is a long way outside
+ * the six-second window that tells two simultaneous reports of one ring apart.
+ */
+await req('phone.report', { events: [{ kind: 'call', call: 'slow', state: 'ringing', from: '+15556004', name: 'Северин' }] })
+await new Promise((resolve) => setTimeout(resolve, 6500))
+await req('phone.report', { events: [{ kind: 'call', call: 'slow', state: 'ended', from: '+15556004', name: 'Северин' }] })
+const patient = (await req('phone.history', { limit: 10 })).items.filter((i) => i.name === 'Северин')
+check('a call answered long after it rang is still one line', patient.length === 1, `${patient.length} entr(y/ies)`)
+check('and the desktop knows it is over', patient[0]?.state === 'ended', patient[0]?.state)
+
 const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
 check('the status file carries the Bluetooth summary', 'bluetooth' in (status.phone || {}),
   `available=${status.phone?.bluetooth?.available}`)

@@ -165,6 +165,10 @@ function phoneDetail(entry, now) {
   }
   if (entry.missed) return "missed · " + when
   if (entry.state === "ringing") return "ringing"
+  // A call still up has no "ago" to report — it is happening now, and a row
+  // reading "0s" beside a live conversation is the panel looking past it.
+  if (entry.state === "active") return "on the call"
+  if (entry.direction === "outgoing") return "called · " + when
   return when
 }
 

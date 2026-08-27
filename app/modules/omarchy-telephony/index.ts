@@ -13,13 +13,20 @@ export type SmsEvent = {
 export type CallEvent = {
   kind: 'call'
   at: number
+  /**
+   * One conversation's token. Ringing, answered and over are three broadcasts
+   * about the same call, and this is what lets the desktop keep them to one
+   * line. Absent on entries read back from the log, which are already one row
+   * per call.
+   */
+  call?: string | null
   /** Live state from the broadcast; absent on entries read back from the log. */
   state?: 'ringing' | 'active' | 'ended'
   from: string | null
   name: string | null
   missed: boolean
   seconds?: number
-  direction?: 'incoming' | 'outgoing' | 'missed'
+  direction?: 'incoming' | 'outgoing' | 'missed' | null
 }
 
 export type TelephonyEvent = SmsEvent | CallEvent
