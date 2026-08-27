@@ -33,7 +33,7 @@ the desktop and the app repaints in the same palette.
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
-| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
+| **Answering calls** | Pick up or decline from the desktop — click the ringing card to answer, right-click it to decline — and over Bluetooth the conversation comes out of your speakers, with that half needing no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
@@ -248,8 +248,12 @@ about to be taken before you press anything.
 **Answer** and **Decline** are drawn by whatever is showing your notifications,
 and not every notification server draws action buttons — Omarchy's own shell
 does not. Where there are no buttons, **clicking the notification answers the
-call**, and the notification says so. Declining is then the panel's call card,
-which carries both buttons whatever the server does, or:
+call** and **right-clicking it declines**, and the notification says so. The
+right button is not an action a notification can carry: it is the gesture that
+sweeps a card off the screen, and the desktop reads it off the bus — a card
+closed by a person's hand, as opposed to one that timed out or one the desktop
+closed itself, is somebody saying no to the call. Both are also on the panel's
+call card, which carries the two buttons whatever the server does, or:
 
 ```bash
 omarchy-connect call status      # is a handset connected, and where is the audio

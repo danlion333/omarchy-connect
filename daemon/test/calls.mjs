@@ -65,6 +65,49 @@ fs.writeFileSync(
 )
 
 /**
+ * A stand-in for the bus.
+ *
+ * Two jobs. It answers `GetServerInformation` as the buttonless server this
+ * desktop actually has, so the suite tests the same notification either way
+ * instead of drawing buttons on a machine with a chattier server and no
+ * buttons in CI. And its `monitor` is how a card gets closed by hand here: it
+ * waits for the test to drop `SWEPT` on disk and then prints the signal a
+ * notification server broadcasts when somebody sweeps a card off the screen.
+ *
+ * Everything else on the session bus — the hands-free watch is the one that
+ * matters — gets a monitor that reports nothing, which is what a quiet bus
+ * looks like.
+ */
+const sweptFlag = path.join(sandbox, 'swept')
+fs.writeFileSync(
+  path.join(fakeBin, 'gdbus'),
+  [
+    '#!/bin/sh',
+    'case " $* " in',
+    '  *" monitor "*)',
+    '    case " $* " in',
+    '      *org.freedesktop.Notifications*)',
+    '        i=0',
+    '        while [ $i -lt 600 ]; do',
+    `          if [ -f ${JSON.stringify(sweptFlag)} ]; then`,
+    `            rm -f ${JSON.stringify(sweptFlag)}`,
+    "            printf '/org/freedesktop/Notifications: org.freedesktop.Notifications.NotificationClosed (uint32 4242, uint32 2)\\n'",
+    '          fi',
+    '          i=$((i+1))',
+    '          sleep 0.05',
+    '        done',
+    '        exec sleep 3600 ;;',
+    '      *) exec sleep 3600 ;;',
+    '    esac ;;',
+    '  *GetServerInformation*)',
+    "    printf \"('quickshell', 'quickshell', '', '1.2')\\n\" ;;",
+    'esac',
+    '',
+  ].join('\n'),
+  { mode: 0o755 },
+)
+
+/**
  * A stand-in for the sound card.
  *
  * The ringtone is off in every other suite because a test that mirrors a
@@ -665,6 +708,41 @@ check(
   'and a click on it answers, for the servers that draw no buttons',
   Boolean(rang) && /-A default=Answer/.test(rang),
 )
+/**
+ * The other gesture a card has.
+ *
+ * On a server that draws no buttons the click answers, and the only thing left
+ * to do with the card is make it go away — the right mouse button, on every
+ * server worth the name. Nothing in libnotify reports that: the card invoked
+ * no action, so `notify-send` exits having said nothing, and before this the
+ * phone went on ringing at somebody who had just said no to it. The bus is
+ * where it shows up, as a close with the reason "a person did this".
+ */
+const raisedFor = (who) =>
+  (fs.existsSync(notifyLog) ? fs.readFileSync(notifyLog, 'utf8').split('\n') : []).filter((line) =>
+    new RegExp(who).test(line),
+  )
+
+const swept = respond()
+await req('phone.report', {
+  events: [{ kind: 'call', state: 'ringing', from: '+15558888', name: 'Соломія' }],
+})
+fs.writeFileSync(sweptFlag, '')
+const sweptInstruction = await Promise.race([
+  swept,
+  new Promise((resolve) => setTimeout(() => resolve(null), 8000)),
+])
+check(
+  'sweeping the ringing card off the screen declines the call',
+  sweptInstruction?.op === 'reject',
+  sweptInstruction ? sweptInstruction.op : 'the phone was told nothing',
+)
+check(
+  'and the card says the right button is there to do it',
+  raisedFor('Соломія').some((line) => /right-click to decline/.test(line)),
+  raisedFor('Соломія').join(' | ') || 'nothing was raised',
+)
+
 check(
   'the named caller replaces the anonymous notification',
   notifications.some((line) => /Incoming call/.test(line) && /Тарас/.test(line)),

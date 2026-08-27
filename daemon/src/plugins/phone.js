@@ -101,6 +101,18 @@ let activeSince = 0
 const BUTTONLESS = /quickshell/i
 let drawsButtons = true
 
+/**
+ * The server's reason for taking a card off the screen, when the reason is a
+ * person: 1 is its own timeout running out, 3 is a client asking for it, and 2
+ * is somebody sweeping it away by hand.
+ */
+const CLOSED_BY_HAND = 2
+
+/** The `gdbus monitor` reading what becomes of the ringing card, if any. */
+let cardWatch = null
+/** The card whose own action has already fired, so its close means nothing. */
+let cardActed = 0
+
 /** Ask once, at startup, so `ring` never waits on D-Bus while a phone rings. */
 async function readNotificationServer() {
   if (!has('gdbus')) return
@@ -167,6 +179,95 @@ function sweep() {
 const caller = (entry) => entry.name || entry.from || 'unknown number'
 
 /**
+ * Watch what becomes of the ringing card, so the right mouse button means
+ * something.
+ *
+ * A server that draws no buttons leaves the ringing card with one gesture that
+ * answers — the click — and one that makes it go away, which on every server
+ * worth the name is the right button. libnotify carries the first to us and
+ * not the second: a card swept off the screen invoked no action, so
+ * `notify-send` exits having printed nothing, and the phone goes on ringing in
+ * a room where somebody has just said no to it.
+ *
+ * The bus does say it. `NotificationClosed` carries a reason, and the reason
+ * tells a person's hand apart from the card's own timeout and from our close.
+ * So the right button becomes Decline: the card is gone either way, and a
+ * ringing phone somebody has just swept off their screen is not one they are
+ * about to pick up.
+ *
+ * The click has to be told apart from the sweep, because a server closes the
+ * card it has just invoked an action on — answering produces the same close
+ * declining does. `ActionInvoked` arrives first and on this same stream, which
+ * is why the decision is made here rather than off the back of `notify-send`
+ * exiting: one stream, in order, with no race between two of them.
+ */
+function watchCard() {
+  if (cardWatch || !has('gdbus')) return
+  cardActed = 0
+  const child = spawn(
+    'gdbus',
+    [
+      'monitor', '--session',
+      '--dest', 'org.freedesktop.Notifications',
+      '--object-path', '/org/freedesktop/Notifications',
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  child.on('error', () => {
+    if (cardWatch === child) cardWatch = null
+  })
+  child.on('exit', () => {
+    if (cardWatch === child) cardWatch = null
+  })
+  child.stdout.setEncoding('utf8')
+  // A signal is one line, but a chunk is not: the tail of a half-arrived line
+  // is kept rather than read as a whole one and thrown away.
+  let tail = ''
+  child.stdout.on('data', (chunk) => {
+    if (cardWatch !== child) return
+    tail += chunk
+    const lines = tail.split('\n')
+    tail = lines.pop()
+    for (const line of lines) readCardSignal(line)
+  })
+  // A watch on a card is not a reason for the daemon to stay up.
+  child.unref()
+  cardWatch = child
+}
+
+/** Put the watch down: the card is nobody's business once the ring is over. */
+function unwatchCard() {
+  const child = cardWatch
+  cardWatch = null
+  cardActed = 0
+  if (!child) return
+  try {
+    child.kill()
+  } catch {
+    /* already gone */
+  }
+}
+
+/** One line of `gdbus monitor`, which is at most one thing about our card. */
+function readCardSignal(line) {
+  const acted = /ActionInvoked \(uint32 (\d+)/.exec(line)
+  if (acted) {
+    // Answering closes the card as well. Remembering which card acted is what
+    // keeps the close that follows from declining the call just answered.
+    if (Number(acted[1]) === ringingId) cardActed = ringingId
+    return
+  }
+  const closed = /NotificationClosed \(uint32 (\d+), uint32 (\d+)\)/.exec(line)
+  if (!closed) return
+  const id = Number(closed[1])
+  if (!ringingId || id !== ringingId || id === cardActed) return
+  if (Number(closed[2]) !== CLOSED_BY_HAND) return
+  log.info('the ringing card was closed by hand — declining the call')
+  silence()
+  requestCall({ op: 'reject' }).catch((err) => log.warn(`could not reject the call: ${err.message}`))
+}
+
+/**
  * Take down the ringing notification — answered, rejected, or gone quiet.
  *
  * Killing `notify-send` is not enough. By the time it is waiting for a click
@@ -184,6 +285,7 @@ function silence(close = true) {
   if (close) {
     queuedRing = null
     ringtone.stop()
+    unwatchCard()
   }
   if (child) {
     try {
@@ -218,6 +320,9 @@ function silence(close = true) {
 function handOver() {
   const id = ringingId
   ringtone.stop()
+  // The card lives on as the talk timer's, and closing that one is somebody
+  // clearing their screen mid-conversation, not hanging up.
+  unwatchCard()
   queuedRing = null
   silence(false)
   ringingId = 0
@@ -256,10 +361,15 @@ function ring(entry, actionable) {
   const replaces = ringingId
   silence(false)
   const title = 'Incoming call'
-  // A server with no buttons still has a click, and the click is worth
+  // Only where there are no buttons to press. A server that draws Answer and
+  // Decline has said what a card is for, and closing one there is somebody
+  // clearing their screen rather than turning a caller away.
+  if (actionable && !drawsButtons) watchCard()
+  // A server with no buttons still has two gestures, and both are worth
   // spelling out — otherwise the notification looks like a readout of a phone
   // you have to walk over to.
-  const body = actionable && !drawsButtons ? `${caller(entry)} · click to answer` : caller(entry)
+  const gestures = cardWatch ? 'click to answer, right-click to decline' : 'click to answer'
+  const body = actionable && !drawsButtons ? `${caller(entry)} · ${gestures}` : caller(entry)
   const common = ['-a', 'Omarchy Connect', '-u', 'critical']
   if (replaces) common.push('-r', String(replaces))
   if (!actionable) {
