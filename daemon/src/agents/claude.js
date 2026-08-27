@@ -11,8 +11,9 @@ import path from 'node:path'
  * job is knowing where those files are and turning a line of Claude's own
  * bookkeeping into the agent-neutral block the phone renders.
  *
- * The interface is deliberately small — `detect`, `transcripts`, `parse` — so
- * a second agent costs a file rather than a redesign. Tailing is not in here:
+ * The interface is deliberately small — `detect`, `transcripts`, `parse`, and
+ * `question` for the one thing the transcript is too late about — so a second
+ * agent costs a file rather than a redesign. Tailing is not in here:
  * every agent that writes JSONL is tailed the same way, and that lives in the
  * plugin.
  */
@@ -116,6 +117,9 @@ function summariseResult(content) {
   return { summary: oneLine(lines[0] || ''), full: text, lines: lines.length }
 }
 
+/** The one tool call that is a question rather than a thing an agent did. */
+const QUESTION_TOOL = 'AskUserQuestion'
+
 /** How many options a numbered prompt can offer before a digit stops answering it. */
 const MAX_OPTIONS = 9
 /** AskUserQuestion asks at most four things at a time; so does the phone. */
@@ -152,6 +156,27 @@ function questionsFrom(input) {
       options,
     }]
   })
+}
+
+/**
+ * The question as a block, from the tool input alone.
+ *
+ * Two roads arrive here with the same argument: the transcript, once the turn
+ * is written down, and the `PreToolUse` hook, which fires while the agent is
+ * still standing at the prompt. `null` means this was not a question, which is
+ * the answer for every other tool.
+ */
+function questionBlock(input) {
+  const questions = questionsFrom(input)
+  if (!questions.length) return null
+  return {
+    role: 'assistant',
+    kind: 'question',
+    tool: 'AskUserQuestion',
+    questions,
+    summary: oneLine(questions[0].question),
+    full: clamp(JSON.stringify(input ?? {}, null, 2), MAX_FULL),
+  }
 }
 
 /**
@@ -218,6 +243,20 @@ export default {
       })
       .filter(Boolean)
       .sort((a, b) => b.mtime - a.mtime)
+  },
+
+  /**
+   * A question the agent is about to ask, from a tool call it has not made yet.
+   *
+   * Claude Code holds the whole assistant turn back until the tool it contains
+   * has returned, so a question the agent is *blocked on* is in no file: the
+   * transcript grows the tool call and its answer together, after the fact.
+   * The hook is the only road to it while it is still worth answering, and
+   * this is the adapter's half of that road — the plugin knows a question when
+   * it sees one without knowing what any agent calls its question tool.
+   */
+  question(tool, input) {
+    return String(tool || '') === QUESTION_TOOL ? questionBlock(input) : null
   },
 
   /** The native session id a transcript path stands for. */
@@ -294,18 +333,9 @@ export default {
           const text = typeof part.thinking === 'string' ? part.thinking.trim() : ''
           blocks.push({ role: 'assistant', kind: 'thinking', at, text: clamp(text, MAX_TEXT) })
         } else if (part?.type === 'tool_use') {
-          const questions = part.name === 'AskUserQuestion' ? questionsFrom(part.input) : []
-          if (questions.length) {
-            blocks.push({
-              role: 'assistant',
-              kind: 'question',
-              at,
-              ref: part.id || null,
-              tool: 'AskUserQuestion',
-              questions,
-              summary: oneLine(questions[0].question),
-              full: clamp(JSON.stringify(part.input ?? {}, null, 2), MAX_FULL),
-            })
+          const question = part.name === QUESTION_TOOL ? questionBlock(part.input) : null
+          if (question) {
+            blocks.push({ ...question, at, ref: part.id || null })
             continue
           }
           blocks.push({

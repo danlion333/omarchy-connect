@@ -228,8 +228,13 @@ export async function send(entry, text, { submit = true } = {}) {
  * compositor's focus three times over — three flickers for one answer, with
  * room between them for the person at the keyboard to arrive mid-thought. The
  * whole chord is one focus borrow and one lock.
+ *
+ * `gap` is how long to wait between two presses. The default is barely more
+ * than a keystroke, which is all a list of toggles needs; a caller that walks
+ * the prompt onto another screen asks for more, because a screen that has just
+ * been drawn ignores the key that arrives on its heels.
  */
-export async function chord(entry, names) {
+export async function chord(entry, names, { gap = KEY_GAP_MS } = {}) {
   const specs = names.map((name) => {
     const spec = Object.hasOwn(KEYS, name) ? KEYS[name] : null
     if (!spec) throw new Error(`that key cannot be sent from a phone: ${name}`)
@@ -239,7 +244,7 @@ export async function chord(entry, names) {
 
   if (entry.writable === 'tmux') {
     for (const [i, spec] of specs.entries()) {
-      if (i) await sleep(KEY_GAP_MS)
+      if (i) await sleep(gap)
       if (spec.literal) await tmux.type(entry.pane, spec.literal)
       else await tmux.key(entry.pane, spec.tmux)
     }
@@ -249,7 +254,7 @@ export async function chord(entry, names) {
   if (entry.writable === 'wtype') {
     await borrowFocus(entry.window, async () => {
       for (const [i, spec] of specs.entries()) {
-        if (i) await sleep(KEY_GAP_MS)
+        if (i) await sleep(gap)
         await wtype(spec.literal ? ['--', spec.literal] : spec.wtype)
       }
     })

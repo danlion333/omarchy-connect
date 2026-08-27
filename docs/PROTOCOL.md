@@ -474,13 +474,19 @@ A session is what the phone lists and opens:
 question or hit a permission prompt — is the one that earns a badge, because
 that is the moment a person on the sofa can actually help.
 
-There are two roads into `waiting` and they are not equally good. A permission
-prompt is drawn on the terminal and written down nowhere, so only a hook can
-report it. A multiple-choice question is a tool call, and a tool call lands in
-the transcript — which means a session discovered by scanning `/proc`, with no
-hooks installed at all, can still say that it is stuck and say what on. Both
-are cleared the same way: by the transcript moving again, because a prompt
-answered at the keyboard fires no event this daemon subscribes to.
+Both roads into `waiting` run through a hook, for the same reason: what an
+agent is blocked on is not on disk while it is blocking. A permission prompt is
+drawn on the terminal and written down nowhere at all. A multiple-choice
+question is a tool call, and a tool call does land in the transcript — but
+Claude Code flushes the assistant turn only once the tool inside it has
+returned, so the question appears in the file at the moment it stops being one.
+A session discovered by scanning `/proc`, with no hooks installed, can see that
+an agent has gone quiet and never why. So the question a phone answers arrives
+from a `PreToolUse` hook scoped to `AskUserQuestion`, and the transcript copy
+that lands afterwards is dropped as a duplicate, matched on `tool_use_id`.
+Clearing differs: `PostToolUse` says a question was answered, while a permission
+prompt answered at the keyboard fires no event this daemon subscribes to and is
+cleared by the transcript moving again.
 
 `via` says how much to trust the rest. **`hook`** means the agent reported in
 itself: Claude Code runs a shell hook on every lifecycle event and hands it
@@ -527,8 +533,11 @@ an option's position is the keystroke that picks it. That is why `agents.answer`
 takes a block and an index rather than a digit: the desktop checks the option
 against the question it actually asked, so a stale screen gets a refusal instead
 of answering some later prompt by accident. A single-choice list is answered by
-the digit alone, which picks and submits in one press; a multi-select toggles,
-so its picks are followed by Return.
+the digit alone, which picks and moves on in one press. A multi-select only
+toggles: the digits tick the boxes and nothing has been said yet, so the answer
+walks the tabs along with `Right` — onto the next question, or onto the submit
+tab when this was the last one, where Return sends. Return pressed on the
+checkbox screen toggles whatever row is highlighted instead.
 
 Two rules the reader never sees the other side of: a `thinking` block's
 `signature` is encrypted and is never sent, and traffic from a subagent
@@ -676,8 +685,10 @@ machine with.
 `omarchy-connect agent hook` reads the agent's JSON on stdin, adds what only
 the hook process knows — its parent pid, its `$TMUX_PANE` — and posts it here.
 `omarchy-connect agent install-hooks` writes it into `~/.claude/settings.json`
-for `SessionStart`, `UserPromptSubmit`, `Stop`, `Notification` and
-`SessionEnd`, without disturbing hooks anyone else installed. A hook must never
+for `SessionStart`, `UserPromptSubmit`, `Stop`, `Notification` and `SessionEnd`,
+plus `PreToolUse` and `PostToolUse` narrowed to `AskUserQuestion` — narrowed
+because an unmatched tool hook would spawn a process on every `Bash` an agent
+runs — without disturbing hooks anyone else installed. A hook must never
 cost the agent anything, so the post has a one-second timeout, a daemon that is
 not running is a silent no-op, and a payload the daemon cannot use answers 200
 with an error inside rather than looking like a failed hook.

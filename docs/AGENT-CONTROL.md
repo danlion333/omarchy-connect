@@ -88,6 +88,13 @@ endpoints). Installed into `~/.claude/settings.json` by
 | `Stop` | `state = idle`, emit `agent` event, push if the phone asked |
 | `Notification` | `state = waiting` — this is the permission prompt |
 | `SessionEnd` | `state = gone` |
+| `PreToolUse` (`AskUserQuestion`) | `state = waiting`, carrying the question and its options |
+| `PostToolUse` (`AskUserQuestion`) | the question has been answered — take it off the screen |
+
+The tool pair is narrowed with a matcher, and the narrowing is not tidiness: an
+unmatched `PreToolUse` spawns a process on every `Bash` an agent runs, a tax on
+the agent for the sake of one tool in a hundred. Scoped to `AskUserQuestion` it
+fires only when there is something for a phone to do.
 
 Hooks must never block the agent: fire-and-forget POST with a 1s timeout, and a
 daemon that is not running is a silent no-op rather than an error.
@@ -391,16 +398,31 @@ and paperclip in the app. Both came out of the same observation: the screen
 could already show what the agent was blocked on, and in both cases the person
 holding the phone still had to get up.
 
-- *A multiple-choice question is a tool call, so it is on disk.* Every other
-  tool call is collapsed to one line on its way to the phone; this one arrives
-  whole, because the options are the entire reason it is worth carrying. That
-  also answered half of an open question below: a session found by scanning
-  `/proc`, with no hooks at all, can now say it is `waiting` and say what on.
+- *A multiple-choice question is a tool call, so it is on disk — but not while
+  it is being asked.* Every other tool call is collapsed to one line on its way
+  to the phone; this one arrives whole, because the options are the entire
+  reason it is worth carrying. What took a second pass, on a real phone
+  watching a real agent, is that Claude Code holds the whole assistant turn
+  back until the tool inside it has returned: a question the agent is *blocked
+  on* is in no file, and by the time `AskUserQuestion` reaches the transcript
+  it has already been answered at the keyboard. So the card the phone draws
+  comes from a `PreToolUse` hook, and the transcript copy that lands later is
+  dropped as the duplicate it is, matched on `tool_use_id`. This also unmakes
+  half of an answer claimed below: a session found by scanning `/proc`, with no
+  hooks at all, cannot see a question either.
 - *An option's position is the keystroke that picks it*, so the app draws the
   numbers where the terminal draws them and `agents.answer` takes a block and an
   index rather than a digit. The desktop then checks the option against the
   question it actually asked, and a stale screen gets a refusal rather than
   answering the next prompt by accident.
+- *A multi-select does not submit on Return.* The digits only tick boxes, and
+  the Return that submits a single-choice list toggles whatever row is
+  highlighted here — a phone quietly adding an option nobody picked, which is
+  what the pane showed the first time this was driven from the sofa. The prompt
+  carries tabs above the list, so the answer walks off the checkbox screen with
+  `Right` and presses Return on the submit tab, with a wider gap between keys
+  because a screen that has just been drawn ignores the key arriving on its
+  heels.
 - *A picture crosses as a file and arrives as a path.* Not a workaround for a
   terminal that cannot carry an image — it is how an image is passed, because
   an agent reads one by opening it. It goes to a swept cache directory rather
@@ -420,22 +442,22 @@ for everything else.
 
 - Codex's rollout schema needs to be read from a live file before its adapter
   is written.
-- Whether `waiting` can be detected without hooks. Half-answered. It depends
-  on what the agent is blocked *on*, and there are two kinds. A permission
-  prompt is drawn on the terminal and written down nowhere, so a
-  scan-discovered session still cannot see one. A multiple-choice question is a
-  tool call, and a tool call lands in the transcript — so that half now works
-  with no hooks installed at all, prompt text included. Its inverse turned out
-  to matter as much either way: a prompt answered at the keyboard fires no hook
-  we subscribe to, so `waiting` is cleared by the transcript moving again
-  rather than by an event. A `capture-pane` heuristic would cover the
-  permission half too, but only inside tmux.
-- Whether a multi-select prompt really toggles on the digit. The single-choice
-  road is verified end to end against a real pty — the digit arrives and it
-  picks. Multi-select is the same keys plus a Return and is believed to toggle
-  the same way, but the TUI that draws it is not this project's, so the app
-  keeps the raw-screen toggle within reach and one `Escape` undoes a wrong
-  guess.
+- Whether `waiting` can be detected without hooks. Answered, and the answer is
+  no. Both kinds of block are invisible on disk while they matter: a permission
+  prompt is drawn on the terminal and written down nowhere, and a question is
+  written down only once it has stopped being one, because the assistant turn
+  is flushed with the tool result inside it. A scan-discovered session can say
+  an agent is quiet; only a hook can say what it is waiting on. The inverse
+  still holds — a prompt answered at the keyboard fires no hook we subscribe
+  to, so a permission `waiting` is cleared by the transcript moving again
+  rather than by an event, while a question's is cleared by `PostToolUse`. A
+  `capture-pane` heuristic would cover the permission half, but only inside
+  tmux.
+- Whether a multi-select prompt really toggles on the digit. Answered on the
+  device: it does, and the Return that was supposed to submit toggled the
+  highlighted row instead. The chord is digits, `Right`, Return. The TUI that
+  draws it is still not this project's, so the app keeps the raw-screen toggle
+  within reach and one `Escape` undoes a wrong guess.
 - Whether one phone writing while the person at the keyboard also writes needs
   more than a warning. Half-answered: writes are serialised per session inside
   the daemon, so two sends cannot interleave halfway through a paste. Nothing

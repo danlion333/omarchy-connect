@@ -57,6 +57,14 @@ const GONE_TTL_MS = 5 * 60 * 1000
 const MAX_FIRST_READ = 2 * 1024 * 1024
 /** Enough of the tail to find the last thing the agent said, for the list. */
 const PREVIEW_READ = 16 * 1024
+/**
+ * Between the keypresses of an answer.
+ *
+ * Wider than a keystroke needs because answering a multi-select changes the
+ * screen mid-chord, and the prompt drops the key that arrives while it is
+ * drawing the next one.
+ */
+const ANSWER_GAP_MS = 300
 
 const sessions = new Map()
 let bus = null
@@ -186,6 +194,10 @@ function upsert(fields) {
     lastActivity: fields.lastActivity || Date.now(),
     preview: '',
     prompt: null,
+    // The question this session is standing at, when a hook has told us about
+    // one. Kept beside the session rather than only among its blocks: the
+    // blocks go when the phone closes the screen, and the question does not.
+    question: null,
     via: fields.via || 'scan',
     goneAt: null,
     /* internals — never leave the daemon */
@@ -236,11 +248,17 @@ function readFrom(file, offset) {
   }
 }
 
-function ingest(entry, text) {
+function ingest(entry, text, { backfill = false } = {}) {
   const fresh = []
   for (const line of text.split('\n')) {
     if (!line.trim()) continue
     for (const block of entry.adapter.parse(line)) {
+      // The transcript catching up with a question a hook already carried:
+      // the same tool call arriving a second time, and one card is enough.
+      if (block.kind === 'question' && block.ref && hasQuestion(entry, block.ref)) continue
+      // Whatever this answered, it is answered — including a question the
+      // hook road is still holding on to.
+      if (block.kind === 'result' && block.ref) clearQuestion(entry, block.ref)
       entry.seq += 1
       const stored = { seq: entry.seq, ...block }
       entry.blocks.push(stored)
@@ -262,7 +280,10 @@ function ingest(entry, text) {
   if (question) setState(entry, 'waiting', { prompt: question.summary })
   // A permission prompt that was answered at the keyboard fires no hook we
   // subscribe to, so the transcript moving again is what clears `waiting`.
-  else if (entry.state === 'waiting') setState(entry, 'working')
+  // Reading a file for the first time is not the transcript moving, though:
+  // a session opened while it waits has to still be waiting once it is on
+  // screen, rather than flip to `working` for having been looked at.
+  else if (entry.state === 'waiting' && !backfill) setState(entry, 'working')
   return fresh
 }
 
@@ -287,6 +308,37 @@ function pendingQuestion(entry) {
     if (block.kind === 'question' && block.ref && !answered.has(block.ref)) return block
   }
   return null
+}
+
+const hasQuestion = (entry, ref) => entry.blocks.some((b) => b.kind === 'question' && b.ref === ref)
+
+/**
+ * The question a hook handed over, put where the transcript's questions go.
+ *
+ * Claude Code writes an assistant turn down only once the tool inside it has
+ * returned, so a question the agent is *blocked on* is in no file yet — the
+ * hook is the only thing that has it while it is still worth answering. The
+ * block it becomes is indistinguishable from one the transcript would have
+ * produced, which is the point: the phone draws one card, `agents.answer`
+ * validates against one shape, and when the transcript does catch up its copy
+ * is dropped as the duplicate it is.
+ */
+function syncQuestion(entry) {
+  const question = entry.question
+  if (!question || !entry.loaded) return null
+  if (question.ref && hasQuestion(entry, question.ref)) return null
+  entry.seq += 1
+  const stored = { seq: entry.seq, ...question }
+  entry.blocks.push(stored)
+  return stored
+}
+
+/** Forget the pending question — all of them, or the one that was answered. */
+function clearQuestion(entry, ref = null) {
+  if (!entry.question) return false
+  if (ref && entry.question.ref !== ref) return false
+  entry.question = null
+  return true
 }
 
 /**
@@ -338,7 +390,8 @@ function load(entry) {
   const { text, offset } = readFrom(entry.transcript, start)
   entry.offset = offset
   // A tail that begins mid-file starts mid-line; that line is not ours to parse.
-  ingest(entry, start > 0 ? text.slice(text.indexOf('\n') + 1) : text)
+  ingest(entry, start > 0 ? text.slice(text.indexOf('\n') + 1) : text, { backfill: true })
+  syncQuestion(entry)
 }
 
 function drain(entry) {
@@ -588,17 +641,54 @@ export function hook(payload = {}) {
     emitSession(entry)
   }
 
+  // A question the agent has not asked yet. `PreToolUse` fires while it is
+  // still standing at the prompt, which is the only moment the answer is worth
+  // anything — by the time the turn reaches the transcript it has been given.
+  if (event === 'PreToolUse') {
+    const question = entry.adapter.question?.(payload.tool_name, payload.tool_input)
+    if (question) entry.question = { ...question, at: Date.now(), ref: payload.tool_use_id || null }
+  } else if (event === 'PostToolUse') {
+    // Answered — at the keyboard or from the phone, it makes no difference
+    // here. This is what keeps the card from being put back on a screen the
+    // agent has already moved past, and it is the only thing that clears
+    // `waiting` for a session nobody has opened: with no reader there is no
+    // tail, so the answer landing in the transcript goes unnoticed.
+    if (clearQuestion(entry, payload.tool_use_id || null)) {
+      const still = pendingQuestion(entry)
+      setState(entry, still ? 'waiting' : 'working', { prompt: still?.summary ?? null })
+    }
+  }
+
   const next = HOOK_STATE[event]
   if (next === 'gone') {
     setState(entry, 'gone')
     entry.goneAt = Date.now()
   } else if (next) {
-    setState(entry, next, { prompt: next === 'waiting' ? String(payload.message || '').slice(0, 400) || null : null })
+    // A turn that is moving again is not standing at a question, whatever the
+    // last `PreToolUse` said.
+    if (next !== 'waiting') clearQuestion(entry)
+    // Both hooks fire for the same stop, and "Which fruit should I pick?" is
+    // worth more on a phone than "Claude needs your permission".
+    const message = String(payload.message || '').slice(0, 400) || null
+    setState(entry, next, { prompt: next === 'waiting' ? entry.question?.summary || message : null })
   }
   // The transcript is usually already on disk by the time the hook fires, so a
   // reader gets the last turn without waiting for the watcher to notice.
   if (entry.opens > 0) drain(entry)
   else refreshPreview(entry)
+
+  // After the drain, so the question lands at the end of the conversation
+  // rather than behind whatever the same hook brought with it — and after
+  // `refreshPreview`, which reads its line off the transcript and does not
+  // know about a question that is not in there yet.
+  if (entry.question) {
+    const stored = syncQuestion(entry)
+    if (stored && entry.opens > 0) {
+      emit({ kind: 'blocks', id: entry.id, blocks: [publicBlock(stored)], cursor: entry.seq })
+    }
+    entry.preview = describe(entry.question)
+    setState(entry, 'waiting', { prompt: entry.question.summary })
+  }
   // A finished session has already been announced by its state change; saying
   // it again as a session frame would put it back in a list that just dropped it.
   if (!created && entry.state !== 'gone') emitSession(entry)
@@ -911,16 +1001,21 @@ export default {
      * refusal, not a keypress.
      *
      * One question at a time, in the order the terminal asks them. A
-     * single-choice list is answered by the digit alone — it picks and submits
-     * in one press — while a multi-select toggles, so its picks are followed by
-     * Return.
+     * single-choice list is answered by the digit alone — it picks and moves on
+     * in one press. A multi-select only toggles: the digits tick the boxes and
+     * nothing has been said yet, so the answer walks the tabs along with Right
+     * — onto the next question, or onto the submit tab when this was the last
+     * one, where Return sends. Return on the checkbox screen would toggle
+     * whatever row is highlighted instead, which is how a phone used to add an
+     * option nobody picked.
      */
     async 'agents.answer'({ id, seq, question = 0, choices = [] } = {}) {
       requireEnabled()
       const entry = liveSession(id)
       const block = entry.blocks.find((b) => b.seq === Number(seq))
       if (!block || block.kind !== 'question') throw new Error('that block is not a question')
-      const asked = block.questions?.[Number(question) || 0]
+      const index = Number(question) || 0
+      const asked = block.questions?.[index]
       if (!asked) throw new Error('that question is not on this block')
 
       const picked = [...new Set((Array.isArray(choices) ? choices : [choices]).map(Number))]
@@ -932,8 +1027,11 @@ export default {
       await ensureWritable(entry)
 
       const keys = picked.map(String)
-      if (asked.multiSelect) keys.push('Enter')
-      const result = await writer.serialise(entry, () => writer.chord(entry, keys))
+      if (asked.multiSelect) {
+        keys.push('Right')
+        if (index === block.questions.length - 1) keys.push('Enter')
+      }
+      const result = await writer.serialise(entry, () => writer.chord(entry, keys, { gap: ANSWER_GAP_MS }))
       if (entry.state === 'waiting') setState(entry, 'working')
       return { ok: true, labels: picked.map((n) => asked.options[n - 1].label), ...result }
     },

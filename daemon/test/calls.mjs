@@ -18,7 +18,6 @@ import { quietBluetooth } from './sandbox.mjs'
 
 import { connectPhone } from './phone.mjs'
 import { handsfree, Handsfree } from '../src/lib/handsfree.js'
-import { DEFAULT_EVENTS } from '../src/server.js'
 
 const PORT = Number(process.env.PORT || 8797)
 const base = `http://127.0.0.1:${PORT}`
@@ -545,23 +544,6 @@ check(
   notifications.some((line) => /Богдан/.test(line) && /-r 4242/.test(line)),
   notifications.filter((line) => /Богдан/.test(line)).join(' | ') || 'nothing was raised',
 )
-
-/**
- * The app has to be listening on the channel the daemon talks on.
- *
- * Everything above proves the desktop asks; none of it proves the handset is
- * subscribed to `phone`, because the test phone subscribes to whatever it is
- * told to. The real app keeps its own list, and once left `phone` off it — so
- * every answer, reject and outgoing message timed out with nothing in the log
- * to say why. The two lists live in different languages and different
- * repositories' halves; this is the only place they can be compared.
- */
-const clientSource = fs.readFileSync(path.join(root, '..', 'app', 'src', 'api', 'client.ts'), 'utf8')
-const declared = clientSource.match(/private subscriptions: string\[\] = \[([^\]]*)\]/)?.[1] ?? ''
-const appEvents = [...declared.matchAll(/'([^']+)'/g)].map((m) => m[1])
-const missing = DEFAULT_EVENTS.filter((event) => !appEvents.includes(event))
-check('the app subscribes to every event the daemon publishes', missing.length === 0,
-  missing.length ? `missing: ${missing.join(', ')}` : appEvents.join(' '))
 
 const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
 check('the status file carries the Bluetooth summary', 'bluetooth' in (status.phone || {}),

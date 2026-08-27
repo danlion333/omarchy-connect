@@ -8,11 +8,15 @@ import { execCommand } from '../lib/paths.js'
  * Claude Code's lifecycle hooks, as this desktop installs them.
  *
  * A transcript says what an agent did; only a hook can say that it has stopped
- * and is waiting for an answer, because a permission prompt is drawn on the
- * terminal and never written to disk. So the hooks are the half of the feature
- * that earns the notification, and both the CLI and the panel need to know
- * whether they are in place — which is why this lives beside the adapter
- * rather than inside the CLI that used to own it.
+ * and is waiting for an answer. A permission prompt is drawn on the terminal
+ * and never written to disk at all, and a question the agent asked is worse
+ * than that: Claude Code holds the whole assistant turn back until the tool
+ * inside it has returned, so by the time `AskUserQuestion` reaches the file it
+ * has already been answered at the keyboard. Both of the moments a person on
+ * the sofa could help are moments the transcript is silent about. So the hooks
+ * are the half of the feature that earns the notification, and both the CLI
+ * and the panel need to know whether they are in place — which is why this
+ * lives beside the adapter rather than inside the CLI that used to own it.
  *
  * Nothing here runs an agent or reads a transcript: it is one JSON file,
  * edited without disturbing whatever else the user has hooked.
@@ -22,8 +26,27 @@ const HOME = os.homedir()
 
 export const SETTINGS_FILE = path.join(HOME, '.claude', 'settings.json')
 
-/** The lifecycle events worth a hook: everything the state machine needs. */
-export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'Stop', 'Notification', 'SessionEnd']
+/**
+ * Every hook this desktop installs: the lifecycle events the state machine
+ * needs, and the two tool events that carry a question.
+ *
+ * The tool pair is narrowed with a matcher, and the narrowing is not tidiness.
+ * An unmatched `PreToolUse` spawns a process on every `Bash` an agent runs,
+ * which is a tax on the agent for the sake of one tool in a hundred; scoped to
+ * `AskUserQuestion` it fires only when there is something for a phone to do.
+ */
+export const HOOKS = [
+  { event: 'SessionStart' },
+  { event: 'UserPromptSubmit' },
+  { event: 'Stop' },
+  { event: 'Notification' },
+  { event: 'SessionEnd' },
+  { event: 'PreToolUse', matcher: 'AskUserQuestion' },
+  { event: 'PostToolUse', matcher: 'AskUserQuestion' },
+]
+
+/** The events, in installation order — what the CLI and the panel report. */
+export const EVENTS = HOOKS.map((hook) => hook.event)
 
 const shellQuote = (value) => (/[\s"'$`\\]/.test(value) ? `'${value.replace(/'/g, `'\\''`)}'` : value)
 
@@ -59,7 +82,14 @@ export function installed() {
   let value = false
   try {
     const hooks = readSettings().hooks || {}
-    value = EVENTS.every((event) => (hooks[event] || []).some((group) => (group.hooks || []).some(isOurs)))
+    // The matcher is part of what is installed, not a detail: an installation
+    // that predates the question hooks has the events but not the narrowing,
+    // and reporting that as installed would leave the phone in the dark.
+    value = HOOKS.every(({ event, matcher }) =>
+      (hooks[event] || []).some(
+        (group) => (group.matcher || undefined) === matcher && (group.hooks || []).some(isOurs),
+      ),
+    )
   } catch {
     // Settings we cannot parse are settings we have not hooked.
     value = false
@@ -87,8 +117,9 @@ export function write(install) {
   }
 
   if (install) {
-    for (const event of EVENTS) {
-      hooks[event] = [...(hooks[event] || []), { hooks: [{ type: 'command', command: line, timeout: 5 }] }]
+    for (const { event, matcher } of HOOKS) {
+      const group = { ...(matcher ? { matcher } : {}), hooks: [{ type: 'command', command: line, timeout: 5 }] }
+      hooks[event] = [...(hooks[event] || []), group]
     }
   }
 

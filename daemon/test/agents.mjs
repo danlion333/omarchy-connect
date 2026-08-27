@@ -513,6 +513,46 @@ if (!hasTmux) {
     .then(() => null, (e) => e.message)
   check('a single-choice list takes one answer', String(tooMany).includes('one answer'), tooMany)
 
+  /* ── a multi-select is toggles, and then a submit ────────────────────── */
+
+  // Digits only tick boxes on a multi-select — nothing has been said yet, and
+  // a Return pressed there toggles the highlighted row instead of sending,
+  // which is a phone quietly adding an option nobody picked. What sends is
+  // walking off the checkbox screen with Right and pressing Return on the
+  // submit tab, so the chord has to be digits, Right, Return. The pane is in
+  // canonical mode, so the line only arrives at all once the Return does.
+  const MULTI_ID = 'toolu_multi'
+  const multiInput = {
+    questions: [
+      {
+        question: 'Which colours?',
+        header: 'Colours',
+        multiSelect: true,
+        options: [{ label: 'Red' }, { label: 'Green' }, { label: 'Blue' }],
+      },
+    ],
+  }
+  await hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: MULTI_ID, tool_input: multiInput })
+  await settle(400)
+  const multiBlock = (await req('agents.open', { id: session.id, limit: 200 })).blocks
+    .find((b) => b.kind === 'question' && b.summary.includes('colours'))
+  // The digit the single-choice test pressed is still sitting in the pane's
+  // line buffer; flush it so what arrives next is only this answer.
+  await req('agents.key', { id: session.id, key: 'Enter' })
+  await settle(300)
+  const beforeMulti = fs.readFileSync(received, 'utf8').length
+  const multiAnswered = await req('agents.answer', { id: session.id, seq: multiBlock.seq, choices: [2, 3] })
+  check(
+    'a multi-select names every label it picked',
+    multiAnswered.labels?.join(' · ') === 'Green · Blue',
+    JSON.stringify(multiAnswered.labels),
+  )
+  await settle(1600)
+  const chorded = fs.readFileSync(received, 'utf8').slice(beforeMulti)
+  check('the boxes are ticked and the tabs walked to submit', chorded === '23\x1b[C\n', JSON.stringify(chorded))
+  await hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: MULTI_ID, tool_input: multiInput })
+  await settle(300)
+
   /* ── handing over a picture ──────────────────────────────────────────── */
 
   // A one-pixel PNG is a real picture as far as every layer here is concerned.
@@ -554,6 +594,113 @@ if (!hasTmux) {
   // session must not still be advertising a composer.
   check('a closed pane takes the composer with it', !orphaned || orphaned.writable !== 'tmux', String(orphaned?.writable))
 }
+
+/* ── a question the transcript does not have yet ───────────────────────── */
+
+// The road that matters most, and the one that was missing. Claude Code holds
+// an assistant turn back until the tool inside it has returned, so a question
+// the agent is *blocked on* is in no file — by the time `AskUserQuestion`
+// reaches the transcript it has already been answered at the keyboard. Only
+// `PreToolUse` has it while a phone can still do something about it.
+const HOOK_ID = 'toolu_ask_2'
+const hookInput = {
+  questions: [
+    {
+      question: 'Which fruit should I pick?',
+      header: 'Fruit',
+      multiSelect: false,
+      options: [
+        { label: 'Apple', description: 'crisp and common' },
+        { label: 'Banana', description: 'soft and sweet' },
+      ],
+    },
+  ],
+}
+
+await req('agents.open', { id: session.id, limit: 200 })
+const beforeAsk = events.length
+await hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: HOOK_ID, tool_input: hookInput })
+const fromHook = await waitFor(
+  events.slice(beforeAsk),
+  (e) => e.kind === 'blocks' && e.blocks.some((b) => b.kind === 'question' && b.summary.includes('fruit')),
+)
+check('a question reaches the phone before the transcript has it', Boolean(fromHook))
+const hookBlock = fromHook?.blocks.find((b) => b.kind === 'question')
+check(
+  'and it arrives whole, options and all',
+  hookBlock?.questions?.[0]?.options.map((o) => o.label).join(' · ') === 'Apple · Banana',
+  hookBlock?.questions?.[0]?.options.map((o) => o.label).join(' · '),
+)
+check(
+  'the session says what it is stuck on, not that it is stuck',
+  (await req('agents.list')).sessions[0].prompt === 'Which fruit should I pick?',
+  (await req('agents.list')).sessions[0].prompt,
+)
+// A tool call carried by a hook is still a tool call: the phone answers it the
+// same way, by the option's position.
+if (hasTmux) {
+  const refusedSeven = await req('agents.answer', { id: session.id, seq: hookBlock.seq, choices: [7] })
+    .then(() => null, (e) => e.message)
+  check('a hook-carried question validates like any other', String(refusedSeven).includes('no option 7'), refusedSeven)
+}
+
+// Closing the screen throws the blocks away; the question is still on the
+// terminal after it, so opening again has to find it — and finding it must not
+// flip a waiting session to `working` for having been looked at.
+await req('agents.close', { id: session.id })
+const reopened = await req('agents.open', { id: session.id, limit: 200 })
+const survived = reopened.blocks.filter((b) => b.kind === 'question' && b.summary.includes('fruit'))
+check('reopening finds the question again', survived.length === 1, `${survived.length} copies`)
+check('and opening a waiting session leaves it waiting', reopened.session.state === 'waiting', reopened.session.state)
+
+// The transcript finally catches up, carrying the same tool call and then its
+// answer. One card, not two — and the answer settles it.
+fs.appendFileSync(
+  transcript,
+  line({
+    type: 'assistant',
+    timestamp: at,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id: HOOK_ID, name: 'AskUserQuestion', input: hookInput }] },
+  }),
+)
+fs.appendFileSync(
+  transcript,
+  line({
+    type: 'user',
+    timestamp: at,
+    toolUseResult: { answers: { 'Which fruit should I pick?': 'Apple' } },
+    message: {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: HOOK_ID, content: 'Apple' }],
+    },
+  }),
+)
+await settle(600)
+const settledBlocks = (await req('agents.open', { id: session.id, limit: 200 })).blocks
+check(
+  'the transcript copy is dropped as the duplicate it is',
+  settledBlocks.filter((b) => b.kind === 'question' && b.summary.includes('fruit')).length === 1,
+  String(settledBlocks.filter((b) => b.kind === 'question' && b.summary.includes('fruit')).length),
+)
+check(
+  'and what was picked lands on the same card',
+  settledBlocks.some((b) => b.kind === 'result' && b.answers?.['Which fruit should I pick?'] === 'Apple'),
+)
+await hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: HOOK_ID, tool_input: hookInput })
+await settle(300)
+// The database question from the section above is still on disk unanswered,
+// so this session is legitimately still waiting — on that one, not on fruit.
+check(
+  'an answered question stops being what the session waits on',
+  !String((await req('agents.list')).sessions[0].prompt).includes('fruit'),
+  (await req('agents.list')).sessions[0].prompt,
+)
+await req('agents.close', { id: session.id })
+const afterAnswer = await req('agents.open', { id: session.id, limit: 200 })
+check(
+  'and it is not put back on screen next time',
+  afterAnswer.blocks.filter((b) => b.kind === 'question' && b.summary.includes('fruit')).length === 1,
+)
 
 await req('agents.close', { id: session.id })
 const before = events.length
