@@ -216,17 +216,42 @@ function iosText(ios) {
   return "not paired"
 }
 
+/**
+ * How long the conversation has been going, as a phone would show it.
+ *
+ * The desktop that answered the call is the only clock in the room — the
+ * handset's own timer is on a screen nobody is holding — so the panel counts,
+ * and the bar counts beside it. Empty until somebody picks up: a ringing phone
+ * has nothing to count yet.
+ */
+function callClock(call, now) {
+  if (!isObject(call) || call.state !== "active") return ""
+  var start = num(call.startedAt, 0)
+  if (start <= 0) return ""
+  var seconds = Math.max(0, Math.floor((num(now, 0) - start) / 1000))
+  var pad = function (n) { return n < 10 ? "0" + n : String(n) }
+  var minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return pad(minutes) + ":" + pad(seconds % 60)
+  return Math.floor(minutes / 60) + ":" + pad(minutes % 60) + ":" + pad(seconds % 60)
+}
+
+/** Who the live call is with, in plain words — no glyph, for a tooltip. */
+function callWho(call) {
+  if (!isObject(call)) return ""
+  return String(call.name || call.from || "unknown number")
+}
+
 /** The headline on the live-call card. */
 function callHeadline(call) {
   if (!call) return ""
-  var who = call.name || call.from || "unknown number"
+  var who = callWho(call)
   if (call.state === "incoming" || call.state === "waiting" || call.state === "ringing") return "󰏲  " + who
   if (call.state === "dialing" || call.state === "alerting") return "󰏳  " + who
   return "󰂰  " + who
 }
 
 /** The dim second line: what the call is doing, and where the sound goes. */
-function callDetail(call, bt) {
+function callDetail(call, bt, now) {
   if (!call) return ""
   var state = String(call.state || "")
   // Where the sound will come out is the one thing worth saying before the
@@ -242,7 +267,11 @@ function callDetail(call, bt) {
   if (state === "dialing" || state === "alerting") return "dialling"
   if (state === "active") {
     var here = call.audio === "active" || (bt && bt.audio === "active")
-    return here ? "in progress · audio on this machine" : "in progress · audio on the handset"
+    // The clock leads, because it is the one thing on this line that changes
+    // while you read it, and the reason anybody looks twice.
+    var elapsed = callClock(call, now)
+    var where = here ? "audio on this machine" : "audio on the handset"
+    return (elapsed === "" ? "in progress" : elapsed) + " · " + where
   }
   return state
 }

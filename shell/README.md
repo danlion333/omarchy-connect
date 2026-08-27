@@ -19,6 +19,20 @@ that is already mounted keeps its compiled component — the new version only
 appears after `omarchy-restart-shell`. The install command says so when it is
 replacing an existing copy.
 
+## Bar
+
+One glyph — the phone's platform, dimmed while the daemon is down, dimmer
+still while nothing is linked, and in the bar's active colour while a pairing
+code is live. It goes urgent the moment the phone rings.
+
+A call that has been picked up is the one thing it says in words: the glyph
+becomes a clock (`󰂰  04:12`) and counts for as long as the conversation lasts,
+whether or not the panel is open. Answering from the desktop leaves the
+handset on the table with its own timer on a screen nobody is looking at, so
+the count belongs somewhere it can be caught out of the corner of an eye. The
+desktop draws the same clock on its notification card; this is the version you
+do not have to look for.
+
 ## Panel
 
 The panel is built around one rule: the top of it answers the question you
@@ -41,7 +55,8 @@ it is drawn.
   that carries the audio, but a handset that connects over the profile and
   never publishes its calls is common, and the card falls back to the mirrored
   event for those. The dim line says which of the two is about to happen —
-  whether answering brings the sound here or leaves it on the handset. It is
+  whether answering brings the sound here or leaves it on the handset — and,
+  once somebody has picked up, how long the conversation has been going. It is
   also the only place to *decline* on a notification server that draws no
   action buttons, Omarchy's own among them. Answering from the panel goes
   through `omarchy-connect call answer` like everything else here.

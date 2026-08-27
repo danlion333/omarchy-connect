@@ -46,6 +46,14 @@ Panel {
   readonly property var phone: bridge.primary
   readonly property bool paired: bridge.paired
 
+  // The conversation this desktop is in, if it is in one. A call answered here
+  // leaves the handset on the table with its own timer on a screen nobody is
+  // looking at, so the bar keeps the count in the corner of the eye — the one
+  // thing it ever says in words rather than in one glyph.
+  readonly property var call: bridge.liveCall
+  readonly property bool talking: !!call && call.state === "active"
+  readonly property string barClock: talking ? Model.callClock(call, root.now) : ""
+
   // The bar icon carries three states and nothing else: linked, running but
   // alone, and down. Pairing borrows the bar's active color, because a code
   // on screen with a three-minute fuse is the one thing worth interrupting for.
@@ -259,7 +267,9 @@ Panel {
   Timer {
     interval: 1000
     repeat: true
-    running: root.opened
+    // And while a call is up, whether or not anybody has the panel open: the
+    // clock in the bar is the whole point of counting.
+    running: root.opened || root.talking
     triggeredOnStart: true
     onTriggered: root.now = Date.now()
   }
@@ -282,12 +292,16 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: Model.deviceGlyph(root.phone ? root.phone.platform : "")
-    foreground: root.barIconColor
+    text: root.barClock !== ""
+      ? "󰂰  " + root.barClock
+      : Model.deviceGlyph(root.phone ? root.phone.platform : "")
+    foreground: bridge.ringing ? root.urgent : root.barIconColor
     active: root.pairing
     tooltipText: {
       if (!bridge.loaded) return "Omarchy Connect is not set up"
       if (!bridge.running) return "Omarchy Connect is stopped"
+      if (bridge.ringing) return Model.callWho(root.call) + " is calling"
+      if (root.talking) return "On call with " + Model.callWho(root.call) + " · " + root.barClock
       if (root.pairing) return "Waiting for a phone to pair"
       if (root.linked) return root.phone.name + " is connected"
       return root.paired ? root.phone.name + " is offline" : "No phone paired yet"
@@ -550,7 +564,7 @@ Panel {
 
                 Text {
                   width: parent.width - callActions.width - parent.spacing
-                  text: Model.callDetail(bridge.liveCall, bridge.bluetooth)
+                  text: Model.callDetail(bridge.liveCall, bridge.bluetooth, root.now)
                   color: root.dim
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.caption

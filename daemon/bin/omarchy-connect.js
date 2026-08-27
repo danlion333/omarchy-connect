@@ -498,6 +498,13 @@ async function cmdCall(args) {
     return tone.custom ? tone.sound.replace(/^.*\//, '') : 'the sound theme'
   }
 
+  /** Whether a call in progress keeps a card on screen, and what it says. */
+  const timerLine = (timer) => {
+    if (!timer) return dim('—')
+    if (!timer.enabled) return dim('off')
+    return timer.running ? `counting · ${Math.floor(timer.seconds / 60)}m ${timer.seconds % 60}s` : 'on the screen while a call lasts'
+  }
+
   /** How the link's own row reads, which is a policy and a state at once. */
   const linkLine = (link, connected) => {
     if (!link) return dim('—')
@@ -525,6 +532,7 @@ async function cmdCall(args) {
         ['handset', bt.device || bt.link?.pinned || dim('—')],
         ['audio', bt.connected ? bt.audio || 'idle' : dim('—')],
         ['ringtone', ringtoneLine(snapshot.phone?.ringtone)],
+        ['timer', timerLine(snapshot.phone?.timer)],
         ['app', (snapshot.devices || []).some((d) => d.online) ? 'connected' : 'not connected'],
         [
           'in progress',
@@ -582,6 +590,28 @@ async function cmdCall(args) {
     return
   }
 
+  if (action === 'timer') {
+    if (!value) {
+      log.error('usage: omarchy-connect call timer <on|off>')
+      process.exit(1)
+    }
+    const res = await daemonRequest('/api/call', { method: 'POST', body: { op: action, value }, timeout: 10_000 })
+    if (!res.status) {
+      log.error('daemon is not running — start it with `omarchy-connect start`')
+      process.exit(1)
+    }
+    if (!res.ok) {
+      log.error(res.data?.error || 'could not set the call timer')
+      process.exit(1)
+    }
+    log.ok(
+      res.data?.timer?.enabled
+        ? 'a call in progress keeps a card on screen, counting'
+        : 'a call in progress leaves the screen alone',
+    )
+    return
+  }
+
   if (action === 'auto' || action === 'handset') {
     if (!value) {
       log.error(
@@ -618,7 +648,7 @@ async function cmdCall(args) {
 
   if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect'].includes(action)) {
     log.error(
-      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS|ringtone on|off|test|FILE>',
+      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS|ringtone on|off|test|FILE|timer on|off>',
     )
     process.exit(1)
   }
@@ -1329,6 +1359,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} <status|answer|reject|…>  answer or place a call
   ${bold('call')} auto <presence|ring|off>  when to hold the Bluetooth link open
   ${bold('call')} ringtone <on|off|FILE>     what a ringing phone sounds like here
+  ${bold('call')} timer <on|off>             count the conversation on screen
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents

@@ -5,6 +5,7 @@ import { has, run, spawn, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
+import { talkTime } from '../lib/talktime.js'
 import { ancs } from '../lib/ancs.js'
 import { loadConfig, saveConfig } from '../lib/config.js'
 
@@ -77,6 +78,16 @@ let ringingId = 0
 let queuedRing = null
 /** The call a remote control should act on, from whichever road saw it. */
 let live = null
+/**
+ * When the conversation actually started — the moment somebody picked up, not
+ * the moment the phone rang.
+ *
+ * It is kept here rather than on the entry because the panel reads a call the
+ * hands-free profile published, which is a different object from the entry the
+ * history holds; one desktop is only ever in one conversation, so one clock is
+ * enough for both. Zero means nobody is talking.
+ */
+let activeSince = 0
 
 /**
  * Notification servers that advertise `actions` and draw no buttons.
@@ -192,6 +203,25 @@ function silence(close = true) {
     '--method', 'org.freedesktop.Notifications.CloseNotification',
     String(id),
   ])
+}
+
+/**
+ * The ringing card, handed over to the call it turned into.
+ *
+ * Picking up does not close the notification and raise another underneath it:
+ * the id is kept, so the talk timer rewrites that same card in place and the
+ * screen shows one call all the way through. Everything else the ring owned —
+ * the melody, the `notify-send` waiting for a click, a rewrite queued behind
+ * an id that is no longer coming — is put down here, because only the card
+ * itself survives the answer.
+ */
+function handOver() {
+  const id = ringingId
+  ringtone.stop()
+  queuedRing = null
+  silence(false)
+  ringingId = 0
+  return id
 }
 
 /** Raise a rewrite that was waiting on an id, now that one will never come. */
@@ -319,7 +349,21 @@ function notify(entry) {
     ring(entry, canAct())
     return
   }
+  if (entry.state === 'active') {
+    // The card that was ringing becomes the card that counts — or comes off
+    // the screen, if nothing is going to count on it.
+    const inherited = handOver()
+    const took = talkTime.start({
+      key: entry.call || entry.id,
+      who: from,
+      replaces: inherited,
+      at: activeSince || Date.now(),
+    })
+    if (inherited && !took) talkTime.close(inherited)
+    return
+  }
   silence()
+  if (entry.state === 'ended') talkTime.stop()
   if (entry.missed) {
     spawnDetached('notify-send', ['-a', 'Omarchy Connect', '-u', 'critical', 'Missed call', from])
   }
@@ -536,6 +580,7 @@ export function summary() {
     bluetooth: handsfree.summary(),
     ios: ancs.summary(),
     ringtone: ringtone.summary(),
+    timer: talkTime.summary(),
   }
 }
 
@@ -599,6 +644,9 @@ export function liveCall() {
       name: call.name ?? null,
       via: 'bluetooth',
       audio: handsfree.state.gateway?.audio ?? null,
+      // When the talking started, so a panel two rooms away can count without
+      // asking again. A ringing call has not started yet and says null.
+      startedAt: isLive(call) ? activeSince || null : null,
     }
   }
   if (!live) return null
@@ -608,13 +656,27 @@ export function liveCall() {
     live = null
     return null
   }
-  return { id: live.id, state: live.state, from: live.from, name: live.name, via: live.via, audio: null }
+  return {
+    id: live.id,
+    state: live.state,
+    from: live.from,
+    name: live.name,
+    via: live.via,
+    audio: null,
+    startedAt: live.state === 'active' ? activeSince || null : null,
+  }
 }
 
 /** One handset, one conversation: `ended` takes down whatever was offered. */
 function remember(entry) {
   if (entry.state === 'ringing' || entry.state === 'active') live = entry
   else if (entry.state === 'ended') live = null
+  // The clock starts on the first report that says somebody picked up, and a
+  // second report of the same conversation must not set it back to zero. Only
+  // the call being over stops it — a report that says nothing about the state
+  // is not evidence that the talking finished.
+  if (entry.state === 'active') activeSince = activeSince || Date.now()
+  else if (entry.state === 'ended') activeSince = 0
 }
 
 /**
@@ -642,7 +704,7 @@ async function handsets() {
  */
 export async function requestCall({ op, id = null, number = null, value = null } = {}) {
   const action = String(op || '').toLowerCase()
-  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset', 'ringtone']
+  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset', 'ringtone', 'timer']
   if (!VERBS.includes(action)) throw new Error(`unknown call action: ${op}`)
 
   /**
@@ -710,6 +772,28 @@ export async function requestCall({ op, id = null, number = null, value = null }
     saveConfig(cfg)
     ringtone.configure(settings)
     return { ok: true, ringtone: ringtone.summary() }
+  }
+
+  /**
+   * Whether a call in progress keeps a card on screen, counting.
+   *
+   * Switching it off mid-conversation takes the card down there and then
+   * rather than at the end of the call: somebody who has just said they do not
+   * want it on screen is not asking to look at it for another four minutes.
+   */
+  if (action === 'timer') {
+    const word = String(value || '').toLowerCase()
+    if (word !== 'on' && word !== 'off') throw new Error('the call timer is on or off')
+    const cfg = loadConfig()
+    cfg.callTimer = { ...(cfg.callTimer || {}), enabled: word === 'on' }
+    saveConfig(cfg)
+    talkTime.configure(cfg.callTimer)
+    // Switched on with a call already up, it starts counting from now rather
+    // than pretending it saw the beginning.
+    if (cfg.callTimer.enabled && live?.state === 'active') {
+      talkTime.start({ key: live.call || live.id, who: caller(live), at: activeSince || Date.now() })
+    }
+    return { ok: true, timer: talkTime.summary() }
   }
 
   // The link itself, rather than anything travelling over it. `connect` waits
@@ -791,12 +875,31 @@ export async function requestCall({ op, id = null, number = null, value = null }
 function finish(result, action) {
   if (action === 'answer') counters.answered += 1
   if (action === 'reject') counters.rejected += 1
-  if (action === 'answer' || action === 'reject') silence()
+  // Answering keeps the card and hands it to the timer; declining takes it off.
+  const inherited = action === 'answer' ? handOver() : 0
+  if (action === 'reject') silence()
   // The phone will say so itself a moment later, but the panel is looking at
   // the button that was just pressed and must not still be offering to answer
   // a call that is already up.
-  if (action === 'answer' && live?.state === 'ringing') live.state = 'active'
-  if (action === 'reject' || action === 'hangup') live = null
+  if (action === 'answer' && live?.state === 'ringing') {
+    live.state = 'active'
+    // And the clock starts on the button, not on the phone getting round to
+    // saying so — a handset that never reports `active` would otherwise be a
+    // conversation the desktop never timed.
+    activeSince = activeSince || Date.now()
+    const took = talkTime.start({
+      key: live.call || live.id,
+      who: caller(live),
+      replaces: inherited,
+      at: activeSince,
+    })
+    if (inherited && !took) talkTime.close(inherited)
+  }
+  if (action === 'reject' || action === 'hangup') {
+    live = null
+    activeSince = 0
+    talkTime.stop()
+  }
   return result
 }
 
@@ -902,8 +1005,18 @@ export default {
       bus?.emit('event', 'phone', { action: 'bluetooth', bluetooth: handsfree.summary() })
     })
     handsfree.on('gateway', (gateway) => {
-      if (!gateway) silence()
-      // The audio link opening is not the phone taking the ring over.
+      // The link going away mid-conversation ends the conversation as far as
+      // this desktop is concerned: no audio, no call, and nothing left worth
+      // counting on screen.
+      if (!gateway) {
+        silence()
+        if (talkTime.running) {
+          activeSince = 0
+          talkTime.stop()
+        }
+      }
+      // The audio link opening, on the other hand, is not the phone taking the
+      // ring over.
       //
       // A handset that sends its own ringing tone does it down this transport,
       // and deferring to it was the first instinct here — two ringtones at once
@@ -932,6 +1045,7 @@ export default {
 
     handsfree.configure(loadConfig().handsfree)
     ringtone.configure(loadConfig().ringtone)
+    talkTime.configure(loadConfig().callTimer)
     /**
      * The phone appearing on the network is what tells the link to go up, and
      * the socket closing is what tells it to come down again. Neither is
@@ -996,7 +1110,9 @@ export default {
 
   stop() {
     silence()
+    talkTime.stop({ quiet: true })
     live = null
+    activeSince = 0
     if (janitor) clearInterval(janitor)
     janitor = null
     handsfree.stop()

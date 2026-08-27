@@ -33,7 +33,7 @@ the desktop and the app repaints in the same palette.
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
-| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too. |
+| **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
@@ -84,6 +84,7 @@ omarchy-connect sms <number> <message…>     send an SMS through the paired pho
 omarchy-connect call <status|answer|reject|…>  answer or place a call
 omarchy-connect call auto <presence|ring|off>  when to hold the Bluetooth link open
 omarchy-connect call ringtone <on|off|FILE>  what a ringing phone sounds like here
+omarchy-connect call timer <on|off>         count the conversation on screen
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
 omarchy-connect agent <status|enable|run|…>   read and answer this desktop's coding agents
@@ -348,6 +349,33 @@ either, and theirs is the one in step with the call.
 With more than one handset paired the desktop declines to guess, says so, and
 lists what it found; `omarchy-connect call handset <address>` settles it, and
 `handset auto` hands the choice back.
+
+### The clock
+
+Answering from the desktop takes the phone out of your hand — and the call
+timer with it. The handset keeps counting on a screen nobody is holding, and
+the desktop used to say nothing at all: the panel says *in progress*, and only
+while the panel is open.
+
+So the card that was ringing stays up, and counts. It is the same card — the
+notification is rewritten in place once a second rather than closed and raised
+again, so picking up looks like one notification changing its mind rather than
+two taking turns. It never expires on its own, it interrupts nobody (the ring
+was urgent, this is not), and when the call is over it leaves the total behind
+it for a few seconds: *lasted 4m 12s* — the number you reach for a minute later
+and would otherwise have to go into the phone to find.
+
+The bar counts too, beside the icon, whether or not the panel is open. It is
+the one thing the bar ever says in words.
+
+```bash
+omarchy-connect call timer off   # leave the screen alone during a call
+omarchy-connect call timer on
+```
+
+Switching it off mid-conversation takes the card down there and then. The panel
+still knows when the call started either way — the switch is about the
+notification, not about the clock.
 
 ### Through the app — the one that only presses the button
 
@@ -709,7 +737,8 @@ daemon/         Node.js daemon — one dependency (ws)
   src/lib/      …including the three Bluetooth clients: hands-free call control
                 over PipeWire, the BlueZ side that raises that link for a call
                 and puts it down after, and an iPhone's notifications over
-                ANCS — plus the ring a call makes on the desktop's speakers
+                ANCS — plus the ring a call makes on the desktop's speakers,
+                and the card that counts while one is up
 shell/          Omarchy shell plugin — the desktop client (QML)
 app/            Expo app (TypeScript)
   modules/      local Expo module — Android SMS and call state (Kotlin)

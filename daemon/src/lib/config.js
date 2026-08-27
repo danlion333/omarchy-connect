@@ -38,6 +38,15 @@ const DEFAULTS = {
    * the notification card alone.
    */
   ringtone: { enabled: true, sound: null },
+  /**
+   * The notification that counts while a call is up.
+   *
+   * A conversation answered from the desktop has no handset in anybody's hand
+   * and therefore no call timer, so the card that was ringing stays on screen
+   * and counts instead. Off leaves the screen clear the moment a call is
+   * picked up, the way it was before.
+   */
+  callTimer: { enabled: true },
   devices: [],
 }
 

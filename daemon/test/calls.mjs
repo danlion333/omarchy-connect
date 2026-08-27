@@ -18,6 +18,7 @@ import { quietBluetooth } from './sandbox.mjs'
 
 import { connectPhone } from './phone.mjs'
 import { handsfree, Handsfree } from '../src/lib/handsfree.js'
+import { TalkTime, clock, spoken } from '../src/lib/talktime.js'
 
 const PORT = Number(process.env.PORT || 8797)
 const base = `http://127.0.0.1:${PORT}`
@@ -38,12 +39,15 @@ const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-calls-'))
  * Printing the action name is what `notify-send --help` says a click does, so
  * this also drives the answer path end to end.
  *
- * It imitates two more of the real one's habits, because the daemon depends on
- * both. `-p` prints the notification's id, which is what lets a second report
- * of the same ringing call rewrite the first rather than stack beside it. And
- * a notification with actions waits for the click instead of exiting — an id
- * belongs to a notification that is still on screen, so a stand-in that
- * returned immediately would make every replacement look like a fresh one.
+ * It imitates three more of the real one's habits, because the daemon depends
+ * on all of them. `-p` prints the notification's id, which is what lets a
+ * second report of the same ringing call rewrite the first rather than stack
+ * beside it. A notification with actions waits for the click instead of
+ * exiting — an id belongs to a notification that is still on screen, so a
+ * stand-in that returned immediately would make every replacement look like a
+ * fresh one. And `-w` waits for the card to be taken off the screen, which is
+ * how the call timer tells a card it is still counting on from one somebody
+ * has swiped away.
  */
 const notifyLog = path.join(sandbox, 'notify.log')
 const fakeBin = path.join(sandbox, 'bin')
@@ -54,7 +58,7 @@ fs.writeFileSync(
     '#!/bin/sh',
     `printf '%s\\n' "$*" >> ${JSON.stringify(notifyLog)}`,
     'case " $* " in *" -p "*) printf \'4242\\n\' ;; esac',
-    'case " $* " in *" -A "*) exec sleep 20 ;; esac',
+    'case " $* " in *" -A "*|*" -w "*) exec sleep 20 ;; esac',
     '',
   ].join('\n'),
   { mode: 0o755 },
@@ -781,12 +785,146 @@ const patient = (await req('phone.history', { limit: 10 })).items.filter((i) => 
 check('a call answered long after it rang is still one line', patient.length === 1, `${patient.length} entr(y/ies)`)
 check('and the desktop knows it is over', patient[0]?.state === 'ended', patient[0]?.state)
 
+/* ── the clock a picked-up call keeps ───────────────────────────────────── */
+
+/**
+ * Answering from the desktop takes the phone out of your hand, and the call
+ * timer with it. Nothing on this screen said how long the conversation had
+ * been going: the panel says "in progress", and only while it is open.
+ *
+ * So the card that was ringing stays up and counts. It is the *same* card —
+ * the id is handed over rather than closed and re-raised, which is what makes
+ * picking up look like one notification changing its mind.
+ */
+const notifyLines = () =>
+  (fs.existsSync(notifyLog) ? fs.readFileSync(notifyLog, 'utf8').split('\n') : []).filter(Boolean)
+const onCall = () => notifyLines().filter((line) => /On call · Ірина/.test(line))
+
+await req('phone.report', { events: [{ kind: 'call', call: 'talk', state: 'ringing', from: '+15557001', name: 'Ірина' }] })
+await new Promise((resolve) => setTimeout(resolve, 250))
+await req('phone.report', { events: [{ kind: 'call', call: 'talk', state: 'active', from: '+15557001', name: 'Ірина' }] })
+await new Promise((resolve) => setTimeout(resolve, 2300))
+
+const ticking = onCall()
+check('a call that is picked up keeps a card on screen', ticking.length >= 1, `${ticking.length} card(s)`)
+check('and the card counts rather than sitting still', ticking.length >= 2, `${ticking.length} rewrite(s)`)
+check(
+  'it rewrites the card the call was ringing on rather than raising a second',
+  ticking.every((line) => / -r 4242 /.test(` ${line} `)),
+  ticking.at(-1) || 'nothing was raised',
+)
+check('it never expires on its own — the call is what ends it', /-t 0/.test(ticking.at(-1) || ''))
+check('and it interrupts nobody, unlike the ring it replaced', /-u low/.test(ticking.at(-1) || ''))
+check(
+  'the count on it is a clock, not a number of seconds',
+  /\b\d\d:\d\d\b/.test(ticking.at(-1) || ''),
+  ticking.at(-1) || '',
+)
+
+/**
+ * The panel and the bar count from the same instant, so the daemon publishes
+ * it. A ringing call has nothing to count yet and says so.
+ */
+const live = (await req('phone.history', { limit: 1 })).call
+check('the live call carries the moment it was picked up', typeof live?.startedAt === 'number', JSON.stringify(live))
+check('which is when it was answered, not when it rang', Math.abs(Date.now() - live.startedAt) < 10_000,
+  `${Math.round((Date.now() - live.startedAt) / 1000)}s ago`)
+
+const timerStatus = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+check('and the status file says a conversation is being counted', timerStatus.phone?.timer?.running === true,
+  JSON.stringify(timerStatus.phone?.timer))
+
+// And the last thing the card says is how long it was — the number somebody
+// reaches for a minute later and would otherwise have to go into the phone for.
+await req('phone.report', { events: [{ kind: 'call', call: 'talk', state: 'ended', from: '+15557001', name: 'Ірина' }] })
+await new Promise((resolve) => setTimeout(resolve, 200))
+const farewell = notifyLines().filter((line) => /Call ended · Ірина/.test(line))
+check('a call that is over leaves the total behind it', farewell.length === 1, `${farewell.length} card(s)`)
+check('spelled the way somebody would say it', /lasted \d+[smh]/.test(farewell.at(-1) || ''), farewell.at(-1) || '')
+
+const settledCards = onCall().length
+await new Promise((resolve) => setTimeout(resolve, 1500))
+check('and the counting stops with it', onCall().length === settledCards,
+  `${onCall().length - settledCards} rewrite(s) after the call`)
+check('the live call takes its clock with it', (await req('phone.history', { limit: 1 })).call === null)
+
+/**
+ * Somebody who does not want a card on screen for the whole conversation says
+ * so once. It is the same switch the ringtone has, and it is honoured for the
+ * next call rather than only after a restart.
+ */
+const timerOff = await post('/api/call', { op: 'timer', value: 'off' })
+check('the timer can be switched off', timerOff.status === 200 && timerOff.data.timer?.enabled === false,
+  JSON.stringify(timerOff.data))
+const quietBefore = notifyLines().filter((line) => /On call · Дарина/.test(line)).length
+await req('phone.report', { events: [{ kind: 'call', call: 'quiet', state: 'active', from: '+15557002', name: 'Дарина' }] })
+await new Promise((resolve) => setTimeout(resolve, 1400))
+check(
+  'and then a call in progress leaves the screen alone',
+  notifyLines().filter((line) => /On call · Дарина/.test(line)).length === quietBefore,
+  `${notifyLines().filter((line) => /On call · Дарина/.test(line)).length} card(s)`,
+)
+check(
+  'while the panel still knows when the conversation started',
+  typeof (await req('phone.history', { limit: 1 })).call?.startedAt === 'number',
+)
+await req('phone.report', { events: [{ kind: 'call', call: 'quiet', state: 'ended', from: '+15557002', name: 'Дарина' }] })
+const timerOn = await post('/api/call', { op: 'timer', value: 'on' })
+check('and back on again', timerOn.status === 200 && timerOn.data.timer?.enabled === true, JSON.stringify(timerOn.data))
+const timerJunk = await post('/api/call', { op: 'timer', value: 'sometimes' })
+check('anything else is refused honestly', timerJunk.status === 400 && /on or off/.test(timerJunk.data.error || ''),
+  timerJunk.data.error)
+
+/**
+ * A card that lives for the length of a conversation is a card somebody will
+ * eventually swipe away, and the rewrite a second later would put it straight
+ * back: a server asked to replace an id it no longer knows raises a fresh one.
+ * Left alone, the only way out of the notification would be to end the call.
+ *
+ * In process, against a `notify-send` that returns from `-w` immediately —
+ * which is exactly what the real one does the moment the card is gone.
+ */
+{
+  const swipeBin = path.join(sandbox, 'swipe')
+  const swipeLog = path.join(swipeBin, 'notify.log')
+  fs.mkdirSync(swipeBin, { recursive: true })
+  fs.writeFileSync(
+    path.join(swipeBin, 'notify-send'),
+    ['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(swipeLog)}`, 'case " $* " in *" -p "*) printf \'7\\n\' ;; esac', ''].join('\n'),
+    { mode: 0o755 },
+  )
+  process.env.PATH = `${swipeBin}:${process.env.PATH}`
+  const cards = () => (fs.existsSync(swipeLog) ? fs.readFileSync(swipeLog, 'utf8').split('\n').filter(Boolean) : [])
+
+  const timer = new TalkTime()
+  timer.start({ key: 'swiped', who: 'Мирослава' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  check('a card taken off the screen is noticed', timer.dismissed === true)
+  const raised = cards().length
+  await new Promise((resolve) => setTimeout(resolve, 1400))
+  check('and is not put back a second later', cards().length === raised, `${cards().length - raised} more card(s)`)
+  check('while the clock keeps its own time for the panel', timer.running === true && timer.seconds > 1,
+    `${Math.round(timer.seconds)}s`)
+  timer.stop()
+  check('and the total is not pushed at somebody who said no to the card',
+    cards().every((line) => !/Call ended/.test(line)), cards().at(-1) || '')
+}
+
+// The two ways a span of seconds is written: one for a card that is counting,
+// one for a card that is telling you what it added up to.
+check('a conversation is clocked the way a handset clocks it', clock(72) === '01:12' && clock(3782) === '1:03:02',
+  `${clock(72)} / ${clock(3782)}`)
+check('and totalled the way somebody would say it', spoken(45) === '45s' && spoken(252) === '4m 12s' && spoken(3720) === '1h 2m',
+  [spoken(45), spoken(252), spoken(3720)].join(' / '))
+
 const status = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
 check('the status file carries the Bluetooth summary', 'bluetooth' in (status.phone || {}),
   `available=${status.phone?.bluetooth?.available}`)
 check('and the live call the panel puts its buttons on', 'call' in (status.phone || {}))
 check('and what a ringing phone will sound like', status.phone?.ringtone?.enabled === true,
   JSON.stringify(status.phone?.ringtone))
+check('and whether a call in progress is counted on screen', status.phone?.timer?.enabled === true,
+  JSON.stringify(status.phone?.timer))
 
 /**
  * The name on the panel is the one the phone answers to today. A phone

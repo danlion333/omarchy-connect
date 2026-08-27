@@ -130,6 +130,9 @@ export function baseSnapshot({ version = null, port = null } = {}) {
       bluetooth: { available: false, connected: false, device: null, audio: null, call: null, calls: 0 },
       // Same for the low-energy link an iPhone mirrors its notifications over.
       ios: { available: false, connected: false, subscribed: false, device: null, paired: false, pairing: null },
+      // Whether a call in progress would be counted on screen. The setting
+      // survives the daemon; nothing is being counted while it is down.
+      timer: { enabled: cfg.callTimer?.enabled !== false, running: false, since: null, seconds: 0, who: null },
     },
     // Sessions are discovered by a running daemon and nothing else, so with it
     // stopped the panel shows the switch and an empty list rather than a stale
