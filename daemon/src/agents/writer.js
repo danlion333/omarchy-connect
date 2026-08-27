@@ -104,19 +104,6 @@ async function clients() {
 }
 
 /**
- * Work out how each session could be written to, in one pass.
- *
- * One `tmux list-panes` and one Hyprland `clients` for the whole set rather
- * than a pair per session: this runs on every scan, and the answer changes
- * only when a terminal opens or closes.
- *
- * The match itself is a walk up the process tree. A pane's shell is the
- * agent's parent or grandparent; a terminal emulator is further up still, and
- * an agent inside tmux has the tmux *server* as its forebear rather than any
- * window — which is exactly why tmux is checked first and why finding no
- * window for such a session is right rather than a miss.
- */
-/**
  * A session's forebears, up to but not past the agent that launched it.
  *
  * The walk exists to find the terminal a session is sitting in, and it stops
@@ -136,6 +123,19 @@ function ownChain(pid) {
   return chain
 }
 
+/**
+ * Work out how each session could be written to, in one pass.
+ *
+ * One `tmux list-panes` and one Hyprland `clients` for the whole set rather
+ * than a pair per session: this runs on every scan, and the answer changes
+ * only when a terminal opens or closes.
+ *
+ * The match itself is a walk up the process tree. A pane's shell is the
+ * agent's parent or grandparent; a terminal emulator is further up still, and
+ * an agent inside tmux has the tmux *server* as its forebear rather than any
+ * window — which is exactly why tmux is checked first and why finding no
+ * window for such a session is right rather than a miss.
+ */
 export async function survey(sessions) {
   const list = [...sessions]
   if (!list.length) return

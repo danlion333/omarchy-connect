@@ -526,6 +526,15 @@ conversation. An agent that has not written its first line yet is therefore
 absent for those few seconds rather than misattributed, and appears on its own
 once it writes.
 
+A working directory is not a unique key either. A background agent and the
+session that launched it share one, and the transcript follows the agent
+between project directories a beat after it moves — long enough for the
+background agent's conversation to be listed under the interactive session's
+pid, with that session's terminal offered as the way to answer it. So the two
+have to agree about what kind of session they are: a process with a controlling
+terminal is one somebody is sitting at, the transcript records which it was,
+and a mismatch is not a pair.
+
 A session also leaves the list when its process does — killed, closed, or
 rebooted away — within one scan, whichever road found it. What a background
 agent gets is a read: it is a real conversation worth following from the sofa,

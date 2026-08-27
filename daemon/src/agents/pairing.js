@@ -43,7 +43,7 @@ const SLACK_MS = 2000
  * often — is invisible for those few seconds rather than bound to whatever was
  * lying around, and it appears of its own accord once it writes.
  */
-export function pair(processes, transcripts) {
+export function pair(processes, transcripts, { background = () => null } = {}) {
   const order = [...processes].sort((a, b) => {
     const tty = Number(Boolean(b.tty)) - Number(Boolean(a.tty))
     return tty || b.ticks - a.ticks
@@ -53,7 +53,7 @@ export function pair(processes, transcripts) {
 
   for (const proc of order) {
     const floor = proc.startedAt ? proc.startedAt - SLACK_MS : 0
-    const index = free.findIndex((t) => t.mtime >= floor)
+    const index = free.findIndex((t) => t.mtime >= floor && agrees(proc, background(t)))
     if (index < 0) continue
     pairs.push({ proc, transcript: free[index] })
     free.splice(index, 1)
@@ -61,3 +61,23 @@ export function pair(processes, transcripts) {
 
   return pairs
 }
+
+/**
+ * Does this conversation belong to this kind of process?
+ *
+ * A working directory is not a unique key: a background job and the session
+ * that launched it share one, and for the beat between an agent changing
+ * directory and its transcript following it, the two cannot be told apart by
+ * directory alone. That beat was enough to put a background agent's
+ * conversation on the phone under the interactive session's pid, with the
+ * interactive session's terminal offered as the way to answer it.
+ *
+ * A process with a controlling terminal is a session somebody is sitting at,
+ * and one without is not. The transcript says which it was. Asking the two to
+ * agree costs one read and settles it.
+ *
+ * An unknown answer constrains nothing — a transcript with no turn in it yet
+ * is still a candidate, because refusing it would lose the session rather than
+ * place it better.
+ */
+const agrees = (proc, background) => background === null || background !== Boolean(proc.tty)

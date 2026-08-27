@@ -204,6 +204,44 @@ const stamp = (entry) => {
   return Number.isFinite(at) ? at : Date.now()
 }
 
+/** Enough of the end of a transcript to find the last turn in it. */
+const TAIL_BYTES = 8 * 1024
+
+/**
+ * The last few entries of a transcript, newest first, without reading the file.
+ *
+ * Transcripts run to megabytes and this is asked on every scan, so it reads the
+ * end and nothing else. The first line of that window is very likely half a
+ * line and is dropped rather than parsed.
+ */
+function* tailEntries(file) {
+  let fd
+  let text
+  try {
+    const stat = fs.statSync(file)
+    const start = stat.size > TAIL_BYTES ? stat.size - TAIL_BYTES : 0
+    fd = fs.openSync(file, 'r')
+    const buf = Buffer.allocUnsafe(stat.size - start)
+    const read = fs.readSync(fd, buf, 0, buf.length, start)
+    text = buf.subarray(0, read).toString('utf8')
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1)
+  } catch {
+    return
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+  const lines = text.split('\n')
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i].trim()
+    if (!line) continue
+    try {
+      yield JSON.parse(line)
+    } catch {
+      // A half-written line at the very end, or the truncated first one.
+    }
+  }
+}
+
 /**
  * Words that are a command rather than a conversation.
  *
@@ -258,7 +296,17 @@ export default {
    * than one that is missed.
    */
   isSession(argv) {
-    for (const arg of Array.isArray(argv) ? argv.slice(1) : []) {
+    const args = Array.isArray(argv) ? argv : []
+    // A helper announces itself in its own process title: argv[0] is not a
+    // path but the words `claude bg-pty-host`, which is the only place that
+    // subcommand appears — the flags after it spell it differently. The
+    // scan's argv[0] check happens to reject these too, and "happens to" is
+    // not a reason to leave the adapter unable to recognise its own helpers.
+    const title = String(args[0] || '').split(/\s+/).slice(1)
+    for (const word of title) {
+      if (COMMANDS.has(word)) return false
+    }
+    for (const arg of args.slice(1)) {
       if (!arg || arg.startsWith('-')) continue
       return !COMMANDS.has(arg)
     }
@@ -318,6 +366,35 @@ export default {
   /** The native session id a transcript path stands for. */
   sessionIdFor(transcript) {
     return path.basename(String(transcript || ''), '.jsonl')
+  },
+
+  /**
+   * Was this conversation had in the background, or at a keyboard?
+   *
+   * The scan matches a process to a transcript by working directory, and a
+   * working directory is not unique: a background job and the session that
+   * launched it sit in the same project, and the transcript relocates between
+   * project directories a beat *after* the agent moves, so for that beat the
+   * two are indistinguishable by directory alone. That beat was enough to show
+   * a background agent's conversation under the interactive session's pid.
+   *
+   * Claude Code stamps every real turn with `sessionKind`, and a background
+   * session says `bg` where a session at a terminal says nothing at all. That
+   * lines up exactly with the one thing `/proc` already knows for free —
+   * whether the process has a controlling terminal — so the two can be asked
+   * to agree.
+   *
+   * `null` means the file has not said yet, and an unknown answer constrains
+   * nothing: a transcript too young to have a turn in it is still a candidate.
+   */
+  background(file) {
+    for (const entry of tailEntries(file)) {
+      // `entrypoint` marks the entries that describe a turn; the bookkeeping
+      // lines around them carry neither field and say nothing either way.
+      if (!entry.entrypoint) continue
+      return entry.sessionKind === 'bg'
+    }
+    return null
   },
 
   /**

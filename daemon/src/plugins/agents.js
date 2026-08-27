@@ -515,6 +515,33 @@ function scanProcesses() {
 }
 
 /**
+ * Whether a transcript was written in the background, remembered per file.
+ *
+ * The answer is read off the end of the file, and the file only has to be read
+ * again once it has changed — which is the same bargain `hooks.installed()`
+ * strikes with the settings file, and for the same reason: this is asked on
+ * every scan, and a scan happens whenever a phone is looking.
+ *
+ * The map is keyed by path and holds one small entry per transcript a live
+ * agent has been considered against, so it stays the size of the desktop's
+ * open sessions rather than of its history.
+ */
+const backgrounds = new Map()
+
+/** A desktop has nothing like this many live agents; past it, start again. */
+const BACKGROUND_CACHE_MAX = 256
+
+const backgroundOf = (adapter) => (transcript) => {
+  if (!adapter.background) return null
+  const cached = backgrounds.get(transcript.path)
+  if (cached && cached.at === transcript.mtime) return cached.value
+  if (backgrounds.size >= BACKGROUND_CACHE_MAX) backgrounds.clear()
+  const value = adapter.background(transcript.path)
+  backgrounds.set(transcript.path, { at: transcript.mtime, value })
+  return value
+}
+
+/**
  * Attach live processes to transcripts. When two agents share a directory
  * neither `/proc` nor the transcript says which is which, so the pairing is a
  * guess and is labelled as one — `agents/pairing.js` is what keeps it from
@@ -532,7 +559,7 @@ function scan() {
   const seen = new Set()
   for (const [, group] of byDir) {
     const { adapter, cwd } = group[0]
-    for (const { proc, transcript } of pair(group, adapter.transcripts(cwd))) {
+    for (const { proc, transcript } of pair(group, adapter.transcripts(cwd), { background: backgroundOf(adapter) })) {
       const id = `${adapter.id}:${transcript.id}`
       seen.add(id)
       const { entry, created } = upsert({
@@ -839,6 +866,7 @@ function unwatch() {
   pollTimer = null
   for (const entry of sessions.values()) closeTail(entry)
   sessions.clear()
+  backgrounds.clear()
 }
 
 /**

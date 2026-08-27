@@ -253,6 +253,9 @@ const waitFor = async (events, predicate, ms = 4000) => {
   check('the agent’s own supervisor is not', !claude.isSession(['/usr/bin/claude', 'daemon', 'run']))
   check('nor are its background helpers', !claude.isSession(['claude', 'bg-spare', '--bg-spare', '/tmp/x.sock']))
   check('nor is a housekeeping command', !claude.isSession(['claude', 'doctor']))
+  // These wear their subcommand in their process title rather than in an
+  // argument, which is the only place it appears.
+  check('a helper hiding in its process title is caught too', !claude.isSession(['claude bg-pty-host', '--bg-pty-host', '/tmp/x.sock']))
 
   const started = 10_000
   const running = { pid: 1, startedAt: started, ticks: 20, tty: true }
@@ -277,6 +280,43 @@ const waitFor = async (events, predicate, ms = 4000) => {
 
   check('this process knows when it started', Math.abs(proc.startedAt(process.pid) - Date.now()) < 10 * 60 * 1000)
   check('and that a test runner has no controlling terminal to speak of', typeof proc.hasTty(process.pid) === 'boolean')
+
+  // A working directory is not a unique key. A background job and the session
+  // that launched it share one, and the transcript follows the agent between
+  // project directories a beat late — long enough, on this very desktop, for a
+  // background agent's conversation to be listed under the interactive
+  // session's pid, with that session's terminal offered as the way to answer.
+  const atKeyboard = { pid: 1, tty: true, ticks: 100, startedAt: 1000 }
+  const inBackground = { pid: 2, tty: false, ticks: 900, startedAt: 2000 }
+  const bgFile = { id: 'bg', path: '/bg.jsonl', mtime: 9000 }
+  const ttyFile = { id: 'tty', path: '/tty.jsonl', mtime: 5000 }
+  const kind = (t) => t.path === '/bg.jsonl'
+
+  const crossed = pair([atKeyboard, inBackground], [bgFile, ttyFile])
+  check('without it the newest file wins and both are wrong', crossed[0]?.transcript === bgFile)
+  const sorted = pair([atKeyboard, inBackground], [bgFile, ttyFile], { background: kind })
+  check(
+    'a session at a keyboard does not take a background conversation',
+    sorted.find((p) => p.proc === atKeyboard)?.transcript === ttyFile,
+  )
+  check(
+    'and the background agent keeps its own',
+    sorted.find((p) => p.proc === inBackground)?.transcript === bgFile,
+  )
+  // A transcript with no turn in it yet cannot say which it is, and refusing
+  // it would lose the session rather than place it better.
+  check('a transcript that has not said yet is still a candidate', pair([atKeyboard], [ttyFile], { background: () => null }).length === 1)
+
+  // The adapter reads that off the file, so it has to survive a real one.
+  const bgSample = path.join(sandbox, 'bg-sample.jsonl')
+  fs.writeFileSync(bgSample, [line({ type: 'mode', mode: 'normal' }), line({ type: 'assistant', entrypoint: 'cli', sessionKind: 'bg', cwd: CWD })].join(''))
+  check('a background transcript says so', claude.background(bgSample) === true)
+  const ttySample = path.join(sandbox, 'tty-sample.jsonl')
+  fs.writeFileSync(ttySample, [line({ type: 'ai-title', aiTitle: 'x' }), line({ type: 'assistant', entrypoint: 'cli', cwd: CWD })].join(''))
+  check('an interactive one says nothing, which is its answer', claude.background(ttySample) === false)
+  const quiet = path.join(sandbox, 'quiet-sample.jsonl')
+  fs.writeFileSync(quiet, line({ type: 'mode', mode: 'normal' }))
+  check('and a transcript with no turn yet stays unknown', claude.background(quiet) === null)
 }
 
 /* ── the gate ──────────────────────────────────────────────────────────── */
