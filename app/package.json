@@ -36,7 +36,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",
-    "test": "node test/integration.mjs",
+    "test": "node test/markdown.mjs && node test/integration.mjs",
     "typecheck": "tsc --noEmit"
   },
   "private": true

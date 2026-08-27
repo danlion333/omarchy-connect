@@ -21,6 +21,7 @@ import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession } from '../api
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import { Body, Button, Caps, Chip } from '../ui/kit'
+import { Markdown } from '../ui/markdown'
 import { ago } from '../lib/format'
 import { alpha, font, radius, size, space } from '../theme'
 
@@ -620,14 +621,11 @@ function Row({
         </View>
       )
     }
-    return (
-      <Text
-        selectable
-        style={{ color: palette.foreground, fontFamily: font.regular, fontSize: size.body, lineHeight: 21 }}
-      >
-        {block.text}
-      </Text>
-    )
+    // Markdown only on the agent's side. What the person typed is shown back
+    // exactly as they typed it — a message full of asterisks was probably
+    // about asterisks, and a record that quietly reformats itself is worse
+    // than one that is plain.
+    return <Markdown text={block.text || ''} />
   }
 
   // Thinking that reached the phone with text in it is worth one dim line, and
