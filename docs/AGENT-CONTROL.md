@@ -237,7 +237,9 @@ keep working.
 { "t": "req", "id": 13, "method": "agents.send",  "params": { "id": "claude:2fe…", "text": "так, продовжуй" } }  // shipped
 { "t": "req", "id": 14, "method": "agents.key",   "params": { "id": "claude:2fe…", "key": "Escape" } }      // shipped
 { "t": "req", "id": 15, "method": "agents.screen","params": { "id": "claude:2fe…" } }                       // shipped
-{ "t": "req", "id": 16, "method": "agents.spawn", "params": { "agent": "claude", "cwd": "…", "prompt": "…" } }
+{ "t": "req", "id": 16, "method": "agents.answer","params": { "id": "claude:2fe…", "seq": 16, "choices": [2] } }  // shipped
+{ "t": "req", "id": 17, "method": "agents.attach","params": { "id": "claude:2fe…", "paths": ["…/shot.png"], "text": "?" } }  // shipped
+{ "t": "req", "id": 18, "method": "agents.spawn", "params": { "agent": "claude", "cwd": "…", "prompt": "…" } }
 
 { "t": "ev", "event": "agent", "data": { "id": "…", "kind": "blocks" | "state" | "session", … } }
 ```
@@ -273,7 +275,8 @@ A new `Agents` tab (`app/src/screens/AgentsScreen.tsx` + `AgentChatScreen.tsx`):
 - **Chat** — user/assistant bubbles, tool calls as one-line chips that expand
   on tap, a "thinking" chip that stays collapsed.
 - **Input** — a text field, plus a quick row that is the real ergonomic win:
-  `Yes` / `No` / `Esc` / `1` `2` `3` for numbered prompts.
+  `Yes` / `No` / `Esc` / `1` `2` `3` for numbered prompts, and a paperclip for
+  a screenshot.
 - **Raw** — the `capture-pane` view behind a toggle.
 
 The tab-bar badge in `App.tsx` carries one count and one meaning: "an agent is
@@ -381,6 +384,33 @@ whether they did. Four things came out differently from this sketch:
   giving a phone is eleven names and nine digits, and `capabilities.agents.keys`
   publishes it so the app builds its quick row from what the desktop accepts.
 
+**Stage 2½ — the two things a phone could see but not do. Done.**
+`agents.answer` and `agents.attach`, the `question` block in the Claude adapter,
+the drop directory and the second door on `/api/upload`, and the question card
+and paperclip in the app. Both came out of the same observation: the screen
+could already show what the agent was blocked on, and in both cases the person
+holding the phone still had to get up.
+
+- *A multiple-choice question is a tool call, so it is on disk.* Every other
+  tool call is collapsed to one line on its way to the phone; this one arrives
+  whole, because the options are the entire reason it is worth carrying. That
+  also answered half of an open question below: a session found by scanning
+  `/proc`, with no hooks at all, can now say it is `waiting` and say what on.
+- *An option's position is the keystroke that picks it*, so the app draws the
+  numbers where the terminal draws them and `agents.answer` takes a block and an
+  index rather than a digit. The desktop then checks the option against the
+  question it actually asked, and a stale screen gets a refusal rather than
+  answering the next prompt by accident.
+- *A picture crosses as a file and arrives as a path.* Not a workaround for a
+  terminal that cannot carry an image — it is how an image is passed, because
+  an agent reads one by opening it. It goes to a swept cache directory rather
+  than the share inbox: a screenshot handed to an agent is scaffolding for one
+  question, not a file anybody meant to keep.
+- *The clipboard is the source that matters.* A screenshot that was just
+  cropped or marked up is in the clipboard and nowhere a picker can reach it,
+  and that is the common case — so it sits beside Photos and Files rather than
+  under them.
+
 **Stage 3 — breadth.** Codex adapter, Gemini adapter, `capture-pane` raw mode
 for everything else.
 
@@ -390,13 +420,22 @@ for everything else.
 
 - Codex's rollout schema needs to be read from a live file before its adapter
   is written.
-- Whether `waiting` can be detected without hooks. Still open, and now
-  confirmed from the other end: nothing appears in the transcript when a
-  permission prompt goes up, so a scan-discovered session can only ever be
-  `idle` or `working`. Its inverse turned out to matter as much — a prompt
-  answered at the keyboard fires no hook we subscribe to either, so `waiting`
-  is cleared by the transcript moving again rather than by an event. A
-  `capture-pane` heuristic would answer both, but only inside tmux.
+- Whether `waiting` can be detected without hooks. Half-answered. It depends
+  on what the agent is blocked *on*, and there are two kinds. A permission
+  prompt is drawn on the terminal and written down nowhere, so a
+  scan-discovered session still cannot see one. A multiple-choice question is a
+  tool call, and a tool call lands in the transcript — so that half now works
+  with no hooks installed at all, prompt text included. Its inverse turned out
+  to matter as much either way: a prompt answered at the keyboard fires no hook
+  we subscribe to, so `waiting` is cleared by the transcript moving again
+  rather than by an event. A `capture-pane` heuristic would cover the
+  permission half too, but only inside tmux.
+- Whether a multi-select prompt really toggles on the digit. The single-choice
+  road is verified end to end against a real pty — the digit arrives and it
+  picks. Multi-select is the same keys plus a Return and is believed to toggle
+  the same way, but the TUI that draws it is not this project's, so the app
+  keeps the raw-screen toggle within reach and one `Escape` undoes a wrong
+  guess.
 - Whether one phone writing while the person at the keyboard also writes needs
   more than a warning. Half-answered: writes are serialised per session inside
   the daemon, so two sends cannot interleave halfway through a paste. Nothing

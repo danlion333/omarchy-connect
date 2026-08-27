@@ -102,6 +102,9 @@ async function startDaemon(enabled) {
       ...process.env,
       HOME: sandbox,
       XDG_CONFIG_HOME: sandbox,
+      // A picture on its way to an agent lands in the cache; this suite is not
+      // entitled to write into the real one.
+      XDG_CACHE_HOME: path.join(sandbox, '.cache'),
       OMARCHY_CONNECT_STATE: path.join(sandbox, 'state'),
       OMARCHY_CONNECT_LOG: 'warn',
       // The writing half shells out to tmux, and the person running this suite
@@ -142,6 +145,9 @@ async function connect() {
   const pending = new Map()
   const events = []
   let seq = 0
+  // The upload endpoint is HTTP and authenticates on its own, so the token
+  // pairing issues has to be caught as it goes past.
+  let token = null
 
   const req = (method, params = {}) =>
     new Promise((resolve, reject) => {
@@ -158,6 +164,7 @@ async function connect() {
       )
       .catch(reject)
     phone.on((msg) => {
+      if (msg.t === 'paired') token = msg.token
       if (msg.t === 'hello.ok') resolve(msg)
       if (msg.t === 'hello.err') reject(new Error(msg.error))
       if (msg.t === 'ev' && msg.event === 'agent') events.push(msg.data)
@@ -172,7 +179,7 @@ async function connect() {
   })
 
   phone.send({ t: 'sub', events: ['agent'] })
-  return { hello, req, events, close: () => phone.ws.close() }
+  return { hello, token, req, events, close: () => phone.ws.close() }
 }
 
 const hook = (event, extra = {}) =>
@@ -232,7 +239,7 @@ const waitFor = async (events, predicate, ms = 4000) => {
 
 await startDaemon(false)
 {
-  const { hello, req, events, close } = await connect()
+  const { hello, token, req, events, close } = await connect()
   check('capabilities say agents are off', hello.capabilities.agents?.enabled === false)
   check('capabilities admit writing is not implemented', hello.capabilities.agents?.write === null)
   const refused = await req('agents.list').then(() => null, (e) => e.message)
@@ -246,6 +253,15 @@ await startDaemon(false)
   check('agents.send is refused while disabled', String(refusedWrite).includes('agent enable'), refusedWrite)
   const ignored = await hook('SessionStart')
   check('a hook is ignored while disabled', ignored.ok === false, ignored.error)
+
+  // The picture door is the same gate: with agents off there is nothing on
+  // this desktop that would ever read what a phone dropped there.
+  const dropped = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { 'x-oc-token': token, 'x-oc-filename': 'shot.png', 'x-oc-dest': 'agent' },
+    body: 'x',
+  })
+  check('a picture for an agent is refused while disabled', dropped.status === 403, String(dropped.status))
 
   /* ── the switch on the desktop panel ─────────────────────────────────── */
 
@@ -285,7 +301,7 @@ await stopDaemon()
 /* ── reading ───────────────────────────────────────────────────────────── */
 
 await startDaemon(true)
-const { hello, req, events, close } = await connect()
+const { hello, token, req, events, close } = await connect()
 check('capabilities say agents are on', hello.capabilities.agents?.enabled === true, (hello.capabilities.agents?.adapters || []).join(' '))
 check(
   'capabilities name the road into a terminal',
@@ -293,6 +309,10 @@ check(
   String(hello.capabilities.agents?.write),
 )
 check('capabilities list the keys a phone may press', (hello.capabilities.agents?.keys || []).includes('Escape'))
+check(
+  'capabilities admit the two things the app has to ask for',
+  hello.capabilities.agents?.attach === true && hello.capabilities.agents?.answer === true,
+)
 
 const empty = await req('agents.list')
 check('no sessions before anything is discovered', empty.sessions.length === 0)
@@ -367,6 +387,57 @@ fs.appendFileSync(
 )
 check('transcript activity clears a stale waiting', Boolean(await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')))
 
+/* ── multiple choice ───────────────────────────────────────────────────── */
+
+// The one thing an agent blocks on that it also writes down. Every other tool
+// call is collapsed to a line on its way to the phone; this one has to arrive
+// whole, because the options are the entire reason it is worth carrying.
+const QUESTION_ID = 'toolu_ask_1'
+const askLine = (id) =>
+  line({
+    type: 'assistant',
+    timestamp: at,
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id,
+          name: 'AskUserQuestion',
+          input: {
+            questions: [
+              {
+                question: 'Which database?',
+                header: 'Storage',
+                multiSelect: false,
+                options: [
+                  { label: 'Postgres', description: 'the one already in the compose file' },
+                  { label: 'SQLite', description: 'no server to run' },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    },
+  })
+
+fs.appendFileSync(transcript, askLine(QUESTION_ID))
+const asked = await waitFor(events, (e) => e.kind === 'blocks' && e.blocks.some((b) => b.kind === 'question'))
+const questionBlock = asked?.blocks.find((b) => b.kind === 'question')
+check('a multiple-choice question arrives whole', Boolean(questionBlock), questionBlock?.summary)
+check(
+  'the options survive the trip, in order',
+  questionBlock?.questions?.[0]?.options.map((o) => o.label).join(' · ') === 'Postgres · SQLite',
+  questionBlock?.questions?.[0]?.options.map((o) => o.label).join(' · '),
+)
+check('an option keeps what it means', questionBlock?.questions?.[0]?.options[0].description.includes('compose file'))
+
+// This is the road to `waiting` that needs no hook at all: the question is on
+// disk, so even a session found by scanning /proc can say what it is stuck on.
+const stuck = await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting' && String(e.prompt).includes('database'))
+check('a question on disk is a session waiting', Boolean(stuck), stuck?.prompt)
+
 /* ── answering ─────────────────────────────────────────────────────────── */
 
 // The hard half, exercised against a real pane rather than a mock: the point
@@ -418,6 +489,62 @@ if (!hasTmux) {
 
   const tooMuch = await req('agents.send', { id: session.id, text: 'x'.repeat(5000) }).then(() => null, (e) => e.message)
   check('an oversized message is refused', String(tooMuch).includes('too much text'), tooMuch)
+
+  /* ── picking an answer off the list ──────────────────────────────────── */
+
+  // The option's position is the keystroke that chooses it, so what has to be
+  // asserted is that tapping option two presses `2` at the far end of the pty.
+  const answerable = (await req('agents.open', { id: session.id, limit: 200 })).blocks.find((b) => b.kind === 'question')
+  const answered = await req('agents.answer', { id: session.id, seq: answerable.seq, choices: [2] })
+  check('agents.answer names what it picked', answered.labels?.join() === 'SQLite', JSON.stringify(answered.labels))
+  await settle(400)
+  check('the choice reaches the pty as its digit', fs.readFileSync(received, 'utf8').split('\n').includes('2'))
+
+  // A number that does not name an option on the block the phone is looking at
+  // is a stale screen answering the wrong question — a refusal, not a keypress.
+  const outOfRange = await req('agents.answer', { id: session.id, seq: answerable.seq, choices: [7] })
+    .then(() => null, (e) => e.message)
+  check('an option that does not exist is refused', String(outOfRange).includes('no option 7'), outOfRange)
+
+  const notAQuestion = await req('agents.answer', { id: session.id, seq: 1, choices: [1] }).then(() => null, (e) => e.message)
+  check('a block that is not a question cannot be answered', String(notAQuestion).includes('not a question'), notAQuestion)
+
+  const tooMany = await req('agents.answer', { id: session.id, seq: answerable.seq, choices: [1, 2] })
+    .then(() => null, (e) => e.message)
+  check('a single-choice list takes one answer', String(tooMany).includes('one answer'), tooMany)
+
+  /* ── handing over a picture ──────────────────────────────────────────── */
+
+  // A one-pixel PNG is a real picture as far as every layer here is concerned.
+  const png = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+    'base64',
+  )
+  const uploaded = await fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: {
+      'x-oc-token': token,
+      'x-oc-filename': encodeURIComponent('a shot.png'),
+      'x-oc-dest': 'agent',
+      'content-type': 'application/octet-stream',
+    },
+    body: png,
+  }).then((r) => r.json())
+  check('a picture for an agent answers with where it landed', typeof uploaded.path === 'string', uploaded.path)
+  check('it goes to the cache, not the share inbox', !String(uploaded.path).includes('Downloads'), uploaded.path)
+  check('and its name is safe to type at a prompt', !path.basename(uploaded.path).includes(' '), path.basename(uploaded.path))
+  check('the bytes are all there', fs.statSync(uploaded.path).size === png.length)
+
+  await req('agents.attach', { id: session.id, paths: [uploaded.path], text: 'why is this off by one?' })
+  await settle(400)
+  const withShot = fs.readFileSync(received, 'utf8')
+  check('the agent is told where the picture is', withShot.includes(uploaded.path), path.basename(uploaded.path))
+  check('and the question comes with it', withShot.includes('why is this off by one?'))
+
+  // `agents.attach` types what it is handed into a terminal, so the one thing
+  // it must never do is type a path the phone made up.
+  const escaped = await req('agents.attach', { id: session.id, paths: ['/etc/passwd'] }).then(() => null, (e) => e.message)
+  check('a path outside the drop directory is refused', String(escaped).includes('not one this phone handed over'), escaped)
 
   tmux(['kill-session', '-t', 'oc-test'])
   await settle(300)

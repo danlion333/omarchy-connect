@@ -29,7 +29,13 @@ import {
   requestCall,
   trackConnections,
 } from './plugins/phone.js'
-import { summary as agentsSummary, hook as agentHook, setEnabled as setAgentsEnabled } from './plugins/agents.js'
+import {
+  summary as agentsSummary,
+  hook as agentHook,
+  setEnabled as setAgentsEnabled,
+  agentsEnabled,
+} from './plugins/agents.js'
+import * as agentDrops from './agents/drops.js'
 import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
 import * as state from './lib/state.js'
@@ -432,12 +438,30 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     ? https.createServer({ key: certificate.key, cert: certificate.cert }, handleHttp)
     : http.createServer(handleHttp)
 
+  /**
+   * A file from the phone, and the one question worth asking about it: is it
+   * for the person or for an agent?
+   *
+   * A picture on its way to a coding agent is not a file anybody meant to
+   * keep — it is the subject of the next sentence they are going to type — so
+   * it skips the inbox, the desktop notification and the transfer counter and
+   * lands in a swept cache directory instead, with its path handed straight
+   * back so the phone can name it in `agents.attach`. Everything else is a
+   * file transfer and behaves exactly as it always has.
+   */
   function receiveUpload(req, res, url, device) {
     const rawName = req.headers['x-oc-filename'] || url.searchParams.get('name') || `upload-${Date.now()}`
+    const dest = String(req.headers['x-oc-dest'] || url.searchParams.get('dest') || 'inbox')
+    const forAgent = dest === 'agent'
+    // The gate is the same switch that grants reading and answering: with
+    // agents off there is nothing on this desktop that would ever read it.
+    if (forAgent && !agentsEnabled()) return json(res, 403, { error: 'agent control is off' })
+    const cap = forAgent ? agentDrops.MAX_DROP : MAX_UPLOAD
     const declared = Number(req.headers['content-length'] || 0)
-    if (declared > MAX_UPLOAD) return json(res, 413, { error: 'file too large' })
+    if (declared > cap) return json(res, 413, { error: 'file too large' })
 
-    const target = inboxPathFor(decodeURIComponent(String(rawName)))
+    const name = decodeURIComponent(String(rawName))
+    const target = forAgent ? agentDrops.pathFor(name) : inboxPathFor(name)
     const out = fs.createWriteStream(target)
     let written = 0
     let aborted = false
@@ -453,7 +477,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     req.on('data', (chunk) => {
       written += chunk.length
-      if (written > MAX_UPLOAD) fail(413, 'file too large')
+      if (written > cap) fail(413, 'file too large')
     })
     req.on('error', () => fail(400, 'upload failed'))
     out.on('error', (err) => fail(500, err.message))
@@ -461,6 +485,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     out.on('close', () => {
       if (aborted) return
+      if (forAgent) {
+        // No notification and no counter: this is scaffolding for a question,
+        // and the agent is about to be told where it is.
+        return json(res, 200, { ok: true, name: target.split('/').pop(), size: written, path: target })
+      }
       announceReceivedFile(target, { open: loadConfig().openFilesOnReceive })
       counters.filesIn += 1
       recordTransfer({ direction: 'in', name: target.split('/').pop(), size: written, peer: device.name })

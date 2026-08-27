@@ -6,6 +6,7 @@ import { log } from '../lib/log.js'
 import { ADAPTERS, detected } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
 import * as writer from '../agents/writer.js'
+import * as drops from '../agents/drops.js'
 import { alive, ancestors, commOf, startTicks } from '../agents/proc.js'
 
 /**
@@ -65,6 +66,10 @@ let pollTimer = null
 const enabled = () => loadConfig().agents?.enabled === true
 const spawnAllowed = () => loadConfig().agents?.spawn === true
 
+// The HTTP side asks the same question: a phone may only drop a picture where
+// an agent can read it while agents are something this desktop does at all.
+export { enabled as agentsEnabled }
+
 const requireEnabled = () => {
   if (!enabled()) throw new Error('agent control is off — run `omarchy-connect agent enable` on the desktop')
 }
@@ -97,6 +102,7 @@ const publicBlock = ({ full, ...block }) => ({ ...block, expandable: Boolean(ful
 function describe(block) {
   const text =
     block.kind === 'text' ? block.text
+    : block.kind === 'question' ? `asked: ${block.summary}`
     : block.kind === 'tool' ? `${block.tool} ${block.summary}`
     : block.kind === 'result' ? block.summary
     : block.kind === 'thinking' ? 'thinking'
@@ -106,6 +112,8 @@ function describe(block) {
 
 /** The longest message a phone may type in one go. */
 const MAX_SEND = 4096
+/** Pictures per message. More than a handful is a file transfer, not a question. */
+const MAX_ATTACH = 6
 
 const emit = (data) => bus?.emit('event', 'agent', data)
 
@@ -245,10 +253,40 @@ function ingest(entry, text) {
   entry.lastActivity = fresh[fresh.length - 1].at || Date.now()
   const preview = describe(fresh[fresh.length - 1])
   if (preview) entry.preview = preview
+
+  // A multiple-choice question is the one thing an agent blocks on that it
+  // *does* write down, so this is the only road to `waiting` that needs no
+  // hook at all — a session found by scanning /proc can now say it is stuck
+  // and say what on, which the design document had down as an open question.
+  const question = pendingQuestion(entry)
+  if (question) setState(entry, 'waiting', { prompt: question.summary })
   // A permission prompt that was answered at the keyboard fires no hook we
   // subscribe to, so the transcript moving again is what clears `waiting`.
-  if (entry.state === 'waiting') setState(entry, 'working')
+  else if (entry.state === 'waiting') setState(entry, 'working')
   return fresh
+}
+
+/** How far back a question can be and still be the thing the agent is on. */
+const QUESTION_TAIL = 8
+
+/**
+ * The multiple-choice question this session is sitting on, if it is sitting on
+ * one.
+ *
+ * `AskUserQuestion` blocks the agent outright, so the question worth offering
+ * is always near the end — and once its result lands the agent has moved on,
+ * whoever answered it and from wherever. Both halves are read off the
+ * transcript, which means a question answered at the keyboard clears itself on
+ * the phone without anything having to tell it.
+ */
+function pendingQuestion(entry) {
+  const tail = entry.blocks.slice(-QUESTION_TAIL)
+  const answered = new Set(tail.filter((b) => b.kind === 'result' && b.ref).map((b) => b.ref))
+  for (let i = tail.length - 1; i >= 0; i -= 1) {
+    const block = tail[i]
+    if (block.kind === 'question' && block.ref && !answered.has(block.ref)) return block
+  }
+  return null
 }
 
 /**
@@ -695,6 +733,11 @@ export default {
       // Stage four's `spawn` is still the flag it has always been.
       write: enabled() ? writer.best() : null,
       keys: writer.KEY_NAMES,
+      // Two things a phone can only offer if the desktop understands the call
+      // behind it, so they are published rather than assumed: handing an agent
+      // a picture, and picking an answer off a numbered list.
+      attach: true,
+      answer: true,
       spawn: spawnAllowed(),
     }
   },
@@ -736,6 +779,8 @@ export default {
         adapters: detected(),
         write: enabled() ? writer.best() : null,
         keys: writer.KEY_NAMES,
+        attach: true,
+        answer: true,
         spawn: spawnAllowed(),
       }
     },
@@ -818,6 +863,79 @@ export default {
       // sitting at `waiting` after a successful answer reads as a failed send.
       if (entry.state !== 'working') setState(entry, 'working')
       return { ok: true, ...result }
+    },
+
+    /**
+     * Hand the agent a picture.
+     *
+     * An agent reads an image the way it reads a file, so this is `send` with
+     * the paths in front of the message: the bytes arrived over `/api/upload`
+     * and landed in the drop directory, and what gets typed is where they are.
+     * Sending the path rather than the picture is not a shortcut — it is the
+     * only road there is, because a terminal carries text and nothing else.
+     *
+     * The paths are checked against the drop directory rather than trusted.
+     * This method types what it is handed into a shell's neighbourhood, so a
+     * phone naming `~/.ssh/id_ed25519` must get a refusal and not a paste.
+     */
+    async 'agents.attach'({ id, paths = [], text = '', submit = true } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      const files = (Array.isArray(paths) ? paths : [paths]).map(String).filter(Boolean)
+      if (!files.length) throw new Error('nothing to attach')
+      if (files.length > MAX_ATTACH) throw new Error(`that is more than ${MAX_ATTACH} pictures at once`)
+      for (const file of files) {
+        if (!drops.holds(file)) throw new Error('that file is not one this phone handed over')
+      }
+      // Paths first and the message under them: the agent has to know what it
+      // is looking at before it reads the question about it, and a path on its
+      // own line survives a caption that happens to start with a slash.
+      const body = [files.join(' '), String(text ?? '').trim()].filter(Boolean).join('\n')
+      if (body.length > MAX_SEND) throw new Error('that is too much text to type at once')
+      await ensureWritable(entry)
+
+      const result = await writer.serialise(entry, () => writer.send(entry, body, { submit: submit !== false }))
+      if (entry.state !== 'working') setState(entry, 'working')
+      return { ok: true, paths: files, ...result }
+    },
+
+    /**
+     * Answer a multiple-choice question by picking off the list.
+     *
+     * The transcript carries the options and the terminal draws the same list
+     * in the same order, so the option's position *is* the keystroke that
+     * chooses it — which is the whole reason this can work from a phone with no
+     * keyboard. Validating against the block rather than forwarding a digit is
+     * what keeps a stale screen from answering the wrong question: a number
+     * that does not name an option on the block the phone is looking at is a
+     * refusal, not a keypress.
+     *
+     * One question at a time, in the order the terminal asks them. A
+     * single-choice list is answered by the digit alone — it picks and submits
+     * in one press — while a multi-select toggles, so its picks are followed by
+     * Return.
+     */
+    async 'agents.answer'({ id, seq, question = 0, choices = [] } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      const block = entry.blocks.find((b) => b.seq === Number(seq))
+      if (!block || block.kind !== 'question') throw new Error('that block is not a question')
+      const asked = block.questions?.[Number(question) || 0]
+      if (!asked) throw new Error('that question is not on this block')
+
+      const picked = [...new Set((Array.isArray(choices) ? choices : [choices]).map(Number))]
+      if (!picked.length) throw new Error('nothing was chosen')
+      if (!asked.multiSelect && picked.length > 1) throw new Error('that question takes one answer')
+      for (const n of picked) {
+        if (!Number.isInteger(n) || n < 1 || n > asked.options.length) throw new Error(`there is no option ${n}`)
+      }
+      await ensureWritable(entry)
+
+      const keys = picked.map(String)
+      if (asked.multiSelect) keys.push('Enter')
+      const result = await writer.serialise(entry, () => writer.chord(entry, keys))
+      if (entry.state === 'waiting') setState(entry, 'working')
+      return { ok: true, labels: picked.map((n) => asked.options[n - 1].label), ...result }
     },
 
     /**

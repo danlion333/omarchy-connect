@@ -35,7 +35,7 @@ the desktop and the app repaints in the same palette.
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
 | **Answering calls** | Pick up or decline from the desktop — over Bluetooth the conversation comes out of your speakers, and that half needs no app at all. The desktop holds that link open by itself while the phone is on the network, so a call is answerable the moment it rings. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
-| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
+| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
 
@@ -455,6 +455,28 @@ first send. Either way the useful answer to a stopped agent is usually a single
 key, which is why the composer carries `Esc`, the digits and Return above the
 text field, and a raw view of the pane behind a toggle — a permission prompt is
 drawn on the terminal and never written to the transcript.
+
+When what stopped it is a **multiple-choice question**, there is no counting
+digits. That kind of question is a tool call, so it is in the transcript, and it
+is the one call that reaches the phone whole rather than collapsed to a line:
+the question, every option, and what each one means. Tap the one you want. The
+number beside it is the key the desktop is about to press, drawn where the
+terminal draws it, so what you tap and what the agent gets are visibly the same
+thing — and because the desktop checks the option against the question it
+actually asked, a screen that has gone stale gets a refusal rather than
+answering the next prompt by accident. Answer it at the keyboard instead and the
+card settles on the phone by itself. This is also the one road to *waiting* that
+needs no hooks at all: a session found by scanning can now say it is stuck, and
+say what on.
+
+You can also **send it a picture** — from your photos, from your files, or
+straight off the clipboard, which is where a screenshot is a second after you
+cropped it. The desktop keeps the file in a swept cache directory and hands the
+agent its path, because a terminal carries text and nothing else and an agent
+reads an image by opening it. It never touches `~/Downloads/Omarchy Connect`
+and raises no notification: a screenshot attached to a question is scaffolding
+for that question, not a file you meant to keep. Pick it while you write the
+caption and it is already across by the time you press send.
 
 **Read this before you enable it.** Reading an agent is reading everything it
 saw: your source, the output of every command it ran, any secret that crossed a

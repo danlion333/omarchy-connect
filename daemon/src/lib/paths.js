@@ -6,6 +6,7 @@ const home = os.homedir()
 
 export const XDG_CONFIG = process.env.XDG_CONFIG_HOME || path.join(home, '.config')
 export const XDG_STATE = process.env.XDG_STATE_HOME || path.join(home, '.local', 'state')
+export const XDG_CACHE = process.env.XDG_CACHE_HOME || path.join(home, '.cache')
 export const XDG_DOWNLOAD = process.env.XDG_DOWNLOAD_DIR || path.join(home, 'Downloads')
 
 export const CONFIG_DIR = path.join(XDG_CONFIG, 'omarchy-connect')

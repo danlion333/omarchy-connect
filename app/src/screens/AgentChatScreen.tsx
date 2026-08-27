@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ActivityIndicator,
   Animated,
+  Image,
   Keyboard,
   KeyboardAvoidingView,
   Platform,
@@ -16,7 +17,9 @@ import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection } from '../state/ConnectionContext'
-import type { AgentBlock, AgentEvent, AgentSession } from '../api/client'
+import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession } from '../api/client'
+import * as attach from '../api/attach'
+import type { Attachment, Picked } from '../api/attach'
 import { Body, Button, Caps, Chip } from '../ui/kit'
 import { ago } from '../lib/format'
 import { alpha, font, radius, size, space } from '../theme'
@@ -104,6 +107,21 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   )
 
   /**
+   * Picking an answer off a numbered list.
+   *
+   * The option's position is the keystroke that chooses it — the terminal
+   * draws the same list in the same order — so the desktop is told which
+   * option on which block rather than which digit, and validates that against
+   * what it actually asked. A stale screen then gets a refusal instead of
+   * answering some later question by accident.
+   */
+  const answer = useCallback(
+    (seq: number, question: number, choices: number[]) =>
+      call<{ labels: string[] }>('agents.answer', { id: session.id, seq, question, choices }),
+    [call, session.id],
+  )
+
+  /**
    * A tool call and its result are one thing on screen. They arrive as two
    * blocks because that is how the transcript records them.
    */
@@ -111,7 +129,9 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     const out: ChatRow[] = []
     for (const block of blocks) {
       if (block.kind === 'result') {
-        const parent = [...out].reverse().find((r) => r.block.kind === 'tool' && r.block.ref === block.ref && !r.result)
+        const parent = [...out]
+          .reverse()
+          .find((r) => (r.block.kind === 'tool' || r.block.kind === 'question') && r.block.ref === block.ref && !r.result)
         if (parent) {
           parent.result = block
           continue
@@ -205,17 +225,19 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
           ) : (
             <Row
               key={group.seq}
+              session={session}
               block={group.row.block}
               result={group.row.result}
               expanded={expanded[group.row.block.seq]}
               onExpand={() => expand(group.row.block)}
+              onAnswer={answer}
             />
           ),
         )}
 
         {session.state === 'working' ? <Working /> : null}
 
-        {session.state === 'waiting' && session.prompt ? (
+        {session.state === 'waiting' && session.prompt && !groups.some((g) => g.kind === 'row' && g.row.block.kind === 'question' && !g.row.result) ? (
           <View
             style={{
               borderLeftWidth: 2,
@@ -560,15 +582,19 @@ function ToolLine({
  * useful question about a line is whose it is, and one bubble answers it.
  */
 function Row({
+  session,
   block,
   result,
   expanded,
   onExpand,
+  onAnswer,
 }: {
+  session: AgentSession
   block: AgentBlock
   result?: AgentBlock
   expanded?: string
   onExpand: () => void
+  onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
   const { palette } = useConnection()
   const [thought, setThought] = useState(false)
@@ -626,6 +652,10 @@ function Row({
     )
   }
 
+  if (block.kind === 'question') {
+    return <QuestionCard session={session} block={block} result={result} onAnswer={onAnswer} />
+  }
+
   if (block.kind === 'tool') {
     return <ToolLine block={block} result={result} expanded={expanded} onExpand={onExpand} />
   }
@@ -635,6 +665,308 @@ function Row({
     <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={2}>
       {block.summary} · {ago(block.at)}
     </Text>
+  )
+}
+
+/**
+ * A multiple-choice question, with the options tappable.
+ *
+ * This is the one tool call that arrives whole rather than collapsed, and the
+ * reason is the difference between watching an agent be stuck and getting it
+ * unstuck. Everywhere else on this screen a phone reads; here it decides.
+ *
+ * The number beside each option is not decoration — it is the keystroke the
+ * desktop is going to press, drawn where the terminal draws it, so what the
+ * person taps and what the agent receives are visibly the same thing.
+ *
+ * Once answered the card stops being a control and becomes a record: the
+ * options fall away and what was picked stays. The answer is read off the
+ * transcript rather than remembered locally, so a question answered at the
+ * keyboard settles here too, with nothing having to tell the phone.
+ */
+function QuestionCard({
+  session,
+  block,
+  result,
+  onAnswer,
+}: {
+  session: AgentSession
+  block: AgentBlock
+  result?: AgentBlock
+  onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
+}) {
+  const { palette } = useConnection()
+  const questions = block.questions || []
+  const answered = result?.answers
+  const tone = answered ? palette.muted : palette.orange
+
+  return (
+    <View
+      style={{
+        borderLeftWidth: 2,
+        borderLeftColor: tone,
+        backgroundColor: answered ? 'transparent' : alpha(palette.orange, 0.07),
+        borderRadius: radius.sm,
+        paddingVertical: space.md,
+        paddingHorizontal: space.md,
+        gap: space.lg,
+      }}
+    >
+      {questions.map((question, i) => (
+        <Question
+          key={`${block.seq}:${i}`}
+          session={session}
+          question={question}
+          picked={pickedFrom(answered?.[question.question], question)}
+          onAnswer={(choices) => onAnswer(block.seq, i, choices)}
+        />
+      ))}
+    </View>
+  )
+}
+
+/**
+ * The answer map holds one label, or several when the question took several.
+ *
+ * Several arrive comma-joined, and a label may perfectly well contain a comma
+ * of its own — so the whole string is checked against the options before it is
+ * split, and a label that stands on its own is left alone.
+ */
+function pickedFrom(answer: unknown, question: AgentQuestion): string[] | null {
+  if (Array.isArray(answer)) return answer.map(String)
+  if (typeof answer !== 'string' || !answer) return null
+  if (question.options.some((option) => option.label === answer)) return [answer]
+  return answer.split(/\s*,\s*/).filter(Boolean)
+}
+
+function Question({
+  session,
+  question,
+  picked,
+  onAnswer,
+}: {
+  session: AgentSession
+  question: AgentQuestion
+  picked: string[] | null
+  onAnswer: (choices: number[]) => Promise<{ labels: string[] }>
+}) {
+  const { palette } = useConnection()
+  // Only ever set on a multi-select: a single-choice list submits on the tap,
+  // so there is no moment between choosing and having chosen.
+  const [checked, setChecked] = useState<number[]>([])
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  // What this phone just sent, until the transcript catches up and says the
+  // same thing. Without it the list stays live for the second or two the agent
+  // takes to write the answer down, and a second tap is a stray digit typed
+  // into whatever the terminal moved on to.
+  const [sent, setSent] = useState<string[] | null>(null)
+
+  const settled = picked ?? sent
+  const answerable = Boolean(session.writable) && !settled
+
+  const submit = useCallback(
+    async (choices: number[]) => {
+      setBusy(true)
+      setError(null)
+      try {
+        const { labels } = await onAnswer(choices)
+        setChecked([])
+        setSent(labels)
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setBusy(false)
+      }
+    },
+    [onAnswer],
+  )
+
+  const tap = useCallback(
+    (n: number) => {
+      if (!answerable || busy) return
+      if (!question.multiSelect) return void submit([n])
+      setChecked((was) => (was.includes(n) ? was.filter((x) => x !== n) : [...was, n]))
+    },
+    [answerable, busy, question.multiSelect, submit],
+  )
+
+  return (
+    <View style={{ gap: space.sm }}>
+      {question.header ? <Caps tone={settled ? palette.muted : palette.orange}>{question.header}</Caps> : null}
+      <Text
+        style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.body, lineHeight: 20 }}
+      >
+        {question.question}
+      </Text>
+
+      {settled ? (
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
+          <Feather name="check" size={13} color={picked ? palette.green : palette.muted} style={{ marginTop: 3 }} />
+          <Text style={{ flex: 1, color: palette.light_foreground, fontFamily: font.medium, fontSize: size.label }}>
+            {settled.join(' · ')}
+          </Text>
+        </View>
+      ) : (
+        <View style={{ gap: 1 }}>
+          {question.options.map((option, i) => (
+            <Option
+              key={option.label}
+              n={i + 1}
+              option={option}
+              checked={checked.includes(i + 1)}
+              enabled={answerable && !busy}
+              onPress={() => tap(i + 1)}
+            />
+          ))}
+        </View>
+      )}
+
+      {question.multiSelect && !settled ? (
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+            pick as many as apply
+          </Text>
+          <Button
+            label={checked.length ? `Send ${checked.length}` : 'Send'}
+            icon="check"
+            tone={palette.orange}
+            disabled={!answerable || !checked.length}
+            loading={busy}
+            onPress={() => submit([...checked].sort((a, b) => a - b))}
+          />
+        </View>
+      ) : null}
+
+      {!session.writable && !settled ? (
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+          Reading only — this one has to be answered at the desktop
+        </Text>
+      ) : null}
+      {error ? (
+        <Body tone={palette.red} style={{ fontSize: size.label }}>
+          {error}
+        </Body>
+      ) : null}
+    </View>
+  )
+}
+
+/**
+ * One option: its number, its label, and what it means.
+ *
+ * The description is the half that decides the question and the half a phone
+ * has no room for, so it is kept — two lines of it — rather than folded away
+ * behind a tap nobody would take while deciding.
+ */
+function Option({
+  n,
+  option,
+  checked,
+  enabled,
+  onPress,
+}: {
+  n: number
+  option: { label: string; description?: string }
+  checked: boolean
+  enabled: boolean
+  onPress: () => void
+}) {
+  const { palette } = useConnection()
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={!enabled}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'flex-start',
+        gap: space.sm,
+        paddingVertical: space.sm,
+        paddingHorizontal: space.sm,
+        borderRadius: radius.sm,
+        borderWidth: StyleSheet.hairlineWidth * 2,
+        borderColor: checked ? palette.orange : 'transparent',
+        backgroundColor: checked || pressed ? palette.selection : palette.darker_background,
+        opacity: enabled ? 1 : 0.6,
+      })}
+    >
+      <Text
+        style={{
+          color: checked ? palette.orange : palette.muted,
+          fontFamily: font.medium,
+          fontSize: size.label,
+          minWidth: 12,
+          marginTop: 1,
+        }}
+      >
+        {n}
+      </Text>
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.label }}>
+          {option.label}
+        </Text>
+        {option.description ? (
+          <Text
+            style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, lineHeight: 15, marginTop: 2 }}
+            numberOfLines={2}
+          >
+            {option.description}
+          </Text>
+        ) : null}
+      </View>
+    </Pressable>
+  )
+}
+
+/** Pictures per message — the desktop refuses more, so the phone does not offer it. */
+const MAX_SHOTS = 6
+
+/**
+ * A picture waiting to be sent, and how far across it has got.
+ *
+ * The thumbnail is the whole status display: dimmed while the bytes are still
+ * crossing, outlined in red if they never did. A picture that failed is left in
+ * place rather than dropped, because the person chose it and losing it silently
+ * is worse than a message that goes without it.
+ */
+function Thumbnail({ shot, onRemove }: { shot: Attachment; onRemove: () => void }) {
+  const { palette } = useConnection()
+  const settling = !shot.path && !shot.error
+  return (
+    <Pressable onPress={onRemove} style={{ width: 56, height: 56 }}>
+      <Image
+        source={{ uri: shot.uri }}
+        style={{
+          width: 56,
+          height: 56,
+          borderRadius: radius.sm,
+          borderWidth: StyleSheet.hairlineWidth * 2,
+          borderColor: shot.error ? palette.red : palette.lighter_background,
+          opacity: settling ? 0.4 : 1,
+        }}
+      />
+      {settling ? (
+        <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]}>
+          <ActivityIndicator size="small" color={palette.accent} />
+        </View>
+      ) : (
+        <View
+          style={{
+            position: 'absolute',
+            top: -4,
+            right: -4,
+            width: 16,
+            height: 16,
+            borderRadius: 8,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: shot.error ? palette.red : palette.dark_background,
+          }}
+        >
+          <Feather name="x" size={10} color={palette.bright_foreground} />
+        </View>
+      )}
+    </Pressable>
   )
 }
 
@@ -661,16 +993,28 @@ const QUICK: { key: string; label: string }[] = [
  * after. The compositor typing on the user's behalf steals focus for a moment
  * and interleaves with anyone at the real keyboard — that cannot be fixed, but
  * it can be told to the person deciding whether to press send.
+ *
+ * The paperclip is the third thing it does, and the one that changes what can
+ * be asked from a sofa. "Why does this look wrong" is a question about a
+ * picture, and until the picture can cross, the answer is to get up. The
+ * screenshot goes to the desktop and the agent is handed its path — a terminal
+ * carries text and nothing else, so the path *is* how an image is passed, not
+ * a workaround for not being able to pass one.
  */
 function Composer({ session, keyboard }: { session: AgentSession; keyboard: boolean }) {
-  const { call, palette } = useConnection()
+  const { call, client, hello, palette } = useConnection()
   const insets = useSafeAreaInsets()
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
+  const [shots, setShots] = useState<Attachment[]>([])
+  const [sources, setSources] = useState(false)
 
   const needsWarning = session.writable === 'wtype' && !acknowledged
+  const canAttach = (hello?.capabilities?.agents as { attach?: boolean } | undefined)?.attach === true
+  const ready = shots.filter((shot) => shot.path)
+  const settling = shots.some((shot) => !shot.path && !shot.error)
 
   const guard = useCallback(
     async (what: () => Promise<unknown>) => {
@@ -689,19 +1033,58 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
 
   const send = useCallback(() => {
     const body = text.trim()
-    if (!body) return
+    const paths = ready.map((shot) => shot.path as string)
+    if (!body && !paths.length) return
     // Cleared optimistically: the transcript is the receipt, and a field that
     // keeps the text after a successful send invites sending it twice.
     setText('')
+    setShots([])
     void guard(async () => {
       try {
-        await call('agents.send', { id: session.id, text: body })
+        if (paths.length) await call('agents.attach', { id: session.id, paths, text: body })
+        else await call('agents.send', { id: session.id, text: body })
       } catch (err) {
         setText(body)
+        setShots(ready)
         throw err
       }
     })
-  }, [call, guard, session.id, text])
+  }, [call, guard, ready, session.id, text])
+
+  /**
+   * Pick a picture, and push it across while the caption is still being typed.
+   *
+   * Uploading on pick rather than on send is what keeps the send instant: by
+   * the time anyone has finished writing "why is this off by one" the bytes are
+   * already on the desktop and all that is left to type is a path. A picture
+   * that failed to cross says so on its own thumbnail and does not block the
+   * message it came with.
+   */
+  const add = useCallback(
+    async (pick: () => Promise<Picked | null>) => {
+      setSources(false)
+      setError(null)
+      if (!client) return
+      let picked: Picked | null = null
+      try {
+        picked = await pick()
+      } catch (err) {
+        setError((err as Error).message)
+        return
+      }
+      if (!picked) return
+      const key = `${picked.name}:${Date.now()}`
+      const shot: Attachment = { key, uri: picked.uri, name: picked.name }
+      setShots((prev) => (prev.length >= MAX_SHOTS ? prev : [...prev, shot]))
+      try {
+        const path = await attach.upload(client, picked)
+        setShots((prev) => prev.map((s) => (s.key === key ? { ...s, path } : s)))
+      } catch (err) {
+        setShots((prev) => prev.map((s) => (s.key === key ? { ...s, error: (err as Error).message } : s)))
+      }
+    },
+    [client],
+  )
 
   const press = useCallback(
     (key: string) => void guard(() => call('agents.key', { id: session.id, key })),
@@ -753,6 +1136,33 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
         </Body>
       ) : null}
 
+      {/* Where a picture comes from, only while one is being chosen. Three
+          sources rather than one because a screenshot is in a different place
+          depending on how it got there — and the clipboard, which is where it
+          is a second after being cropped, is the one no picker can reach. */}
+      {sources ? (
+        <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm }}>
+          <Chip label="Photos" onPress={() => void add(attach.fromLibrary)} />
+          <Chip label="Files" onPress={() => void add(attach.fromFiles)} />
+          <Chip label="Paste" onPress={() => void add(attach.fromClipboard)} />
+          <View style={{ flex: 1 }} />
+          <Chip label="✕" onPress={() => setSources(false)} />
+        </View>
+      ) : null}
+
+      {shots.length ? (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={{ gap: space.sm, paddingBottom: space.sm }}
+          keyboardShouldPersistTaps="handled"
+        >
+          {shots.map((shot) => (
+            <Thumbnail key={shot.key} shot={shot} onRemove={() => setShots((prev) => prev.filter((s) => s.key !== shot.key))} />
+          ))}
+        </ScrollView>
+      ) : null}
+
       <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm }}>
         {QUICK.map((quick) => (
           <Chip
@@ -768,6 +1178,25 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
       </View>
 
       <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'flex-end' }}>
+        {canAttach ? (
+          <Pressable
+            onPress={() => setSources((was) => !was)}
+            disabled={shots.length >= MAX_SHOTS}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              paddingHorizontal: space.md,
+              paddingVertical: space.md,
+              justifyContent: 'center',
+              backgroundColor: pressed || sources ? palette.selection : palette.darker_background,
+              borderColor: palette.lighter_background,
+              borderWidth: 1,
+              borderRadius: radius.sm,
+              opacity: shots.length >= MAX_SHOTS ? 0.4 : 1,
+            })}
+          >
+            <Feather name="paperclip" size={16} color={sources ? palette.accent : palette.muted} />
+          </Pressable>
+        ) : null}
         <TextInput
           value={text}
           onChangeText={setText}
@@ -797,14 +1226,14 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
         />
         <Pressable
           onPress={send}
-          disabled={busy || !text.trim()}
+          disabled={busy || settling || (!text.trim() && !ready.length)}
           style={({ pressed }) => ({
             paddingHorizontal: space.lg,
             paddingVertical: space.md,
             justifyContent: 'center',
             backgroundColor: pressed ? palette.selection : palette.lighter_background,
             borderRadius: radius.sm,
-            opacity: busy || !text.trim() ? 0.4 : 1,
+            opacity: busy || settling || (!text.trim() && !ready.length) ? 0.4 : 1,
           })}
         >
           {busy ? (
@@ -819,7 +1248,11 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
           while you are typing and the screen is down to a few lines. */}
       {keyboard ? null : (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
-          {session.writable === 'tmux' ? `tmux ${session.pane}` : 'the desktop types this — focus moves for a moment'}
+          {shots.length
+            ? 'the desktop keeps the picture and hands the agent its path'
+            : session.writable === 'tmux'
+              ? `tmux ${session.pane}`
+              : 'the desktop types this — focus moves for a moment'}
         </Text>
       )}
     </View>

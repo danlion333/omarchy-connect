@@ -109,13 +109,30 @@ export type AgentCapabilities = {
   write?: AgentWrite
   /** The named keys this desktop will accept from a phone. */
   keys?: string[]
+  /** Whether this desktop understands being handed a picture for an agent. */
+  attach?: boolean
+  /** …and picking an answer off a numbered list rather than typing a digit. */
+  answer?: boolean
   spawn?: boolean
+}
+
+/**
+ * A multiple-choice question the agent stopped on.
+ *
+ * The order matters twice over: it is the order the terminal draws the options
+ * in, and the position of an option is the keystroke that picks it.
+ */
+export type AgentQuestion = {
+  header?: string
+  question: string
+  multiSelect?: boolean
+  options: { label: string; description?: string }[]
 }
 
 export type AgentBlock = {
   seq: number
   role: 'user' | 'assistant' | 'system'
-  kind: 'text' | 'thinking' | 'tool' | 'result' | 'state'
+  kind: 'text' | 'thinking' | 'tool' | 'question' | 'result' | 'state'
   at: number
   text?: string
   tool?: string
@@ -123,6 +140,14 @@ export type AgentBlock = {
   status?: 'ok' | 'error' | 'interrupted'
   lines?: number
   ref?: string | null
+  /**
+   * On a `question` block, what was asked. Every other tool call is collapsed
+   * to one line on its way here; this one arrives whole, because the options
+   * are the entire reason it is worth putting on a phone.
+   */
+  questions?: AgentQuestion[]
+  /** On the `result` that closed a question: what was picked, by question. */
+  answers?: Record<string, string>
   /** Whether a fuller body is one `agents.detail` away. */
   expandable?: boolean
 }
@@ -516,10 +541,17 @@ export class ConnectClient {
 
   /* ── HTTP side ───────────────────────────────────────────────────── */
 
-  uploadHeaders(filename: string) {
+  /**
+   * `dest` picks which door the file goes through on the desktop. The default
+   * is the share inbox, which notifies and is kept; `agent` is the swept cache
+   * a picture waits in while an agent is told where to look, and the desktop
+   * answers that one with the path it wrote.
+   */
+  uploadHeaders(filename: string, dest: 'inbox' | 'agent' = 'inbox') {
     return {
       'x-oc-token': this.token ?? '',
       'x-oc-filename': encodeURIComponent(filename),
+      'x-oc-dest': dest,
       'content-type': 'application/octet-stream',
     }
   }

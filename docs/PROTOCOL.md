@@ -442,6 +442,8 @@ see **Security model**, because writing to an agent is a shell.
 | `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
 | `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
+| `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
+| `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
 | `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. tmux only. |
 
 A session is what the phone lists and opens:
@@ -468,6 +470,14 @@ A session is what the phone lists and opens:
 question or hit a permission prompt — is the one that earns a badge, because
 that is the moment a person on the sofa can actually help.
 
+There are two roads into `waiting` and they are not equally good. A permission
+prompt is drawn on the terminal and written down nowhere, so only a hook can
+report it. A multiple-choice question is a tool call, and a tool call lands in
+the transcript — which means a session discovered by scanning `/proc`, with no
+hooks installed at all, can still say that it is stuck and say what on. Both
+are cleared the same way: by the transcript moving again, because a prompt
+answered at the keyboard fires no event this daemon subscribes to.
+
 `via` says how much to trust the rest. **`hook`** means the agent reported in
 itself: Claude Code runs a shell hook on every lifecycle event and hands it
 `session_id`, `transcript_path` and `cwd` on stdin, and the hook process
@@ -493,6 +503,28 @@ cannot carry a 400-line tool result, and the interesting part of a tool call is
 that it happened and whether it worked. The body stays one `agents.detail`
 away, fetched only when someone taps. A `result` carries the `ref` of the
 `tool` it answers, so the app draws them as one thing.
+
+One tool call is the exception, and arrives whole:
+
+```jsonc
+{ "seq": 16, "at": …, "role": "assistant", "kind": "question", "tool": "AskUserQuestion",
+  "ref": "toolu_01…", "summary": "Which database?",
+  "questions": [ { "header": "Storage", "question": "Which database?", "multiSelect": false,
+                   "options": [ { "label": "Postgres", "description": "already in the compose file" },
+                                { "label": "SQLite",   "description": "no server to run" } ] } ] }
+{ "seq": 17, "at": …, "role": "user", "kind": "result", "ref": "toolu_01…", "status": "ok",
+  "answers": { "Which database?": "SQLite" } }
+```
+
+The options *are* the reason it is worth putting on a phone: an agent blocked
+on a question the reader can see but not answer is a blocked agent. And the
+order matters twice over — it is the order the terminal draws the list in, and
+an option's position is the keystroke that picks it. That is why `agents.answer`
+takes a block and an index rather than a digit: the desktop checks the option
+against the question it actually asked, so a stale screen gets a refusal instead
+of answering some later prompt by accident. A single-choice list is answered by
+the digit alone, which picks and submits in one press; a multi-select toggles,
+so its picks are followed by Return.
 
 Two rules the reader never sees the other side of: a `thinking` block's
 `signature` is encrypted and is never sent, and traffic from a subagent
@@ -523,7 +555,7 @@ the switch on its panel, or the CLI. `capabilities.agents.enabled` was answered
 once at `hello` and this is how that answer changes without reconnecting: the
 app patches the capability in place, then lists the sessions.
 
-`capabilities.agents` is `{ enabled, adapters, read, write, keys, spawn }`.
+`capabilities.agents` is `{ enabled, adapters, read, write, keys, attach, answer, spawn }`.
 `write` is the best road this desktop has into a terminal — `"tmux"`,
 `"wtype"`, or `null` when it has neither. A session says which road *it* is on
 in its own `writable`, and the two differ often: a desktop with tmux installed
@@ -554,6 +586,34 @@ unchanged and the phone gets the good road for free.
 anything, and the set worth exposing to a phone is small — `Enter`, `Escape`,
 `Tab`, `Space`, `BSpace`, the four arrows, `C-c`, `C-d`, and the digits `1`–`9`
 that answer a numbered permission prompt. Anything else is refused.
+
+#### Pictures
+
+"Why does this look wrong" is a question about a picture, and until a picture
+can cross, the answer from a sofa is to get up. A terminal carries text and
+nothing else, so what crosses is the file and what reaches the agent is its
+*path* — not a workaround for being unable to pass an image, but how an image
+is passed: an agent reads one by opening it.
+
+The phone uploads to `POST /api/upload` with `x-oc-dest: agent`, which is the
+same endpoint as a file transfer through a different door. That door behaves
+differently in every way that matters: it lands in a swept cache directory
+(`$XDG_CACHE_HOME/omarchy-connect/agent`) rather than the share inbox, it fires
+no desktop notification and touches no transfer counter, it caps at 32 MB
+rather than 512, it renames to something safe to type at a prompt, and it
+answers with `{ ok, name, size, path }` — the path being the whole point. It is
+gated on the same switch that grants reading, because with agents off nothing
+on the desktop would ever read what was dropped there.
+
+`agents.attach` then types those paths, with the message under them. It checks
+each path against the drop directory rather than trusting it: this method types
+what it is handed into a shell's neighbourhood, so a phone naming
+`~/.ssh/id_ed25519` gets a refusal and not a paste.
+
+Nothing deletes a drop when the agent is done with it, because nothing knows
+when that is — a conversation comes back to a screenshot ten minutes later as
+readily as ten seconds. The directory is swept on the way in instead: a day
+old, or beyond the two hundredth file.
 
 `agents.screen` exists because the transcript is not the whole truth: a
 permission prompt is drawn on the terminal and never written to disk, so the

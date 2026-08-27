@@ -116,6 +116,44 @@ function summariseResult(content) {
   return { summary: oneLine(lines[0] || ''), full: text, lines: lines.length }
 }
 
+/** How many options a numbered prompt can offer before a digit stops answering it. */
+const MAX_OPTIONS = 9
+/** AskUserQuestion asks at most four things at a time; so does the phone. */
+const MAX_QUESTIONS = 4
+
+/**
+ * A multiple-choice question, carried through whole rather than flattened.
+ *
+ * Every other tool call is collapsed into one line on its way to the phone,
+ * because the interesting part of a tool call is that it happened. This one is
+ * the exception: what makes `AskUserQuestion` worth putting on a phone at all
+ * is the options, and an agent blocked on a question the phone can *see* but
+ * not *answer* is the same agent blocked. So the shape survives the trip.
+ *
+ * The options are numbered here rather than on the phone, because the number
+ * is the answer: the terminal draws the same list and takes the digit for it.
+ */
+function questionsFrom(input) {
+  const raw = Array.isArray(input?.questions) ? input.questions : []
+  return raw.slice(0, MAX_QUESTIONS).flatMap((question) => {
+    const text = oneLine(question?.question, 400)
+    const options = (Array.isArray(question?.options) ? question.options : [])
+      .slice(0, MAX_OPTIONS)
+      .map((option) => ({
+        label: oneLine(option?.label, 120),
+        description: oneLine(option?.description, 300),
+      }))
+      .filter((option) => option.label)
+    if (!text || options.length < 2) return []
+    return [{
+      header: oneLine(question?.header, 40),
+      question: text,
+      multiSelect: question?.multiSelect === true,
+      options,
+    }]
+  })
+}
+
 /**
  * A user turn arrives wrapped in whatever the CLI injected around it — a
  * slash command, a caveat about local commands, a system reminder. The person
@@ -222,6 +260,10 @@ export default {
         if (part?.type === 'tool_result') {
           const { summary, full, lines } = summariseResult(part.content)
           const interrupted = entry.toolUseResult?.interrupted === true
+          // What was picked, when the tool that ran was a question. This is the
+          // only place the answer is written down: the terminal drew the list
+          // and took the keystroke, and neither left a trace anywhere else.
+          const answers = entry.toolUseResult?.answers
           blocks.push({
             role: 'user',
             kind: 'result',
@@ -230,6 +272,7 @@ export default {
             status: interrupted ? 'interrupted' : part.is_error ? 'error' : 'ok',
             summary,
             lines,
+            answers: answers && typeof answers === 'object' ? answers : undefined,
             full: clamp(full, MAX_FULL),
           })
         } else if (part?.type === 'text' && !entry.isMeta) {
@@ -251,6 +294,20 @@ export default {
           const text = typeof part.thinking === 'string' ? part.thinking.trim() : ''
           blocks.push({ role: 'assistant', kind: 'thinking', at, text: clamp(text, MAX_TEXT) })
         } else if (part?.type === 'tool_use') {
+          const questions = part.name === 'AskUserQuestion' ? questionsFrom(part.input) : []
+          if (questions.length) {
+            blocks.push({
+              role: 'assistant',
+              kind: 'question',
+              at,
+              ref: part.id || null,
+              tool: 'AskUserQuestion',
+              questions,
+              summary: oneLine(questions[0].question),
+              full: clamp(JSON.stringify(part.input ?? {}, null, 2), MAX_FULL),
+            })
+            continue
+          }
           blocks.push({
             role: 'assistant',
             kind: 'tool',

@@ -33,6 +33,12 @@ import { ancestors } from './proc.js'
 const FOCUS_SETTLE_MS = 90
 /** …and after typing, before focus goes back where it was. */
 const RETURN_SETTLE_MS = 40
+/**
+ * …and between two keys of one chord. A TUI redrawing its selection has to
+ * see the second digit as a second keypress rather than as part of a burst it
+ * is still repainting from.
+ */
+const KEY_GAP_MS = 40
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -213,22 +219,49 @@ export async function send(entry, text, { submit = true } = {}) {
   throw new Error('nothing on this desktop can type into that session')
 }
 
-export async function press(entry, name) {
-  const spec = Object.hasOwn(KEYS, name) ? KEYS[name] : null
-  if (!spec) throw new Error(`that key cannot be sent from a phone: ${name}`)
+/**
+ * A run of named keys, pressed in order as one write.
+ *
+ * One key is the common case and the reason this exists is the other one:
+ * answering a multi-select prompt means toggling two or three options and then
+ * submitting, and doing that as three separate calls would borrow the
+ * compositor's focus three times over — three flickers for one answer, with
+ * room between them for the person at the keyboard to arrive mid-thought. The
+ * whole chord is one focus borrow and one lock.
+ */
+export async function chord(entry, names) {
+  const specs = names.map((name) => {
+    const spec = Object.hasOwn(KEYS, name) ? KEYS[name] : null
+    if (!spec) throw new Error(`that key cannot be sent from a phone: ${name}`)
+    return spec
+  })
+  if (!specs.length) throw new Error('no keys to press')
 
   if (entry.writable === 'tmux') {
-    if (spec.literal) await tmux.type(entry.pane, spec.literal)
-    else await tmux.key(entry.pane, spec.tmux)
-    return { via: 'tmux', pane: entry.pane, key: name }
+    for (const [i, spec] of specs.entries()) {
+      if (i) await sleep(KEY_GAP_MS)
+      if (spec.literal) await tmux.type(entry.pane, spec.literal)
+      else await tmux.key(entry.pane, spec.tmux)
+    }
+    return { via: 'tmux', pane: entry.pane, keys: names }
   }
 
   if (entry.writable === 'wtype') {
-    await borrowFocus(entry.window, () => wtype(spec.literal ? ['--', spec.literal] : spec.wtype))
-    return { via: 'wtype', window: entry.window, key: name }
+    await borrowFocus(entry.window, async () => {
+      for (const [i, spec] of specs.entries()) {
+        if (i) await sleep(KEY_GAP_MS)
+        await wtype(spec.literal ? ['--', spec.literal] : spec.wtype)
+      }
+    })
+    return { via: 'wtype', window: entry.window, keys: names }
   }
 
   throw new Error('nothing on this desktop can type into that session')
+}
+
+export async function press(entry, name) {
+  const { keys: _keys, ...result } = await chord(entry, [name])
+  return { ...result, key: name }
 }
 
 /** The raw screen, which only a multiplexer can hand over. */
