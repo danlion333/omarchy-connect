@@ -72,7 +72,16 @@ fs.writeFileSync(
 const ringLog = path.join(sandbox, 'ring.log')
 fs.writeFileSync(
   path.join(fakeBin, 'paplay'),
-  ['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(ringLog)}`, ''].join('\n'),
+  [
+    '#!/bin/sh',
+    `printf '%s\\n' "$*" >> ${JSON.stringify(ringLog)}`,
+    // A player that returns instantly is the one shape this cannot be tested
+    // against: the loop hangs its next pass off the child's exit, so an
+    // instant exit would pass even if the gap and the re-spawn were both
+    // broken. The stand-in holds the sound open the way a real one does.
+    'sleep 1',
+    '',
+  ].join('\n'),
   { mode: 0o755 },
 )
 const ringFile = path.join(sandbox, 'ring.oga')
@@ -691,7 +700,9 @@ await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+155
 await new Promise((resolve) => setTimeout(resolve, 200))
 const before = ringLines().length
 await req('phone.report', { events: [{ kind: 'call', state: 'ringing', from: '+15554444' }] })
-await new Promise((resolve) => setTimeout(resolve, 1500))
+// A pass is a second of sound and 1.2s of silence, so this window holds two
+// gaps and asks for what happens after both of them.
+await new Promise((resolve) => setTimeout(resolve, 5000))
 const during = ringLines()
 check('a ringing call plays the ringtone', during.length > before, `${during.length - before} pass(es)`)
 check('and plays the file it was given', during.at(-1)?.includes(ringFile), during.at(-1) || 'nothing was played')
@@ -699,7 +710,7 @@ check('and keeps ringing rather than playing once', during.length - before > 1, 
 
 await req('phone.report', { events: [{ kind: 'call', state: 'ended', from: '+15554444' }] })
 const settled = ringLines().length
-await new Promise((resolve) => setTimeout(resolve, 1600))
+await new Promise((resolve) => setTimeout(resolve, 2600))
 check('a call that ends stops it', ringLines().length === settled, `${ringLines().length - settled} pass(es) after the call`)
 
 /* ── one conversation, one line ─────────────────────────────────────────── */

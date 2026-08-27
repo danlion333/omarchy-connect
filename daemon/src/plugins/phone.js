@@ -903,10 +903,20 @@ export default {
     })
     handsfree.on('gateway', (gateway) => {
       if (!gateway) silence()
-      // Some handsets send their own ringing tone down the audio link as soon
-      // as it opens. Two ringtones at once is worse than either, and theirs is
-      // the one that is actually in step with the call.
-      else if (gateway.audio === 'active' && ringtone.ringing) ringtone.stop()
+      // The audio link opening is not the phone taking the ring over.
+      //
+      // A handset that sends its own ringing tone does it down this transport,
+      // and deferring to it was the first instinct here — two ringtones at once
+      // is worse than either. But the transport going `active` says only that
+      // SCO is up, not that anybody can hear it: whether that stream reaches
+      // the speakers is WirePlumber's routing decision, and on a desktop that
+      // has not made the gateway its input it reaches nothing at all. Standing
+      // down on that signal traded a ring for silence — one pass of our own
+      // file, then a phone ringing in another room with nothing to show for it.
+      //
+      // So the ring is ours for as long as the phone is ringing, and it stops
+      // where every other end of a call stops it: `silence`, on answered,
+      // rejected, ended, or rung out.
       log.info(gateway ? `bluetooth: ${gateway.name || gateway.address} connected` : 'bluetooth: phone disconnected')
       bus?.emit('event', 'phone', { action: 'bluetooth', bluetooth: handsfree.summary() })
     })
