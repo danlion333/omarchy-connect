@@ -9,11 +9,12 @@ import "Model.js" as Model
 
 // Omarchy Connect, as a bar widget and a panel.
 //
-// The daemon on this machine already knows everything worth showing — which
-// phone is on the other end of the link, whether the channel is encrypted,
-// what has moved across it. This draws that, and hands back the four things
-// you actually do from the desktop side: pair, send, open the inbox, and stop
-// the daemon.
+// The daemon on this machine knows a great deal about the link, and an earlier
+// version of this panel drew all of it at once. Most of it is not something you
+// open a panel to find out. So the top of the panel answers the only question
+// that is always live — is the phone there, and what is it doing — anything
+// that has just happened gets a card of its own, and the readouts and the two
+// switches wait behind a row you can open when you actually want them.
 
 Panel {
   id: root
@@ -24,26 +25,16 @@ Panel {
   manageIpc: false
 
   property string focusSection: "header"
-  property int deviceIndex: 0
   property int actionIndex: 0
   property bool cursorActive: false
-  property int phraseIndex: 0
   property real now: Date.now()
+  // Both start shut on every open. A panel that remembered being expanded
+  // would be back to drawing everything at once within a week.
+  property bool detailsOpen: false
+  property bool settingsOpen: false
   // Letting a phone read the coding agents on this desktop is the widest door
   // this panel can open, so the switch asks first. Nothing else here does.
   property bool agentConfirmOpen: false
-
-  readonly property var activePhrases: [
-    "Bridging devices",
-    "Holding the line",
-    "Sealing frames",
-    "Counting packets",
-    "Keeping in touch",
-    "Minding the link",
-    "Trading secrets",
-    "Watching the wire"
-  ]
-  readonly property string heroPhraseText: activePhrases[phraseIndex % activePhrases.length]
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -64,23 +55,44 @@ Panel {
     return barForeground
   }
 
+  // One line under the phone's name, and the only readout the panel shows
+  // without being asked. It carries what the four rows of a stats grid used to
+  // say between them: whether the channel is encrypted, how long it has been
+  // up, and how much battery is behind it.
   readonly property string statusLine: {
-    if (!bridge.loaded) return "NOT INSTALLED"
-    if (!bridge.running) return "DAEMON STOPPED"
-    if (pairing) return "WAITING FOR A PHONE"
-    if (linked) return root.heroPhraseText
-    if (!paired) return "NO PHONE PAIRED"
-    return "PHONE OFFLINE"
+    if (!bridge.loaded) return "Not installed"
+    if (!bridge.running) return "Daemon stopped"
+    if (pairing) return "Waiting for a phone"
+    if (linked) {
+      var parts = [phone && phone.secure === false ? "Unencrypted" : "Encrypted"]
+      var up = Model.uptime(phone.since, root.now)
+      if (up !== "") parts.push(up)
+      if (phone.battery) parts.push(Model.batteryText(phone.battery))
+      return parts.join(" · ")
+    }
+    if (!paired) return "No phone paired"
+    return "Offline · last seen " + Model.since(phone ? phone.lastSeen : 0, root.now)
   }
 
-  readonly property string linkText: {
-    if (!bridge.running) return "down"
-    if (!linked) return "listening"
-    return phone && phone.secure === false ? "plaintext" : "encrypted"
-  }
+  // Every row behind *Details* is gated on having something to say. A readout
+  // whose whole content is "no" is not a readout: an Android phone on the LAN
+  // has no use for a line telling it no iPhone is paired, and a link that has
+  // moved nothing has no use for two zeroes.
+  readonly property bool showTransfers: (bridge.counters.filesIn || 0) > 0 || (bridge.counters.filesOut || 0) > 0
+  readonly property bool showNotified: (bridge.counters.notifications || 0) > 0 || (bridge.phone.missed || 0) > 0
+  // The hands-free link is the desktop's business, not the user's, right up
+  // until it is carrying something or has failed at it.
+  readonly property bool showHandsfree: !!bridge.bluetooth && (bridge.bluetooth.connected === true
+    || (!!bridge.bluetooth.link && (bridge.bluetooth.link.raising === true || !!bridge.bluetooth.link.error)))
+  // Bonded-but-idle stays, because that one *is* fixable by re-pairing.
+  readonly property bool showIos: !!bridge.ios && (bridge.ios.subscribed === true
+    || bridge.ios.paired === true || !!bridge.ios.pairing)
 
   /* ── actions ───────────────────────────────────────────────────────── */
 
+  // Three, and all three are things you came here to do. Autostart used to sit
+  // in this row and never belonged: it is a preference, not an action, and it
+  // now lives with the other switch.
   readonly property var actions: buildActions()
 
   function buildActions() {
@@ -93,9 +105,6 @@ Panel {
       : { key: "pair", label: "Pair", icon: "󰐗", tooltip: "Show a pairing QR code" }]
     if (bridge.running) list.push({ key: "send", label: "Send", icon: "󰈤", tooltip: "Pick a file to send to the phone" })
     list.push({ key: "inbox", label: "Inbox", icon: "󰉋", tooltip: "Open the folder phones drop files into" })
-    list.push(bridge.serviceEnabled
-      ? { key: "service", label: "Autostart", icon: "󰄲", tooltip: "Runs at login — click to stop that" }
-      : { key: "service", label: "Autostart", icon: "󰄱", tooltip: "Run the daemon at login" })
     return list
   }
 
@@ -120,131 +129,97 @@ Panel {
     else if (key === "unpair") bridge.unpair(bridge.device)
     else if (key === "send") bridge.sendFile()
     else if (key === "inbox") bridge.openInbox()
-    else if (key === "service") bridge.toggleAutostart()
   }
 
   /* ── cursor ────────────────────────────────────────────────────────── */
 
-  function sectionsBelow(section) {
-    if (section === "header") return bridge.devices.length > 0 ? "devices" : sectionsBelow("devices")
-    if (section === "devices") return bridge.agentsAvailable ? "agents" : "actions"
-    if (section === "agents") return "actions"
-    return ""
+  // Everything the keyboard can land on, in the order it is drawn. The two
+  // expanders are always here; what they hold only joins the list once they
+  // are open, which is the same rule the eye follows.
+  readonly property var sections: {
+    var list = ["header", "actions", "details", "settings"]
+    if (settingsOpen) {
+      if (bridge.agentsAvailable) list.push("agents")
+      list.push("autostart")
+    }
+    return list
   }
 
   function ensureCursor() {
-    if (deviceIndex >= bridge.devices.length) deviceIndex = Math.max(0, bridge.devices.length - 1)
-    if (deviceIndex < 0) deviceIndex = 0
     if (actionIndex >= actions.length) actionIndex = Math.max(0, actions.length - 1)
     if (actionIndex < 0) actionIndex = 0
-    if (focusSection === "devices" && bridge.devices.length === 0) focusSection = "actions"
-    if (focusSection === "agents" && !bridge.agentsAvailable) focusSection = "actions"
+    if (sections.indexOf(focusSection) < 0) focusSection = "actions"
   }
 
   function moveCursor(dx, dy) {
     cursorActive = true
     ensureCursor()
 
-    if (dx !== 0 && focusSection === "actions") {
-      actionIndex = Math.max(0, Math.min(actions.length - 1, actionIndex + dx))
+    if (dx !== 0) {
+      if (focusSection === "actions")
+        actionIndex = Math.max(0, Math.min(actions.length - 1, actionIndex + dx))
       return
     }
     if (dy === 0) return
 
-    if (focusSection === "header") {
-      if (dy > 0) focusSection = sectionsBelow("header")
-      return
-    }
-    if (focusSection === "devices") {
-      var next = deviceIndex + dy
-      if (next < 0) {
-        focusSection = "header"
-        if (panelFlick) panelFlick.contentY = 0
-        return
-      }
-      if (next >= bridge.devices.length) {
-        focusSection = sectionsBelow("devices")
-        return
-      }
-      deviceIndex = next
-      scrollCursorIntoView()
-      return
-    }
-    if (focusSection === "agents") {
-      if (dy > 0) focusSection = "actions"
-      else {
-        focusSection = bridge.devices.length > 0 ? "devices" : "header"
-        deviceIndex = Math.max(0, bridge.devices.length - 1)
-      }
-      return
-    }
-    if (focusSection === "actions" && dy < 0) {
-      if (bridge.agentsAvailable) {
-        focusSection = "agents"
-        return
-      }
-      focusSection = bridge.devices.length > 0 ? "devices" : "header"
-      deviceIndex = Math.max(0, bridge.devices.length - 1)
-    }
+    var index = sections.indexOf(focusSection) + dy
+    if (index < 0 || index >= sections.length) return
+    focusSection = sections[index]
+    if (focusSection === "header" && panelFlick) panelFlick.contentY = 0
+    else if (focusSection !== "actions") scrollToBottom()
   }
 
   function activateCursor() {
     ensureCursor()
     if (focusSection === "header") bridge.toggleDaemon()
-    // The row carries one action now — the ✕ that frees the desktop for a
-    // different phone — so enter and delete land on the same place.
-    else if (focusSection === "devices") deleteSelected()
+    else if (focusSection === "actions") runAction(actions[actionIndex].key)
+    else if (focusSection === "details") toggleDetails()
+    else if (focusSection === "settings") toggleSettings()
     // Enter on the agent switch opens the question rather than answering it,
     // which is why the cursor is allowed here at all.
     else if (focusSection === "agents") requestAgents(!bridge.agentsEnabled)
-    else if (focusSection === "actions") runAction(actions[actionIndex].key)
+    else if (focusSection === "autostart") bridge.toggleAutostart()
   }
 
-  function deleteSelected() {
+  function toggleDetails() {
+    detailsOpen = !detailsOpen
+    if (detailsOpen) scrollToBottom()
+  }
+
+  function toggleSettings() {
+    settingsOpen = !settingsOpen
+    // Folding the settings away takes the two switches inside them out of the
+    // cursor's reach, so the cursor has to come out with them.
     ensureCursor()
-    if (focusSection !== "devices") return
-    if (deviceIndex < bridge.devices.length) bridge.unpair(bridge.devices[deviceIndex])
+    if (settingsOpen) scrollToBottom()
   }
 
-  function setHeaderCursor() {
-    cursorActive = true
-    focusSection = "header"
-    if (panelFlick) panelFlick.contentY = 0
+  // The two expanders are the last things in the column, so anything they grow
+  // appears at the bottom and that is where the view has to be.
+  function scrollToBottom() {
+    if (!panelFlick) return
+    Qt.callLater(function () {
+      if (!panelFlick) return
+      panelFlick.contentY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
+    })
   }
 
-  function setDeviceCursor(index) {
-    cursorActive = true
-    focusSection = "devices"
-    deviceIndex = index
-    scrollCursorIntoView()
+  // A desktop pairs one phone, so there is nothing to select: `x` means that
+  // phone or it means nothing.
+  function deleteSelected() {
+    if (bridge.paired) bridge.unpair(bridge.device)
   }
 
-  function setAgentsCursor() {
+  function setCursor(section) {
     cursorActive = true
-    focusSection = "agents"
+    focusSection = section
+    if (section === "header" && panelFlick) panelFlick.contentY = 0
   }
 
   function setActionCursor(index) {
     cursorActive = true
     focusSection = "actions"
     actionIndex = index
-  }
-
-  function scrollCursorIntoView() {
-    if (focusSection !== "devices" || !panelFlick || !deviceColumn) return
-    if (deviceIndex < 0 || deviceIndex >= deviceColumn.children.length) return
-    var item = deviceColumn.children[deviceIndex]
-    Qt.callLater(function () {
-      if (!item || !panelFlick) return
-      var margin = Style.space(6)
-      var top = item.mapToItem(panelFlick.contentItem, 0, 0).y
-      var bottom = top + item.height
-      var viewTop = panelFlick.contentY
-      var maxY = Math.max(0, panelFlick.contentHeight - panelFlick.height)
-      if (top < viewTop + margin) panelFlick.contentY = Math.max(0, top - margin)
-      else if (bottom > viewTop + panelFlick.height - margin)
-        panelFlick.contentY = Math.min(maxY, bottom + margin - panelFlick.height)
-    })
   }
 
   /* ── lifecycle ─────────────────────────────────────────────────────── */
@@ -257,6 +232,8 @@ Panel {
 
   onOpenedChanged: {
     agentConfirmOpen = false
+    detailsOpen = false
+    settingsOpen = false
     if (!opened) return
     cursorActive = false
     focusSection = "header"
@@ -372,6 +349,11 @@ Panel {
         else if (key === "s") bridge.sendFile()
         else if (key === "i") bridge.openInbox()
         else if (key === "r") bridge.refresh()
+        // The two expanders answer to the letters they are named after, so the
+        // readouts are one keystroke away from a keyboard user rather than
+        // permanently on screen for everybody.
+        else if (key === "e") root.toggleDetails()
+        else if (key === "c") root.toggleSettings()
         // Only while there is something to act on — a stray `a` on an idle
         // panel should do nothing rather than dial into the void.
         else if (key === "a" && bridge.ringing) bridge.answerCall()
@@ -406,7 +388,7 @@ Panel {
             // Exposed for the hero's trailingControl, whose `root` resolves to
             // PanelHero rather than this Panel.
             readonly property bool ringVisible: root.cursorActive && root.focusSection === "header"
-            function focusHero() { root.setHeaderCursor() }
+            function focusHero() { root.setCursor("header") }
 
             PanelHero {
               id: hero
@@ -526,85 +508,6 @@ Panel {
                 Layout.alignment: Qt.AlignVCenter
                 onClicked: bridge.pair()
               }
-            }
-          }
-
-          /* ── the numbers ────────────────────────────────────────── */
-
-          GridLayout {
-            visible: bridge.loaded
-            width: parent.width
-            columns: 4
-            columnSpacing: Style.space(20)
-            rowSpacing: Style.spacing.labelGap
-
-            InfoLabel { text: "Link" }
-            DetailValue {
-              text: root.linkText
-              color: bridge.running && root.phone && root.phone.secure === false ? root.urgent : root.foreground
-            }
-            InfoLabel { text: "Notified" }
-            DetailValue { text: String(bridge.counters.notifications || 0) }
-
-            InfoLabel { text: "Battery" }
-            DetailValue {
-              text: root.phone && root.phone.battery
-                ? Model.batteryGlyph(root.phone.battery) + "  " + Model.batteryText(root.phone.battery)
-                : "--"
-            }
-            InfoLabel { text: root.linked ? "Connected" : "Last seen" }
-            DetailValue {
-              text: root.linked
-                ? Model.uptime(root.phone.since, root.now)
-                : (root.phone ? Model.since(root.phone.lastSeen, root.now) : "--")
-            }
-
-            InfoLabel { text: "Received" }
-            DetailValue { text: String(bridge.counters.filesIn || 0) + " files" }
-            InfoLabel { text: "Sent" }
-            DetailValue { text: String(bridge.counters.filesOut || 0) + " files" }
-
-            InfoLabel { text: "Transport" }
-            DetailValue {
-              text: bridge.tls ? "tls · pinned" : "plain"
-              color: bridge.tls ? root.foreground : root.dim
-            }
-            InfoLabel { text: "Missed" }
-            DetailValue {
-              text: String(bridge.phone.missed || 0)
-              color: (bridge.phone.missed || 0) > 0 ? root.urgent : root.foreground
-            }
-
-            InfoLabel { text: "Bluetooth" }
-            DetailValue {
-              Layout.columnSpan: 3
-              text: Model.handsfreeText(bridge.bluetooth)
-              color: bridge.bluetooth && bridge.bluetooth.connected === true ? root.foreground : root.dim
-            }
-
-            InfoLabel { text: "iPhone" }
-            DetailValue {
-              Layout.columnSpan: 3
-              text: Model.iosText(bridge.ios)
-              color: bridge.ios && bridge.ios.subscribed === true ? root.foreground : root.dim
-            }
-
-            // These two are the only values too long for a quarter of the card,
-            // so they take a whole row each rather than being elided into
-            // uselessness — a truncated fingerprint verifies nothing.
-            InfoLabel { text: "Address" }
-            DetailValue {
-              Layout.columnSpan: 3
-              text: bridge.address || "--"
-              copyable: !!bridge.address
-              tooltipText: "Copy the address"
-            }
-            InfoLabel { text: "Fingerprint" }
-            DetailValue {
-              Layout.columnSpan: 3
-              text: bridge.status ? String(bridge.status.fingerprint) : "--"
-              copyable: !!bridge.status
-              tooltipText: "Copy the fingerprint"
             }
           }
 
@@ -737,68 +640,19 @@ Panel {
             }
           }
 
-          /* ── the paired phone ───────────────────────────────────── */
+          /* ── coding agents at work ──────────────────────────────── */
 
+          // Only the sessions, and only while there are any. The switch that
+          // decides whether the phone may see them is a preference and sits
+          // with the other one; this is the part that changes by the minute.
           PanelSeparator {
-            visible: root.paired
+            visible: agentList.visible
             foreground: root.foreground
           }
 
           Column {
-            visible: root.paired
-            width: parent.width
-            spacing: Style.space(10)
-
-            PanelSectionHeader {
-              text: "PAIRED PHONE"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
-
-            // Still a Repeater over a list, because that is what the status
-            // file publishes — it just never holds more than one phone.
-            Column {
-              id: deviceColumn
-              width: parent.width
-              spacing: Style.space(6)
-
-              Repeater {
-                model: bridge.devices
-
-                DeviceRow {
-                  required property var modelData
-                  required property int index
-                  width: deviceColumn.width
-                  device: modelData
-                  rowIndex: index
-                }
-              }
-            }
-
-            Text {
-              width: parent.width
-              text: "One phone at a time — unpair to swap it for another."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
-          }
-
-          /* ── coding agents ──────────────────────────────────────── */
-
-          // The desktop half of the agent feature: the switch that decides
-          // whether a paired phone may read — and answer — the coding agent
-          // already open here, and once it is on, what that agent is doing. The card
-          // stays out of the way on a machine with no agent installed, because
-          // a switch for a thing that does not exist is only a question.
-          PanelSeparator {
-            visible: bridge.agentsAvailable
-            foreground: root.foreground
-          }
-
-          Column {
-            visible: bridge.agentsAvailable
+            id: agentList
+            visible: bridge.agentsEnabled && bridge.agentSessions.length > 0
             width: parent.width
             spacing: Style.space(8)
 
@@ -808,67 +662,7 @@ Panel {
               fontFamily: root.fontFamily
             }
 
-            Toggle {
-              width: parent.width
-              label: bridge.agentsEnabled ? "The phone can read and answer them" : "Let the phone read and answer them"
-              description: Model.agentsText(bridge.agents, bridge.running)
-              checked: bridge.agentsEnabled
-              hasCursor: root.cursorActive && root.focusSection === "agents"
-              onHovered: function (on) { if (on) root.setAgentsCursor() }
-              foreground: root.foreground
-              // An agent that has stopped to ask you something is the one
-              // thing on this card worth interrupting for.
-              accent: bridge.agentsWaiting > 0 ? root.urgent : root.foreground
-              fontFamily: root.fontFamily
-              onClicked: root.requestAgents(!bridge.agentsEnabled)
-            }
-
-            // Reading works without hooks; knowing that an agent is *stuck*
-            // does not, because a permission prompt is drawn on a terminal and
-            // never written to a transcript. The hooks live in the user's own
-            // Claude settings, so this stays a button rather than something
-            // turning the switch on quietly did.
-            CursorSurface {
-              visible: bridge.agentsEnabled && !bridge.agentHooks
-              width: parent.width
-              bordered: true
-              foreground: root.foreground
-              implicitHeight: hooksRow.implicitHeight + Style.spacing.rowPaddingX
-
-              RowLayout {
-                id: hooksRow
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                anchors.leftMargin: Style.space(10)
-                anchors.rightMargin: Style.space(10)
-                spacing: Style.space(10)
-
-                Text {
-                  Layout.fillWidth: true
-                  text: "No hooks yet — the desktop can see an agent working, but not that it has stopped to ask you something."
-                  color: root.dim
-                  font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
-                  wrapMode: Text.WordWrap
-                }
-
-                Button {
-                  text: "Install"
-                  iconText: "󰐗"
-                  tooltipText: "Add the lifecycle hooks to ~/.claude/settings.json"
-                  bordered: true
-                  foreground: root.foreground
-                  accent: root.foreground
-                  fontFamily: root.fontFamily
-                  Layout.alignment: Qt.AlignVCenter
-                  onClicked: bridge.installAgentHooks()
-                }
-              }
-            }
-
             Column {
-              visible: bridge.agentsEnabled && bridge.agentSessions.length > 0
               width: parent.width
               spacing: Style.space(4)
 
@@ -913,22 +707,12 @@ Panel {
                 }
               }
             }
-
-            Text {
-              visible: bridge.agentsEnabled
-              width: parent.width
-              text: "Reading only — the phone cannot answer an agent yet."
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-              wrapMode: Text.WordWrap
-            }
           }
 
-          /* ── recent transfers ───────────────────────────────────── */
+          /* ── from the phone ─────────────────────────────────────── */
 
           PanelSeparator {
-            visible: bridge.transfers.length > 0
+            visible: phoneList.visible
             foreground: root.foreground
           }
 
@@ -937,6 +721,7 @@ Panel {
           // energy — and none of them is guaranteed, so the section stays out
           // of the way entirely until something arrives.
           Column {
+            id: phoneList
             visible: bridge.phoneRecent.length > 0
             width: parent.width
             spacing: Style.space(8)
@@ -992,7 +777,15 @@ Panel {
             }
           }
 
+          /* ── recent transfers ───────────────────────────────────── */
+
+          PanelSeparator {
+            visible: transferList.visible
+            foreground: root.foreground
+          }
+
           Column {
+            id: transferList
             visible: bridge.transfers.length > 0
             width: parent.width
             spacing: Style.space(8)
@@ -1052,49 +845,225 @@ Panel {
 
           PanelSeparator { foreground: root.foreground }
 
-          Column {
+          Row {
+            id: actionRow
             width: parent.width
-            spacing: Style.space(10)
+            spacing: Style.space(6)
 
-            PanelSectionHeader {
-              text: "ACTIONS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
-            }
+            readonly property int count: Math.max(1, root.actions.length)
+            readonly property real cellWidth: (width - spacing * (count - 1)) / count
 
-            Row {
-              id: actionRow
-              width: parent.width
-              spacing: Style.space(6)
+            Repeater {
+              model: root.actions
 
-              readonly property int count: Math.max(1, root.actions.length)
-              readonly property real cellWidth: (width - spacing * (count - 1)) / count
+              delegate: Item {
+                required property var modelData
+                required property int index
+                width: actionRow.cellWidth
+                height: actionPill.implicitHeight
 
-              Repeater {
-                model: root.actions
-
-                delegate: Item {
-                  required property var modelData
-                  required property int index
-                  width: actionRow.cellWidth
-                  height: actionPill.implicitHeight
-
-                  Button {
-                    id: actionPill
-                    width: parent.width
-                    text: modelData.label
-                    iconText: modelData.icon
-                    tooltipText: modelData.tooltip
-                    bordered: true
-                    hasCursor: root.cursorActive && root.focusSection === "actions" && root.actionIndex === index
-                    foreground: root.foreground
-                    accent: root.foreground
-                    fontFamily: root.fontFamily
-                    onHovered: function (on) { if (on) root.setActionCursor(index) }
-                    onClicked: root.runAction(modelData.key)
-                  }
+                Button {
+                  id: actionPill
+                  width: parent.width
+                  text: modelData.label
+                  iconText: modelData.icon
+                  tooltipText: modelData.tooltip
+                  bordered: true
+                  hasCursor: root.cursorActive && root.focusSection === "actions" && root.actionIndex === index
+                  foreground: root.foreground
+                  accent: root.foreground
+                  fontFamily: root.fontFamily
+                  onHovered: function (on) { if (on) root.setActionCursor(index) }
+                  onClicked: root.runAction(modelData.key)
                 }
               }
+            }
+          }
+
+          /* ── details, folded away ───────────────────────────────── */
+
+          // Where the daemon can be reached and how to recognise it, plus
+          // whichever counters and Bluetooth links have anything to report.
+          // One row until you want them.
+          Expander {
+            width: parent.width
+            visible: bridge.loaded
+            label: "Details"
+            section: "details"
+            expanded: root.detailsOpen
+            onToggled: root.toggleDetails()
+          }
+
+          GridLayout {
+            visible: bridge.loaded && root.detailsOpen
+            width: parent.width
+            columns: 4
+            columnSpacing: Style.space(20)
+            rowSpacing: Style.spacing.labelGap
+
+            // The transport is the one thing here that is true whether or not a
+            // phone is on the other end, so it is the one row with no gate.
+            InfoLabel { text: "Transport" }
+            DetailValue {
+              Layout.columnSpan: 3
+              text: bridge.tls ? "tls · pinned" : "plain"
+              color: bridge.tls ? root.foreground : root.dim
+            }
+
+            InfoLabel { text: "Files"; visible: root.showTransfers }
+            DetailValue {
+              Layout.columnSpan: 3
+              visible: root.showTransfers
+              text: String(bridge.counters.filesIn || 0) + " in · " + String(bridge.counters.filesOut || 0) + " out"
+            }
+
+            InfoLabel { text: "Notified"; visible: root.showNotified }
+            DetailValue {
+              Layout.columnSpan: 3
+              visible: root.showNotified
+              // Missed calls are the half of this row worth a colour, so they
+              // only appear once there are any.
+              text: {
+                var parts = [String(bridge.counters.notifications || 0) + " mirrored"]
+                if ((bridge.phone.missed || 0) > 0) parts.push(String(bridge.phone.missed) + " missed")
+                return parts.join(" · ")
+              }
+              color: (bridge.phone.missed || 0) > 0 ? root.urgent : root.foreground
+            }
+
+            InfoLabel { text: "Bluetooth"; visible: root.showHandsfree }
+            DetailValue {
+              Layout.columnSpan: 3
+              visible: root.showHandsfree
+              text: Model.handsfreeText(bridge.bluetooth)
+              color: bridge.bluetooth && bridge.bluetooth.connected === true ? root.foreground : root.dim
+            }
+
+            InfoLabel { text: "iPhone"; visible: root.showIos }
+            DetailValue {
+              Layout.columnSpan: 3
+              visible: root.showIos
+              text: Model.iosText(bridge.ios)
+              color: bridge.ios && bridge.ios.subscribed === true ? root.foreground : root.dim
+            }
+
+            // These two are the only values too long for a quarter of the card,
+            // so they take a whole row each rather than being elided into
+            // uselessness — a truncated fingerprint verifies nothing.
+            InfoLabel { text: "Address" }
+            DetailValue {
+              Layout.columnSpan: 3
+              text: bridge.address || "--"
+              copyable: !!bridge.address
+              tooltipText: "Copy the address"
+            }
+            InfoLabel { text: "Fingerprint" }
+            DetailValue {
+              Layout.columnSpan: 3
+              text: bridge.status ? String(bridge.status.fingerprint) : "--"
+              copyable: !!bridge.status
+              tooltipText: "Copy the fingerprint"
+            }
+          }
+
+          /* ── the two switches, folded away ──────────────────────── */
+
+          // Both of these are decided once and then left alone for months, so
+          // neither earns a permanent place on the panel. They are still here,
+          // one row down, because they are decisions that belong on the desktop
+          // rather than in the app.
+          Expander {
+            width: parent.width
+            label: "Settings"
+            section: "settings"
+            expanded: root.settingsOpen
+            onToggled: root.toggleSettings()
+          }
+
+          Column {
+            visible: root.settingsOpen
+            width: parent.width
+            spacing: Style.space(8)
+
+            // The card stays out of the way on a machine with no agent
+            // installed, because a switch for a thing that does not exist is
+            // only a question.
+            Toggle {
+              visible: bridge.agentsAvailable
+              width: parent.width
+              label: bridge.agentsEnabled ? "The phone can read and answer agents" : "Let the phone read and answer agents"
+              description: Model.agentsText(bridge.agents, bridge.running)
+              checked: bridge.agentsEnabled
+              hasCursor: root.cursorActive && root.focusSection === "agents"
+              onHovered: function (on) { if (on) root.setCursor("agents") }
+              foreground: root.foreground
+              // An agent that has stopped to ask you something is the one
+              // thing on this card worth interrupting for.
+              accent: bridge.agentsWaiting > 0 ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestAgents(!bridge.agentsEnabled)
+            }
+
+            // Reading works without hooks; knowing that an agent is *stuck*
+            // does not, because a permission prompt is drawn on a terminal and
+            // never written to a transcript. The hooks live in the user's own
+            // Claude settings, so this stays a button rather than something
+            // turning the switch on quietly did.
+            CursorSurface {
+              visible: bridge.agentsAvailable && bridge.agentsEnabled && !bridge.agentHooks
+              width: parent.width
+              bordered: true
+              foreground: root.foreground
+              implicitHeight: hooksRow.implicitHeight + Style.spacing.rowPaddingX
+
+              RowLayout {
+                id: hooksRow
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                anchors.leftMargin: Style.space(10)
+                anchors.rightMargin: Style.space(10)
+                spacing: Style.space(10)
+
+                Text {
+                  Layout.fillWidth: true
+                  text: "No hooks yet — the desktop can see an agent working, but not that it has stopped to ask you something."
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  wrapMode: Text.WordWrap
+                }
+
+                Button {
+                  text: "Install"
+                  iconText: "󰐗"
+                  tooltipText: "Add the lifecycle hooks to ~/.claude/settings.json"
+                  bordered: true
+                  foreground: root.foreground
+                  accent: root.foreground
+                  fontFamily: root.fontFamily
+                  Layout.alignment: Qt.AlignVCenter
+                  onClicked: bridge.installAgentHooks()
+                }
+              }
+            }
+
+            // Starting and stopping the daemon *right now* is the hero's
+            // switch. This is the separate decision of whether it comes back
+            // on its own tomorrow.
+            Toggle {
+              width: parent.width
+              label: "Start at login"
+              description: bridge.serviceInstalled
+                ? (bridge.serviceEnabled ? "The daemon comes up with the session" : "The daemon only runs when you start it")
+                : "The service is not installed yet"
+              checked: bridge.serviceEnabled
+              hasCursor: root.cursorActive && root.focusSection === "autostart"
+              onHovered: function (on) { if (on) root.setCursor("autostart") }
+              foreground: root.foreground
+              accent: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: bridge.toggleAutostart()
             }
           }
 
@@ -1132,51 +1101,32 @@ Panel {
     }
   }
 
-  /* ── the hero's rotating phrase ──────────────────────────────────── */
-
-  Timer {
-    interval: 2800
-    running: root.opened && root.linked
-    repeat: true
-    onTriggered: phraseSwap.restart()
-  }
-
-  SequentialAnimation {
-    id: phraseSwap
-    PropertyAnimation {
-      target: hero; property: "metaOpacity"
-      to: 0.0; duration: 180; easing.type: Easing.OutQuad
-    }
-    ScriptAction {
-      script: root.phraseIndex = (root.phraseIndex + 1) % root.activePhrases.length
-    }
-    PropertyAnimation {
-      target: hero; property: "metaOpacity"
-      to: 1.0; duration: 260; easing.type: Easing.InQuad
-    }
-  }
-
   /* ── row components ──────────────────────────────────────────────── */
 
-  component DeviceRow: CursorSurface {
-    id: deviceRow
-    property var device: null
-    property int rowIndex: 0
-    readonly property bool isOnline: !!device && device.online === true
+  // One line that stands in for a section until you ask for it: a chevron, a
+  // word, and the whole row as a click target.
+  component Expander: CursorSurface {
+    id: expander
+    property string label: ""
+    property string section: ""
+    property bool expanded: false
 
-    hasCursor: root.cursorActive && root.focusSection === "devices" && root.deviceIndex === rowIndex
+    signal toggled()
+
+    hasCursor: root.cursorActive && root.focusSection === expander.section
     foreground: root.foreground
-    implicitHeight: deviceContent.implicitHeight + Style.spacing.rowPaddingX
+    implicitHeight: expanderRow.implicitHeight + Style.spacing.rowPaddingX
 
-    // Hover moves the cursor here; the ✕ on the right is the only thing this
-    // row does, so the body of it is not a click target.
     MouseArea {
       anchors.fill: parent
       hoverEnabled: true
-      onEntered: root.setDeviceCursor(deviceRow.rowIndex)
+      cursorShape: Qt.PointingHandCursor
+      onEntered: root.setCursor(expander.section)
+      onClicked: expander.toggled()
     }
 
-    RowLayout {
+    Row {
+      id: expanderRow
       anchors.left: parent.left
       anchors.right: parent.right
       anchors.verticalCenter: parent.verticalCenter
@@ -1185,68 +1135,19 @@ Panel {
       spacing: Style.space(8)
 
       Text {
-        text: Model.deviceGlyph(deviceRow.device ? deviceRow.device.platform : "")
-        color: deviceRow.isOnline ? root.foreground : root.dim
+        text: expander.expanded ? "󰅀" : "󰅂"
+        color: root.dim
         font.family: root.fontFamily
-        font.pixelSize: Style.font.icon
-        Layout.alignment: Qt.AlignVCenter
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
       }
 
-      ColumnLayout {
-        id: deviceContent
-        Layout.fillWidth: true
-        spacing: Style.space(1)
-
-        Text {
-          Layout.fillWidth: true
-          text: deviceRow.device ? String(deviceRow.device.name) : ""
-          color: root.foreground
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.body
-          elide: Text.ElideRight
-        }
-
-        Text {
-          Layout.fillWidth: true
-          text: {
-            if (!deviceRow.device) return ""
-            var parts = []
-            var platform = Model.platformLabel(deviceRow.device.platform)
-            if (platform !== "") parts.push(platform)
-            if (deviceRow.isOnline) {
-              parts.push(deviceRow.device.address ? String(deviceRow.device.address).replace("::ffff:", "") : "connected")
-              if (deviceRow.device.battery) parts.push(Model.batteryText(deviceRow.device.battery))
-            } else {
-              parts.push(Model.since(deviceRow.device.lastSeen, root.now))
-            }
-            return parts.join(" · ")
-          }
-          color: root.dim
-          font.family: root.fontFamily
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
-        }
-      }
-
-      // A filled dot for a live link, a hollow one for a phone that is merely
-      // remembered. It reads at a glance and costs no width.
       Text {
-        text: deviceRow.isOnline ? "●" : "○"
-        color: deviceRow.isOnline ? root.foreground : root.dim
+        text: expander.label
+        color: root.foreground
         font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        Layout.alignment: Qt.AlignVCenter
-      }
-
-      PanelActionButton {
-        iconText: "󰅖"
-        tooltipText: "Unpair " + (deviceRow.device ? deviceRow.device.name : "")
-        foreground: root.foreground
-        hoverColor: root.urgent
-        fontFamily: root.fontFamily
-        enabled: !bridge.busy
-        Layout.alignment: Qt.AlignVCenter
-        onClicked: bridge.unpair(deviceRow.device)
+        font.pixelSize: Style.font.bodySmall
+        anchors.verticalCenter: parent.verticalCenter
       }
     }
   }

@@ -21,24 +21,20 @@ replacing an existing copy.
 
 ## Panel
 
-- **Hero** — the connected phone's name and platform, the state of the link,
-  and a switch that starts and stops the daemon. With no phone connected the
-  hero falls back to the desktop's own name.
+The panel is built around one rule: the top of it answers the question you
+opened it to ask, anything that has just happened gets a card of its own, and
+everything else waits behind a row you can open. What follows is in the order
+it is drawn.
+
+- **Hero** — the connected phone's name and platform, one line of state, and a
+  switch that starts and stops the daemon. That line is the panel's only
+  unconditional readout, and it carries what a grid of a dozen cells used to
+  say between them: `Encrypted · 2h 14m · 63%` while the link is up,
+  `Offline · last seen 3m ago` once it drops, and the reason otherwise —
+  daemon stopped, no phone paired, waiting for a phone. With no phone connected
+  the hero falls back to the desktop's own name.
 - **Pairing card** — only while a code is live: the six digits, a countdown,
   and a button that reopens the QR code.
-- **The numbers** — link state, notifications mirrored, the phone's battery,
-  how long the link has been up (or when the phone was last seen), files in and
-  out, whether the transport is TLS or plain, missed calls, whether a handset is
-  on Bluetooth, the daemon's address, and the desktop's identity fingerprint.
-  Address and fingerprint copy on click. Missed calls turn urgent when there are
-  any; `plain` sits in the dim colour, because it is the state of the transport
-  rather than a fault. Bluetooth reads *unsupported* when this machine's
-  PipeWire is older than 1.4 and *not connected* when nothing is paired — a
-  distinction worth making, because only one of them is fixable by pairing.
-  The **iPhone** row beside it is the other Bluetooth link — the low-energy one
-  an iPhone mirrors its notifications over — and it reads *not paired*,
-  *idle* (bonded, but the phone declined to share notifications) or the
-  handset's name while it is mirroring.
 - **Call card** — the one card that is a remote control rather than a readout.
   It appears while a call is live, urgent while it is ringing, with **Answer**
   and **Decline**. Any road: hands-free is preferred because it is the link
@@ -52,34 +48,63 @@ replacing an existing copy.
 - **Firewall card** — appears only when the daemon reports that its port is
   closed, and carries the exact `ufw` command. The panel never runs it;
   opening a port is the user's call.
-- **Paired phone** — one row, filled while the link is live, with an unpair
-  action. A desktop pairs one phone at a time, and the row says so.
-- **Coding agents** — the one card that changes what the phone is allowed to
-  see. A switch decides whether a paired phone may read the coding agent open
-  on this desktop; under it, whatever is running, with an agent that has
-  stopped to ask you something in the urgent colour, and the line that says
-  reading is all this does so far. Turning it *on* asks first, naming what the
-  phone will be able to see — source, commands, the output of those commands —
-  because that is a wider door than anything else on this panel and one click
-  is not enough thought for it. Turning it off is immediate. When the hooks are
-  missing a row says what that costs — the desktop can see an agent working but
-  not that it is stuck — and offers to install them. The whole card stays
-  hidden on a machine with no coding agent installed, where the switch would
-  only be a question. It follows the daemon's own gate: reading is off until
-  someone here turns it on.
+- **Coding agents** — whatever is running, with an agent that has stopped to
+  ask you something in the urgent colour. Only the sessions: the switch that
+  decides whether the phone may see them is a preference and lives under
+  *Settings*. Hidden until reading is on and something is actually running.
 - **From the phone** — the last few mirrored messages, calls and app
   notifications, missed calls in the urgent colour. Three sources feed one
   list: an Android build over the LAN, the hands-free link, and an iPhone's own
   notifications over low energy. Hidden entirely until something arrives, which
   in Expo Go with no Bluetooth paired is never.
 - **Recent transfers** — the last few files across the link, either direction.
-- **Actions** — Pair *or* Unpair, then Send, Inbox, and Autostart. The first
-  slot is the way in while the desktop is free and the way out once it is
-  taken, never both: offering Pair next to a phone that is already paired
-  would be a button whose only outcome is a refusal. Autostart is a checkbox, not
-  a button: it shows whether the daemon runs at login and flips it. Starting
-  and stopping the daemon *right now* is the hero's switch, which is a separate
-  decision.
+- **Actions** — Pair *or* Unpair, then Send and Inbox. Three, and all three are
+  things you came here to do. The first slot is the way in while the desktop is
+  free and the way out once it is taken, never both: offering Pair next to a
+  phone that is already paired would be a button whose only outcome is a
+  refusal.
+- **Details** — one collapsed row, and behind it where the daemon can be
+  reached and how to recognise it: the transport, the address, the desktop's
+  identity fingerprint. Address and fingerprint copy on click; `plain` sits in
+  the dim colour, because it is the state of the transport rather than a fault.
+  None of this changes between one week and the next, which is why none of it
+  is on screen by default.
+
+  Every other row here is gated on having something to say, because a readout
+  whose whole content is *no* is not a readout. **Files** (`3 in · 1 out`) and
+  **Notified** (`12 mirrored`, plus `2 missed` in the urgent colour once there
+  are any) appear once the counters leave zero. **Bluetooth** appears while the
+  hands-free link is carrying something or has failed at it, and stays folded
+  away the rest of the time — the desktop holds that link open on its own
+  behalf, and *not connected* is its resting state rather than news. **iPhone**
+  is the other Bluetooth link, the low-energy one an iPhone mirrors its
+  notifications over, and it appears only for a handset that is bonded: the
+  name while it is mirroring, *idle* when it is bonded but declining to share.
+  A desktop paired to an Android phone never draws either row, because neither
+  would be telling it anything about the phone it actually has.
+- **Settings** — the other collapsed row, holding the two switches that are
+  decided once and then left alone for months.
+  - *Let the phone read and answer agents* — the one control on this panel that
+    changes what the phone is allowed to see. Turning it **on** asks first,
+    naming what the phone will be able to see — source, commands, the output of
+    those commands — because that is a wider door than anything else here and
+    one click is not enough thought for it. Turning it off is immediate. When
+    the hooks are missing a row says what that costs — the desktop can see an
+    agent working but not that it is stuck — and offers to install them. The
+    switch stays hidden on a machine with no coding agent installed, where it
+    would only be a question. It follows the daemon's own gate: reading is off
+    until someone here turns it on.
+  - *Start at login* — whether the daemon comes up with the session. Starting
+    and stopping it *right now* is the hero's switch, which is a separate
+    decision and stays where you can reach it without opening anything.
+
+Both sections start shut on every open. A panel that remembered being expanded
+would be back to drawing everything at once within a week.
+
+There is no **Paired phone** row any more. It said the phone's name, platform
+and state — which is the hero, three centimetres above it — and carried an
+unpair button that is also the first slot of the action row. Its address moved
+into *Details*, and nothing else on it was ever news.
 
 ## Data
 
@@ -126,22 +151,27 @@ that says what did.
 
 ## Keyboard
 
-`j`/`k` move, `h`/`l` walk the action row, Enter activates, `x` unpairs the
-selected phone, `p` pairs, `s` sends, `i` opens the inbox, `r` refreshes, Tab
-moves to the neighbouring bar panel, Esc closes. On the phone row Enter does
-what `x` does — unpairing is the only thing that row is for. `p` with a phone
-already paired says which one is in the way rather than acting: dropping a
-pairing is not something one unmodified keystroke should be able to do.
+`j`/`k` move down and up the panel, `h`/`l` walk the action row, Enter
+activates, `x` unpairs the phone, `p` pairs, `s` sends, `i` opens the inbox,
+`r` refreshes, Tab moves to the neighbouring bar panel, Esc closes. `p` with a
+phone already paired says which one is in the way rather than acting: dropping
+a pairing is not something one unmodified keystroke should be able to do.
+
+`e` opens and shuts **Details**, `c` does the same for **Settings** — the two
+folded sections are one keystroke away for a keyboard user rather than
+permanently on screen for everybody. `j` walks into whichever of them is open
+and past whichever is not, which is the same rule the eye follows.
 
 `a` answers a ringing call and `d` declines it — or hangs up one already in
 progress. Both do nothing when there is no call, so a mistyped key on an idle
 panel is harmless.
 
-The agent switch has no key of its own, deliberately: every letter on this panel
-is one keystroke away from something, and widening what leaves this machine is
-not a thing to hand to a mistyped key. While its question is on screen it owns
-the keyboard — `h`/`l` move between the answers, Enter takes the highlighted
-one, Esc says no — and the panel behind it stays put.
+The agent switch has no letter of its own, deliberately: every letter on this
+panel is one keystroke away from something, and widening what leaves this
+machine is not a thing to hand to a mistyped key. It is reached by opening
+Settings and walking to it. While its question is on screen it owns the
+keyboard — `h`/`l` move between the answers, Enter takes the highlighted one,
+Esc says no — and the panel behind it stays put.
 
 ## IPC
 

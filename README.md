@@ -38,7 +38,7 @@ the desktop and the app repaints in the same palette.
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, and get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
-| **Desktop client** | An Omarchy bar widget and panel: whether the phone is linked, its battery, recent transfers, the coding agents it may read, and one click each to pair, send a file, or open the inbox. |
+| **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
 
 ## Install the daemon
 
@@ -113,14 +113,26 @@ omarchy-connect panel install
 
 That copies `shell/` into place, validates the manifest the way the shell
 would, rescans, and drops the widget on the right of the bar. Click the phone
-icon (or `omarchy-shell omarchy-connect toggle`) for the panel: link state, the
-phone's battery, how long it has been connected, files in and out, the address
-and identity fingerprint, the paired phone with an unpair button, recent
-transfers, and buttons for send / inbox. The first button is Pair or Unpair
-depending on whether the desktop is free — one phone at a time means the way in
-and the way out are never both on offer. A live pairing code appears at the top
-with its countdown; a closed firewall port appears with the exact `ufw`
-command and nothing that runs it for you.
+icon (or `omarchy-shell omarchy-connect toggle`) for the panel.
+
+What it draws without being asked is short on purpose: the phone's name, one
+line saying whether the link is encrypted, how long it has been up and what
+battery is behind it — and then only things that have actually happened. A live
+pairing code with its countdown. A ringing call with Answer and Decline. A
+closed firewall port with the exact `ufw` command and nothing that runs it for
+you. A coding agent that has stopped to ask you something. Messages and files
+that just arrived. Then three buttons: Pair *or* Unpair depending on whether
+the desktop is free — one phone at a time means the way in and the way out are
+never both on offer — then Send and Inbox.
+
+Everything else sits behind two collapsed rows. **Details** holds the
+transport, the address and the identity fingerprint, plus whichever counters
+and Bluetooth links have anything to report — a desktop paired to an Android
+phone is not told that no iPhone is paired, and a link that has moved no files
+is not shown two zeroes; **Settings** holds the two switches that get decided
+once a year —
+whether the phone may read the coding agents here, and whether the daemon comes
+up at login. Both start shut every time the panel opens.
 
 The panel never talks to the daemon over the network. The daemon publishes one
 file — `~/.local/state/omarchy-connect/status.json` — and rewrites it, whole
@@ -403,8 +415,9 @@ omarchy-connect agent run -- claude   # start one the phone can type into
 omarchy-connect agent status
 ```
 
-The same switch is on the desktop panel, under **Coding agents** — with the
-sessions, which of them is waiting, and a button for the hooks. It asks before
+The same switch is on the desktop panel, under **Settings** — with a button for
+the hooks beside it, and the sessions themselves, including which of them is
+waiting, on the panel proper. It asks before
 it turns on, naming what the phone is about to be able to see, and it lands
 without restarting anything: the daemon writes the config and starts watching
 in one call, so the phone keeps its link and its Agents screen fills where it

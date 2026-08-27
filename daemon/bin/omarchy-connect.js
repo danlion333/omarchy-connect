@@ -1168,7 +1168,7 @@ async function cmdAgent(args) {
     console.log(
       dim(
         '\n  omarchy-connect agent enable   let a paired phone read these sessions\n\n' +
-          '  the same switch is on the desktop panel, under CODING AGENTS\n',
+          '  the same switch is on the desktop panel, under Settings\n',
       ),
     )
   } else if (!hooksInstalled()) {

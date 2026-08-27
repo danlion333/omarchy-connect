@@ -280,9 +280,9 @@ The `unreadCount` badge machinery in `App.tsx` already exists for alerts and
 generalises to "an agent is waiting for you".
 
 The Omarchy shell panel (`shell/Panel.qml`, fed by `status.json`) shows the
-same thing on the desktop — running sessions, which of them is waiting, and
-whether the hooks are in place — and carries the switch itself. See *The switch
-on the desktop* below.
+same thing on the desktop — running sessions and which of them is waiting, on
+the panel proper — and carries the switch itself, along with the hooks button,
+under **Settings**. See *The switch on the desktop* below.
 
 ## Security
 
@@ -305,8 +305,10 @@ starting one from a phone.
 ### The switch on the desktop
 
 The decision is the desktop's, and the desktop client is where a decision like
-this belongs — so the panel carries it under **CODING AGENTS**, and it is the
-one control there that asks before it acts.
+this belongs — so the panel carries it under **Settings**, with the other switch
+that is set once and left alone, and it is the one control there that asks
+before it acts. What the agents are *doing* stays on the panel proper, under
+**CODING AGENTS**: that changes by the minute, the switch does not.
 
 Three properties keep that from widening the surface:
 
@@ -350,7 +352,8 @@ tail. Two things came out smaller than this sketch implied:
 - The Omarchy bar panel now carries the whole thing: the counts from
   `status.json` (`agents.running`, `agents.waiting`), the session list, an
   *Install* button for the hooks, and the switch itself — which is why
-  `agents.enabled` became a live change rather than a restart.
+  `agents.enabled` became a live change rather than a restart. The session list
+  is on the panel; the switch and the hooks button fold away under *Settings*.
 
 **Stage 2 — write. Done.** `daemon/src/agents/tmux.js`,
 `daemon/src/agents/writer.js`, `daemon/src/agents/proc.js`, `agents.send` /
