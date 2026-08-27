@@ -204,10 +204,66 @@ const stamp = (entry) => {
   return Number.isFinite(at) ? at : Date.now()
 }
 
+/**
+ * Words that are a command rather than a conversation.
+ *
+ * `claude` with no command starts a session; `claude doctor` runs a checkup and
+ * `claude daemon` supervises background work. Both wear the same `comm` and the
+ * same argv[0], and the scan cannot tell them apart by looking at `/proc`
+ * alone — which is how a desktop ends up listing its own supervisor as an
+ * agent, bound to whatever conversation happened to be newest in the directory
+ * it was started from.
+ *
+ * A blacklist rather than a whitelist, and it is exact rather than defensive:
+ * if a word is on this list the CLI runs a command and never a session, so a
+ * prompt can never be mistaken for one. The hidden helpers are here beside the
+ * documented commands because `/proc` does not care which are in `--help`.
+ */
+const COMMANDS = new Set([
+  'agents',
+  'auth',
+  'auto-mode',
+  'bg-pty-host',
+  'bg-spare',
+  'config',
+  'daemon',
+  'doctor',
+  'gateway',
+  'import',
+  'install',
+  'mcp',
+  'migrate-installer',
+  'plugin',
+  'plugins',
+  'project',
+  'setup-token',
+  'ultrareview',
+  'update',
+  'upgrade',
+])
+
 export default {
   id: 'claude',
   label: 'Claude Code',
   binaries: ['claude'],
+
+  /**
+   * Is this argv a session someone is having, or the CLI doing a job?
+   *
+   * Commander stops at the first bare word: everything before it is a flag,
+   * and the word itself is either a command or the prompt. Flags that take a
+   * value would put that value in the same position, but no command name is
+   * also a flag's argument in this CLI, so reading the first bare word is
+   * enough — and being wrong about it costs a session that is listed rather
+   * than one that is missed.
+   */
+  isSession(argv) {
+    for (const arg of Array.isArray(argv) ? argv.slice(1) : []) {
+      if (!arg || arg.startsWith('-')) continue
+      return !COMMANDS.has(arg)
+    }
+    return true
+  },
 
   detect() {
     try {

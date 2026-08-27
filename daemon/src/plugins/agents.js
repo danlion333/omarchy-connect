@@ -7,7 +7,8 @@ import { ADAPTERS, detected } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
 import * as writer from '../agents/writer.js'
 import * as drops from '../agents/drops.js'
-import { alive, ancestors, commOf, startTicks } from '../agents/proc.js'
+import { pair } from '../agents/pairing.js'
+import { alive, ancestors, commOf, hasTty, procFile, startedAt, startTicks } from '../agents/proc.js'
 
 /**
  * The coding agent already open on the desktop, readable from the phone.
@@ -31,9 +32,11 @@ import { alive, ancestors, commOf, startTicks } from '../agents/proc.js'
  *     `waiting` — the moment a permission prompt is on screen and a person on
  *     the sofa can actually help.
  *   - **A process scan.** `/proc` for a known agent binary, then its cwd, then
- *     the newest transcript for that directory. This is how an agent started
- *     before the hooks were installed becomes visible at all. It is a
- *     heuristic and is marked as one (`via: "scan"`).
+ *     the newest transcript for that directory that the process could actually
+ *     have written. This is how an agent started before the hooks were
+ *     installed becomes visible at all. It is a heuristic and is marked as one
+ *     (`via: "scan"`) — `agents/pairing.js` is what keeps it from guessing
+ *     something impossible.
  *
  * Reading an agent is reading everything it saw — source, tool output, any
  * secret that crossed a Bash result — so the whole plugin is off until
@@ -53,6 +56,17 @@ const POLL_MS = 2000
 const ACTIVE_MS = 20_000
 /** How long a finished session stays in the list before it is forgotten. */
 const GONE_TTL_MS = 5 * 60 * 1000
+/**
+ * How long a hook-registered session with no pid is believed.
+ *
+ * A hook can arrive before the scan has ever seen the process behind it, so a
+ * session whose pid is unknown cannot be judged on liveness and used to be
+ * kept forever on that reasoning. Forever is too long: if the hook could not
+ * name the process, nothing ever will, and the session outlives the agent by
+ * the whole uptime of the daemon. A transcript that has not moved in this long
+ * belongs to an agent that is not there to move it.
+ */
+const ORPHAN_TTL_MS = 10 * 60 * 1000
 /** Never read more than this from a transcript on the first open. */
 const MAX_FIRST_READ = 2 * 1024 * 1024
 /** Enough of the tail to find the last thing the agent said, for the list. */
@@ -457,7 +471,12 @@ function release(entry) {
  * Every running agent process this user owns, with its working directory.
  *
  * `comm` alone is not proof — it is truncated to 15 characters and a grep for
- * "claude" reports it too — so argv[0] has to agree.
+ * "claude" reports it too — so argv[0] has to agree. Nor is argv[0] the end of
+ * it: an agent's own supervisor and its pty hosts run the same binary under
+ * the same name, and one of them was being listed on the phone as a session
+ * with somebody else's conversation inside it. What the argv actually *says*
+ * is the thing that separates them, and only the adapter knows its own CLI
+ * well enough to read it.
  */
 function scanProcesses() {
   const found = []
@@ -473,26 +492,36 @@ function scanProcesses() {
     const adapter = ADAPTERS.find((a) => a.binaries.includes(comm))
     if (!adapter) continue
     const cmdline = procFile(pid, 'cmdline')
-    const argv0 = cmdline ? path.basename(cmdline.split('\0')[0] || '') : ''
+    const argv = cmdline ? cmdline.split('\0').filter(Boolean) : []
+    const argv0 = argv.length ? path.basename(argv[0]) : ''
     if (argv0 && !adapter.binaries.includes(argv0) && argv0 !== 'node') continue
+    if (adapter.isSession && !adapter.isSession(argv)) continue
     let cwd
     try {
       cwd = fs.readlinkSync(`/proc/${pid}/cwd`)
     } catch {
       continue // another user's process, or one that exited mid-scan
     }
-    found.push({ pid: Number(pid), adapter, cwd, ticks: startTicks(pid) })
+    found.push({
+      pid: Number(pid),
+      adapter,
+      cwd,
+      ticks: startTicks(pid),
+      startedAt: startedAt(pid),
+      tty: hasTty(pid),
+    })
   }
   return found
 }
 
 /**
  * Attach live processes to transcripts. When two agents share a directory
- * neither `/proc` nor the transcript says which is which, so the newest
- * transcript goes to the newest process and the guess is labelled as one.
+ * neither `/proc` nor the transcript says which is which, so the pairing is a
+ * guess and is labelled as one — `agents/pairing.js` is what keeps it from
+ * guessing something that cannot be true.
  */
 function scan() {
-  const processes = scanProcesses().sort((a, b) => b.ticks - a.ticks)
+  const processes = scanProcesses()
   const byDir = new Map()
   for (const proc of processes) {
     const key = `${proc.adapter.id}\u0000${proc.cwd}`
@@ -503,10 +532,7 @@ function scan() {
   const seen = new Set()
   for (const [, group] of byDir) {
     const { adapter, cwd } = group[0]
-    const transcripts = adapter.transcripts(cwd)
-    group.forEach((proc, i) => {
-      const transcript = transcripts[i]
-      if (!transcript) return
+    for (const { proc, transcript } of pair(group, adapter.transcripts(cwd))) {
       const id = `${adapter.id}:${transcript.id}`
       seen.add(id)
       const { entry, created } = upsert({
@@ -528,23 +554,67 @@ function scan() {
         log.debug(`agent session discovered: ${id} in ${cwd}`)
         emitSession(entry)
       }
-    })
+    }
   }
+  return seen
+}
 
-  // A session whose process is gone is gone, whichever road found it. Hook
-  // sessions are the exception while their pid is unknown — a hook may arrive
-  // before the scan has ever seen that process.
+/**
+ * Drop the sessions whose agent is no longer running.
+ *
+ * Its own pass, and called whether or not the discovery above got through,
+ * because the two fail in different ways and only one of them is survivable.
+ * A scan that throws leaves the list exactly as it was — which is a list of
+ * agents that have since been killed, closed, or rebooted away, sitting on the
+ * phone under states none of them are in any more. A daemon that has stopped
+ * discovering new sessions is behind; a daemon that has stopped forgetting old
+ * ones is lying, and it never corrects itself.
+ *
+ * `seen` is what discovery managed to confirm this time round. Without it —
+ * discovery having failed — a session is judged on its pid alone, which is the
+ * conservative half of the same question.
+ */
+function reap(seen = null) {
   const now = Date.now()
   for (const entry of sessions.values()) {
-    if (seen.has(entry.id)) continue
+    if (seen?.has(entry.id)) continue
+    // Liveness is the whole test, and deliberately nothing more. Asking that
+    // the pid still *look* like an agent would catch the odd reused pid and
+    // would also drop any session whose process this daemon cannot recognise
+    // — and a live session that vanishes off the phone is a far worse answer
+    // than a dead one that lingers for another eight seconds.
     if (entry.pid && alive(entry.pid)) continue
-    if (!entry.pid && entry.via === 'hook' && entry.state !== 'gone') continue
+    // A hook that arrived before the scan ever saw the process leaves a session
+    // with no pid to check. It is given the benefit of the doubt, but not
+    // indefinitely: a transcript that has not moved in this long belongs to an
+    // agent that is not there to move it.
+    if (!entry.pid && entry.via === 'hook' && entry.state !== 'gone' && now - entry.lastActivity < ORPHAN_TTL_MS) continue
     if (entry.state !== 'gone') {
       setState(entry, 'gone')
       entry.goneAt = now
     }
     if (entry.goneAt && now - entry.goneAt > GONE_TTL_MS) forget(entry)
   }
+}
+
+/**
+ * Discovery and reaping, in that order, with the second surviving the first.
+ *
+ * The failure this shape exists for was a real one and it was silent: a
+ * mistyped import made every scan throw before it reached a single line of
+ * work, and because the throw was swallowed at `debug` the daemon went on
+ * publishing a list nobody was maintaining — no new sessions, and none of the
+ * finished ones ever dropped. So the scan's failure is a warning now, loud
+ * enough to be read in a log, and the reap runs either way.
+ */
+function sweep() {
+  let seen = null
+  try {
+    seen = scan()
+  } catch (err) {
+    log.warn('agent scan failed:', err.message)
+  }
+  reap(seen)
 }
 
 /* ── discovery: what can be typed into ─────────────────────────────────── */
@@ -611,6 +681,30 @@ const HOOK_STATE = {
 }
 
 /**
+ * The notification that means nothing is wrong.
+ *
+ * `Notification` carries two very different sentences. One is a permission
+ * prompt on screen and an agent that cannot go on without an answer — the
+ * moment this whole feature was built for. The other fires a minute after the
+ * agent finished, to say that it is sitting at an empty prompt the way it will
+ * sit there all evening, and treating that as `waiting` put a "needs you"
+ * badge and a push notification on every agent the user simply walked away
+ * from. An idle agent is idle; the phone should say so.
+ */
+const IDLE_NOTIFICATION = /waiting for your input/i
+
+/**
+ * What a `Notification` actually means for this session.
+ *
+ * A question already on the books outranks the message: the idle timer keeps
+ * running while a prompt is on screen, so the "waiting for your input" line
+ * can arrive on top of a real question, and dropping to `idle` there would
+ * take a card the phone can answer off the screen.
+ */
+const notificationState = (entry, message) =>
+  IDLE_NOTIFICATION.test(message || '') && !entry.question ? 'idle' : 'waiting'
+
+/**
  * A lifecycle event straight from the agent. This is the authoritative road:
  * the payload names the transcript, and the environment the hook inherited
  * names the process and the pane it is running in.
@@ -659,7 +753,10 @@ export function hook(payload = {}) {
     }
   }
 
-  const next = HOOK_STATE[event]
+  // Both hooks fire for the same stop, and "Which fruit should I pick?" is
+  // worth more on a phone than "Claude needs your permission".
+  const message = String(payload.message || '').slice(0, 400) || null
+  const next = event === 'Notification' ? notificationState(entry, message) : HOOK_STATE[event]
   if (next === 'gone') {
     setState(entry, 'gone')
     entry.goneAt = Date.now()
@@ -667,9 +764,6 @@ export function hook(payload = {}) {
     // A turn that is moving again is not standing at a question, whatever the
     // last `PreToolUse` said.
     if (next !== 'waiting') clearQuestion(entry)
-    // Both hooks fire for the same stop, and "Which fruit should I pick?" is
-    // worth more on a phone than "Claude needs your permission".
-    const message = String(payload.message || '').slice(0, 400) || null
     setState(entry, next, { prompt: next === 'waiting' ? entry.question?.summary || message : null })
   }
   // The transcript is usually already on disk by the time the hook fires, so a
@@ -710,11 +804,7 @@ function watch() {
     // Nobody is watching: the scan is the only thing here that costs
     // anything, and hooks keep the registry current for free.
     if (!bus?.hasSubscribers('agent')) return
-    try {
-      scan()
-    } catch (err) {
-      log.debug('agent scan failed:', err.message)
-    }
+    sweep()
     // Trailing the scan rather than inside it: this one shells out, and a slow
     // tmux server must not hold up the state machine behind it.
     void resurvey()
@@ -736,11 +826,7 @@ function watch() {
   }, POLL_MS)
   pollTimer.unref?.()
 
-  try {
-    scan()
-  } catch (err) {
-    log.debug('agent scan failed:', err.message)
-  }
+  sweep()
   void resurvey()
   log.info("agent control is on — phones can read and answer this desktop's coding agents")
 }
@@ -791,8 +877,20 @@ export function setEnabled(on) {
 /** Which agents are installed on this desktop — re-exported for the CLI. */
 export { detected }
 
+/**
+ * The order both roads out of here agree on: whoever is stuck first, then
+ * whoever moved last. The panel and the CLI read the status file and the phone
+ * asks `agents.list`, and a desktop that put the blocked agent at the top of
+ * one list and in the middle of the other was describing the same six sessions
+ * two different ways.
+ */
+const byUrgency = (a, b) => {
+  if ((a.state === 'waiting') !== (b.state === 'waiting')) return a.state === 'waiting' ? -1 : 1
+  return b.lastActivity - a.lastActivity
+}
+
 export function summary() {
-  const list = [...sessions.values()].filter((e) => e.state !== 'gone')
+  const list = [...sessions.values()].filter((e) => e.state !== 'gone').sort(byUrgency)
   return {
     enabled: enabled(),
     adapters: detected(),
@@ -846,21 +944,12 @@ export default {
     /** Every agent session this desktop can see, newest activity first. */
     async 'agents.list'() {
       requireEnabled()
-      try {
-        scan()
-      } catch (err) {
-        log.debug('agent scan failed:', err.message)
-      }
+      sweep()
       // Awaited here, unlike on the timer: a pull-to-refresh that came back
       // with a stale composer would be the one moment the answer mattered.
       await resurvey()
-      const list = [...sessions.values()]
-        .filter((e) => e.state !== 'gone')
-        .sort((a, b) => {
-          // A blocked agent is the reason anyone opened this screen.
-          if ((a.state === 'waiting') !== (b.state === 'waiting')) return a.state === 'waiting' ? -1 : 1
-          return b.lastActivity - a.lastActivity
-        })
+      // A blocked agent is the reason anyone opened this screen.
+      const list = [...sessions.values()].filter((e) => e.state !== 'gone').sort(byUrgency)
       return { sessions: list.map(publicSession), ...this['agents.capabilities']() }
     },
 

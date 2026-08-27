@@ -235,6 +235,50 @@ const waitFor = async (events, predicate, ms = 4000) => {
   return null
 }
 
+/* ── who is an agent, and whose conversation is whose ──────────────────── */
+
+// The half of discovery no daemon is needed to test, and the half that was
+// wrong: which `claude` processes are sessions at all, and which transcript
+// each one is allowed to be holding.
+{
+  const claude = (await import('../src/agents/claude.js')).default
+  const { pair } = await import('../src/agents/pairing.js')
+  const proc = await import('../src/agents/proc.js')
+
+  check('a bare session is a session', claude.isSession(['/usr/bin/claude']))
+  check('so is one with flags', claude.isSession(['claude', '--resume', '--effort', 'high']))
+  check('so is one carrying a prompt', claude.isSession(['claude', '-p', 'add a health endpoint']))
+  // The one that was being listed on a phone as an agent, with a stranger's
+  // conversation inside it, because it wears the same name in `/proc`.
+  check('the agent’s own supervisor is not', !claude.isSession(['/usr/bin/claude', 'daemon', 'run']))
+  check('nor are its background helpers', !claude.isSession(['claude', 'bg-spare', '--bg-spare', '/tmp/x.sock']))
+  check('nor is a housekeeping command', !claude.isSession(['claude', 'doctor']))
+
+  const started = 10_000
+  const running = { pid: 1, startedAt: started, ticks: 20, tty: true }
+  const mine = { id: 'mine', mtime: started + 60_000 }
+  const stranger = { id: 'stranger', mtime: started - 60_000 }
+
+  check('a live agent takes the transcript it could have written', pair([running], [stranger, mine])[0]?.transcript === mine)
+  // The whole class of bug: the newest file in a busy directory is very often
+  // one that ended, and pinning a live pid to it puts somebody else's
+  // conversation on the phone under a live agent's name.
+  check('and never one that stopped before it started', pair([running], [stranger]).length === 0)
+  check(
+    'an agent that has not written yet is absent, not misattributed',
+    pair([{ ...running, startedAt: Date.now() }], [stranger]).length === 0,
+  )
+  const helper = { pid: 2, startedAt: started + 30_000, ticks: 99, tty: false }
+  check(
+    'a session at a keyboard is served before a helper that shares its directory',
+    pair([helper, running], [mine])[0]?.proc === running,
+  )
+  check('two agents in one directory get one transcript each', pair([running, { ...helper, tty: true }], [mine, { id: 'other', mtime: started + 90_000 }]).length === 2)
+
+  check('this process knows when it started', Math.abs(proc.startedAt(process.pid) - Date.now()) < 10 * 60 * 1000)
+  check('and that a test runner has no controlling terminal to speak of', typeof proc.hasTty(process.pid) === 'boolean')
+}
+
 /* ── the gate ──────────────────────────────────────────────────────────── */
 
 await startDaemon(false)
@@ -378,6 +422,25 @@ check('the waiting session sorts to the top', (await req('agents.list')).session
 
 const status = readStatus()
 check('the status file tells the panel', status.agents.waiting === 1 && status.agents.running === 1)
+check('the status file agrees with the phone about who is first', status.agents.sessions[0].state === 'waiting')
+
+// The other sentence `Notification` carries. It fires a minute after the agent
+// stopped, to say it is sitting at an empty prompt — which is what an idle
+// agent does all evening. Calling that "needs you" put a badge on every
+// session the person had simply walked away from.
+await hook('Stop')
+await waitFor(events, (e) => e.kind === 'state' && e.state === 'idle')
+await hook('Notification', { message: 'Claude is waiting for your input' })
+await settle()
+check(
+  'an agent left alone at its prompt is idle, not waiting',
+  (await req('agents.list')).sessions[0].state === 'idle',
+  (await req('agents.list')).sessions[0].state,
+)
+await hook('UserPromptSubmit')
+await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')
+await hook('Notification', { message: 'Claude needs your permission to use Bash' })
+await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting')
 
 // Answering at the keyboard fires no hook we subscribe to, so the transcript
 // moving again is what has to clear `waiting`.
@@ -593,7 +656,17 @@ if (!hasTmux) {
   // The pane is gone and so is the `cat` inside it; whatever is left of the
   // session must not still be advertising a composer.
   check('a closed pane takes the composer with it', !orphaned || orphaned.writable !== 'tmux', String(orphaned?.writable))
+  // And killing the process is the end of the session, not a row that stays on
+  // the phone for the rest of the daemon's life. This is the reap that used to
+  // be unreachable: it lived behind a scan that threw on its first line, so a
+  // desktop accumulated every agent it had ever seen and dropped none of them.
+  check('an agent whose process died stops being listed', !orphaned, String(orphaned?.state))
 }
+
+// The rest of this file is about a live session again, so announce one: the
+// hook road is how a real agent says which process it is, and this test runner
+// is a process that is certainly running.
+await hook('UserPromptSubmit', { pid: process.pid })
 
 /* ── a question the transcript does not have yet ───────────────────────── */
 

@@ -1,7 +1,11 @@
 import { has, run } from '../lib/exec.js'
 import * as hypr from '../lib/hypr.js'
 import * as tmux from './tmux.js'
-import { ancestors } from './proc.js'
+import { ADAPTERS } from './index.js'
+import { ancestors, commOf, hasTty } from './proc.js'
+
+/** Every process name that is an agent rather than a terminal on the way to one. */
+const AGENT_BINARIES = new Set(ADAPTERS.flatMap((adapter) => adapter.binaries))
 
 /**
  * Answering the agent — the hard half.
@@ -112,6 +116,26 @@ async function clients() {
  * window — which is exactly why tmux is checked first and why finding no
  * window for such a session is right rather than a miss.
  */
+/**
+ * A session's forebears, up to but not past the agent that launched it.
+ *
+ * The walk exists to find the terminal a session is sitting in, and it stops
+ * at another agent because past that point the terminal belongs to that one.
+ * Three sessions on this desktop — a background job, an agent's own supervisor
+ * and the person's actual session — all walked up to the same `foot` window
+ * and all three were offered as writable, which meant two of the three rows on
+ * the phone would have typed into the third one's conversation.
+ */
+function ownChain(pid) {
+  const chain = []
+  for (const [i, ancestor] of ancestors(pid).entries()) {
+    const comm = commOf(ancestor)
+    if (i && comm && AGENT_BINARIES.has(comm)) break
+    chain.push(ancestor)
+  }
+  return chain
+}
+
 export async function survey(sessions) {
   const list = [...sessions]
   if (!list.length) return
@@ -125,7 +149,23 @@ export async function survey(sessions) {
   let windowByPid = null
 
   for (const entry of list) {
-    const chain = entry.pid ? ancestors(entry.pid) : []
+    const chain = entry.pid ? ownChain(entry.pid) : []
+
+    // An agent with no controlling terminal is not at anybody's keyboard.
+    //
+    // This is what a background session looks like: a real conversation, worth
+    // reading from the phone, running under a pty host with no window and no
+    // pane of its own. Walking its parents finds a terminal all the same —
+    // the one belonging to whichever agent launched it — and the daemon used
+    // to offer that as the way in. It is not a way in; it is somebody else's
+    // session, and a message meant for the background agent would have been
+    // typed into the foreground one. Read-only is the truthful answer.
+    if (!entry.pid || !hasTty(entry.pid)) {
+      entry.pane = null
+      entry.window = null
+      entry.writable = null
+      continue
+    }
 
     // A hook reports `$TMUX_PANE` outright, which beats any amount of walking
     // — but a pane id outlives the pane, so it still has to exist.

@@ -514,6 +514,25 @@ the daemon scans `/proc` for a running agent and matches it to the newest
 transcript for its working directory, which is enough to read a session that
 started before any of this was installed, and is labelled as the guess it is.
 
+The scan is careful about two things, because both were wrong once and both
+looked like the same complaint — *the list does not match what is on the
+screen*. A `claude` in `/proc` is not necessarily a session: the agent runs its
+own supervisor and its own pty hosts under the same name, and one of them was
+being listed as an agent with a stranger's conversation inside it. And a
+transcript that stopped changing before its supposed author started is not that
+author's — on a desktop where sessions come and go all day the newest file in a
+directory is usually one that ended, so a live pid was being pinned to a dead
+conversation. An agent that has not written its first line yet is therefore
+absent for those few seconds rather than misattributed, and appears on its own
+once it writes.
+
+A session also leaves the list when its process does — killed, closed, or
+rebooted away — within one scan, whichever road found it. What a background
+agent gets is a read: it is a real conversation worth following from the sofa,
+but it sits in no terminal anybody is typing at, so the app offers no composer
+for it rather than typing into whichever window happens to be up the process
+tree.
+
 Answering is the harder half, because nothing may push bytes into a terminal
 another process owns. There are two roads and the app tells you which one a
 session is on. Inside **tmux** the pane is tmux's own pty, so a message arrives

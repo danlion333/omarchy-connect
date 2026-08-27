@@ -45,6 +45,70 @@ export function startTicks(pid) {
 }
 
 /**
+ * Does this process have a controlling terminal?
+ *
+ * The one question that separates a session somebody is sitting at from a
+ * helper the agent forked for its own reasons. Claude Code's supervisor, its
+ * pty hosts and its spare workers all carry the binary's name and its
+ * `comm`, and every one of them runs with `tty_nr` zero; an agent at a prompt
+ * — in a terminal window or in a tmux pane — always has one. It is also what
+ * says a background session cannot be typed into: it may own a pty, but no
+ * keyboard is attached to it, so the window its parents lead to belongs to
+ * somebody else.
+ */
+export function hasTty(pid) {
+  const fields = statFields(pid)
+  return fields ? Number(fields[4]) > 0 : false
+}
+
+/**
+ * When the machine booted, in unix milliseconds.
+ *
+ * `/proc/<pid>/stat` dates a process in ticks since boot, which is only
+ * comparable with a file's mtime once boot itself has a date. It cannot change
+ * while the daemon runs, so it is read once.
+ */
+let bootMs = 0
+
+function bootTime() {
+  if (bootMs) return bootMs
+  let stat = ''
+  try {
+    stat = fs.readFileSync('/proc/stat', 'utf8')
+  } catch {
+    return 0
+  }
+  const match = /^btime (\d+)$/m.exec(stat)
+  bootMs = match ? Number(match[1]) * 1000 : 0
+  return bootMs
+}
+
+/**
+ * The kernel counts a process's age in USER_HZ, which is 100 on every Linux
+ * this daemon runs on — the constant is compiled into the ABI rather than
+ * being a tunable, and nothing in `/proc` reports it.
+ */
+const TICKS_PER_SECOND = 100
+
+/**
+ * When this process started, in unix milliseconds.
+ *
+ * This is what lets a transcript be told from a stranger's. Pairing a running
+ * agent with "the newest file in its directory" is a guess with no floor under
+ * it: on a desktop where sessions come and go, the newest transcript in a
+ * directory is very often one that ended an hour ago, and binding a live agent
+ * to it puts somebody else's conversation on the phone under a live agent's
+ * name. A file the agent cannot have written — because it stopped changing
+ * before the agent existed — is not a candidate, and that is one subtraction
+ * rather than a heuristic.
+ */
+export function startedAt(pid) {
+  const boot = bootTime()
+  const ticks = startTicks(pid)
+  return boot && ticks ? boot + Math.round((ticks / TICKS_PER_SECOND) * 1000) : 0
+}
+
+/**
  * A process and its forebears, nearest first.
  *
  * This is how a session is matched to the thing that can be typed into: the
