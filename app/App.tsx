@@ -8,23 +8,19 @@ import { useFonts, JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsM
 import { ConnectionProvider, useConnection } from './src/state/ConnectionContext'
 import { DashboardScreen } from './src/screens/DashboardScreen'
 import { RemoteScreen } from './src/screens/RemoteScreen'
-import { TouchpadScreen } from './src/screens/TouchpadScreen'
 import { ShareScreen } from './src/screens/ShareScreen'
-import { NotificationsScreen } from './src/screens/NotificationsScreen'
 import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { FALLBACK_PALETTE, font, size, space } from './src/theme'
 
-type TabKey = 'stats' | 'remote' | 'touch' | 'agents' | 'share' | 'alerts' | 'setup'
+type TabKey = 'stats' | 'remote' | 'agents' | 'share' | 'setup'
 
 const TABS: { key: TabKey; icon: React.ComponentProps<typeof Feather>['name']; label: string }[] = [
   { key: 'stats', icon: 'activity', label: 'Stats' },
   { key: 'remote', icon: 'sliders', label: 'Remote' },
-  { key: 'touch', icon: 'move', label: 'Touch' },
   { key: 'agents', icon: 'terminal', label: 'Agents' },
   { key: 'share', icon: 'upload-cloud', label: 'Share' },
-  { key: 'alerts', icon: 'bell', label: 'Alerts' },
   { key: 'setup', icon: 'settings', label: 'Setup' },
 ]
 
@@ -63,10 +59,8 @@ function Shell() {
       <View style={{ flex: 1 }}>
         {tab === 'stats' ? <DashboardScreen /> : null}
         {tab === 'remote' ? <RemoteScreen /> : null}
-        {tab === 'touch' ? <TouchpadScreen /> : null}
         {tab === 'agents' ? <AgentsScreen /> : null}
         {tab === 'share' ? <ShareScreen /> : null}
-        {tab === 'alerts' ? <NotificationsScreen /> : null}
         {tab === 'setup' ? <SettingsScreen /> : null}
       </View>
       <TabBar current={tab} onChange={setTab} />
@@ -75,7 +69,7 @@ function Shell() {
 }
 
 function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
-  const { palette, unreadCount, agentsWaiting, status } = useConnection()
+  const { palette, agentsWaiting, status } = useConnection()
   const insets = useSafeAreaInsets()
 
   return (
@@ -93,7 +87,7 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
         const active = entry.key === current
         // An agent stuck on a permission prompt is the one thing on this bar
         // that is costing someone time right now.
-        const count = entry.key === 'alerts' ? unreadCount : entry.key === 'agents' ? agentsWaiting : 0
+        const count = entry.key === 'agents' ? agentsWaiting : 0
         const badge = count > 0
         return (
           <Pressable
@@ -113,7 +107,7 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
                     height: 14,
                     borderRadius: 7,
                     paddingHorizontal: 3,
-                    backgroundColor: entry.key === 'agents' ? palette.orange : palette.red,
+                    backgroundColor: palette.orange,
                     alignItems: 'center',
                     justifyContent: 'center',
                   }}

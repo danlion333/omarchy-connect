@@ -7,7 +7,6 @@ import {
   type AgentWrite,
   type ConnectionStatus,
   type Hello,
-  type NotificationItem,
   type Stats,
 } from './client'
 import { deviceId, forgetDesktop, loadDesktop, saveDesktop, type SavedDesktop } from './storage'
@@ -37,9 +36,8 @@ import { FALLBACK_PALETTE, type Palette } from '../theme'
  * provider is reduced to a subscriber that renders whatever it finds here.
  *
  * That also fixes a smaller bug worth naming: reopening the app after Android
- * tore the activity down used to show an empty notification list and no stats
- * until the next event arrived. The state outlived nothing; now it outlives
- * the screen.
+ * tore the activity down used to show no stats at all until the next event
+ * arrived. The state outlived nothing; now it outlives the screen.
  */
 
 export type ClipboardEvent = { text: string; at: number; source: string }
@@ -54,7 +52,6 @@ export type LinkState = {
   hello: Hello | null
   palette: Palette
   stats: Stats | null
-  notifications: NotificationItem[]
   agents: AgentSession[]
   clipboard: ClipboardEvent | null
   files: FileEvent[]
@@ -63,7 +60,6 @@ export type LinkState = {
   client: ConnectClient | null
 }
 
-const MAX_NOTIFICATIONS = 100
 const MAX_FILE_EVENTS = 30
 /** After this many failed retries we stop trusting the stored address. */
 const RELOCATE_AFTER = 3
@@ -76,7 +72,6 @@ const INITIAL: LinkState = {
   hello: null,
   palette: FALLBACK_PALETTE,
   stats: null,
-  notifications: [],
   agents: [],
   clipboard: null,
   files: [],
@@ -194,9 +189,6 @@ class Link {
       }),
       client.on('ev:stats', (data: Stats) => this.patch({ stats: data })),
       client.on('ev:theme', (data: Palette) => this.patch({ palette: { ...FALLBACK_PALETTE, ...data } })),
-      client.on('ev:notification', (data: NotificationItem) =>
-        this.patch({ notifications: [data, ...this.state.notifications].slice(0, MAX_NOTIFICATIONS) }),
-      ),
       /**
        * The session list is kept current by events, not by polling: a
        * `waiting` agent is the badge on the tab bar, and it has to appear

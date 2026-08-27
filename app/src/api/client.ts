@@ -72,15 +72,6 @@ export type Stats = {
   uptime: number
 }
 
-export type NotificationItem = {
-  id: string
-  app: string
-  summary: string
-  body: string
-  urgency: number
-  timestamp: number
-}
-
 /* ── coding agents ─────────────────────────────────────────────────────── */
 
 export type AgentState = 'idle' | 'working' | 'waiting' | 'gone'
@@ -191,7 +182,7 @@ export class ConnectClient {
    * ask this handset to answer a call or send a message. Leaving it out makes
    * every such request time out on the desktop with no sign anything is wrong.
    */
-  private subscriptions: string[] = ['stats', 'clipboard', 'notification', 'theme', 'file', 'agent', 'phone']
+  private subscriptions: string[] = ['stats', 'clipboard', 'theme', 'file', 'agent', 'phone']
 
   constructor(opts: {
     host: string

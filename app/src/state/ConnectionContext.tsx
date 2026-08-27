@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import type { AgentSession, ConnectClient, ConnectionStatus, Hello, NotificationItem, Stats } from '../api/client'
+import type { AgentSession, ConnectClient, ConnectionStatus, Hello, Stats } from '../api/client'
 import { link, type ClipboardEvent, type FileEvent, type LinkState } from '../api/link'
 import type { SavedDesktop } from '../api/storage'
 import type { PairingTarget } from '../api/discovery'
@@ -17,7 +17,6 @@ type ConnectionValue = {
   hello: Hello | null
   palette: Palette
   stats: Stats | null
-  notifications: NotificationItem[]
   agents: AgentSession[]
   agentsWaiting: number
   refreshAgents: () => Promise<void>
@@ -32,8 +31,6 @@ type ConnectionValue = {
   reconnect: () => void
   forget: () => Promise<void>
   can: (plugin: string, feature: string) => boolean
-  markNotificationsRead: () => void
-  unreadCount: number
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
@@ -44,12 +41,10 @@ const ConnectionContext = createContext<ConnectionValue | null>(null)
  * Everything that has to survive the app being backgrounded — the socket, the
  * reconnection, the phone mirror, the event history — lives in `api/link`,
  * which is owned by the process rather than by this tree. What is left here is
- * what only a screen cares about: React state to render from, and which
- * notifications have been looked at.
+ * what only a screen cares about: React state to render from.
  */
 export function ConnectionProvider({ children }: { children: React.ReactNode }) {
   const [state, setState] = useState<LinkState>(link.state)
-  const [readAt, setReadAt] = useState(Date.now())
 
   useEffect(() => {
     // Subscribe before starting: the link may already be connected — the
@@ -72,11 +67,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
     [state.hello],
   )
 
-  const unreadCount = useMemo(
-    () => state.notifications.filter((n) => n.timestamp > readAt).length,
-    [state.notifications, readAt],
-  )
-
   /** Agents blocked on a question — the one thing a phone can actually fix. */
   const agentsWaiting = useMemo(() => state.agents.filter((a) => a.state === 'waiting').length, [state.agents])
 
@@ -96,10 +86,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       reconnect,
       forget,
       can,
-      markNotificationsRead: () => setReadAt(Date.now()),
-      unreadCount,
     }),
-    [state, agentsWaiting, refreshAgents, fingerprint, call, pair, reconnect, forget, can, unreadCount],
+    [state, agentsWaiting, refreshAgents, fingerprint, call, pair, reconnect, forget, can],
   )
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>

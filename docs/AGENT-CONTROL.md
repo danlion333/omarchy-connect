@@ -276,8 +276,8 @@ A new `Agents` tab (`app/src/screens/AgentsScreen.tsx` + `AgentChatScreen.tsx`):
   `Yes` / `No` / `Esc` / `1` `2` `3` for numbered prompts.
 - **Raw** — the `capture-pane` view behind a toggle.
 
-The `unreadCount` badge machinery in `App.tsx` already exists for alerts and
-generalises to "an agent is waiting for you".
+The tab-bar badge in `App.tsx` carries one count and one meaning: "an agent is
+waiting for you".
 
 The Omarchy shell panel (`shell/Panel.qml`, fed by `status.json`) shows the
 same thing on the desktop — running sessions and which of them is waiting, on

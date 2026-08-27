@@ -1,8 +1,8 @@
 # Omarchy Connect
 
 Your phone, wired into your Omarchy desktop. Live system stats, remote control,
-a touchpad, clipboard sync, notification mirroring and file transfer — all over
-your own LAN, with no account, no cloud, and no traffic leaving the subnet.
+clipboard sync and file transfer — all over your own LAN, with no account, no
+cloud, and no traffic leaving the subnet.
 
 The control channel is encrypted end to end, and the phone pins the desktop's
 identity key when it pairs, so it will only ever talk to the machine you
@@ -25,9 +25,8 @@ the desktop and the app repaints in the same palette.
 | --- | --- |
 | **Live stats** | CPU, temperature, memory, swap, disk, battery, and a network card with ping, packet loss, throughput, totals, IP, gateway and DNS provider — sampled once a second. |
 | **Remote control** | Volume and mute, brightness, media keys, Hyprland workspaces and windows (focus, close), lock, sleep, reboot, shut down, screenshot, "where is my desktop". |
-| **Touchpad** | Drag to move the pointer, tap to click, two fingers for right-click and scroll, plus a key row and a field that types into the focused window. No `uinput` permissions needed. |
 | **Clipboard sync** | Whatever you copy on the desktop appears on the phone, and back. |
-| **Notifications** | The Omarchy notification history mirrors to the phone; the phone can raise desktop notifications. |
+| **Notifications** | Whatever the phone mirrors — messages, calls, app notifications — arrives as a desktop notification. The desktop's own notifications stay on the desktop; the app does not carry an inbox. |
 | **Files** | Send a file or photo from the phone to `~/Downloads/Omarchy Connect/`; push a desktop file to the phone with `omarchy-connect send <file>`. |
 | **Themes** | Read and switch the active Omarchy theme from the phone. |
 | **DNS** | Read and switch the system DNS provider (needs a sudo rule, see below). |
@@ -376,8 +375,7 @@ pressing the button over ANCS works, but leaves the conversation on the handset.
 
 | | Android | iPhone |
 | --- | --- | --- |
-| Stats, remote, touchpad, clipboard, files, themes | ✅ | ✅ |
-| Notifications desktop → phone | ✅ | ✅ |
+| Stats, remote, clipboard, files, themes | ✅ | ✅ |
 | Battery reported to the bar | ✅ | ✅ |
 | Incoming messages → desktop | app | **Bluetooth LE** |
 | Calls → desktop | app + Bluetooth | **Bluetooth** |
@@ -502,10 +500,10 @@ handshake and the app greys out whatever is missing.
 | Brightness | `brightnessctl` |
 | Media keys | `playerctl`, or `wtype` as a fallback |
 | Windows / workspaces | Hyprland (over its control socket; `hyprctl` is a fallback) |
-| Touchpad, clicks, keys | Hyprland — nothing else to install |
+| Pointer, clicks, keys (`input.*`, protocol only — no screen in the app) | Hyprland — nothing else to install |
 | Typing arbitrary text | `wtype` |
-| Scroll wheel | `ydotool` (`pacman -S ydotool`). Without it, two-finger scrolling falls back to arrow keys and the app says so. |
-| Notifications | Omarchy's notification history in `~/.local/state/omarchy/` |
+| Scroll wheel (`input.scroll`) | `ydotool` (`pacman -S ydotool`). Without it, scrolling falls back to arrow keys and says so. |
+| Notification history (`notifications.*`, protocol only) | Omarchy's notification history in `~/.local/state/omarchy/` |
 | Screenshot, themes, OSD | the `omarchy-*` helpers |
 | Pairing QR | `qrencode` |
 
@@ -622,7 +620,7 @@ app/            Expo app (TypeScript)
   src/api/      WebSocket client, channel crypto, discovery, secure storage,
                 phone telemetry, SMS/call mirroring
   src/ui/       the card / readout / control kit
-  src/screens/  stats, remote, touch, agents, share, alerts, setup, pairing
+  src/screens/  stats, remote, agents, share, setup, pairing
 docs/           protocol specification
 ```
 
