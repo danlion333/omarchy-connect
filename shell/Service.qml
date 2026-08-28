@@ -276,9 +276,13 @@ Item {
     note("Pairing window opened")
   }
 
+  /**
+   * No terminal, unlike pairing: the picker is the GTK file dialog now, and it
+   * draws its own window. What the CLI would have printed into a terminal
+   * arrives as a notification instead.
+   */
   function sendFile() {
-    detach(["omarchy-launch-floating-terminal-with-presentation",
-            Model.shellQuote(Model.command(root.status, ["send", "--pick"]))])
+    detach(Model.command(root.status, ["send", "--pick"]))
     note("Pick a file to send")
   }
 

@@ -16,7 +16,7 @@ import * as wol from '../src/lib/wol.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
-import { run, runInteractive, has, spawn } from '../src/lib/exec.js'
+import { run, has, spawn, spawnDetached } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
 import { INBOX } from '../src/plugins/share.js'
@@ -379,6 +379,12 @@ async function cmdSend(args) {
     ]),
   )
   if (body.recipients === 0) log.warn('no phone is connected right now — it will not see the offer')
+  // The desktop client runs this with no terminal attached, so the card above
+  // lands nowhere. Say it again where it can be seen.
+  if (!process.stdout.isTTY && has('notify-send')) {
+    const missed = body.recipients === 0 ? ' — no phone is connected' : ''
+    spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'Sent to phone', `${body.name}${missed}`])
+  }
 }
 
 /**
@@ -404,21 +410,37 @@ async function liveStatus() {
 }
 
 /**
- * The desktop client has no file dialog of its own, so browsing happens where
- * Omarchy already puts interactive prompts: gum, in a floating terminal.
+ * The desktop client has no file dialog of its own, so browsing happens in the
+ * dialog everything else on this desktop opens: the file chooser behind the
+ * XDG desktop portal, the one a browser opens to upload something. What talks
+ * to the portal is `filechooser.py`, and its own header says why that has to
+ * be a program holding a connection rather than a pair of `gdbus` calls.
+ *
+ * A terminal file browser was the older answer and a worse one — it hid
+ * dotfiles unless asked twice, printed the size of a directory's own inode
+ * beside every folder, and asked people to walk a home directory by arrow key.
+ * Nothing falls back to it now: a session with no display to draw a dialog on
+ * has `send <path>`, which needs neither a dialog nor a terminal.
  */
 async function pickFile() {
-  if (!has('gum')) {
-    log.error('gum is not installed — pass a path instead: omarchy-connect send <file>')
+  if (!process.env.WAYLAND_DISPLAY && !process.env.DISPLAY) {
+    log.error('no display for a file dialog — pass a path instead: omarchy-connect send <file>')
     return null
   }
-  const res = await runInteractive('gum', ['file', '--height', '20', os.homedir()])
-  const chosen = res.stdout
-  if (!chosen) {
-    console.log(dim('  nothing picked'))
+  if (!has('python3')) {
+    log.error('python3 is missing — pass a path instead: omarchy-connect send <file>')
     return null
   }
-  return chosen
+  // No timeout: the dialog is open for exactly as long as somebody is looking
+  // at it, and `run` would otherwise take it away after five seconds.
+  const chooser = path.join(here, '..', 'src', 'lib', 'filechooser.py')
+  const res = await run('python3', [chooser, 'Send to phone', 'Send'], { timeout: 0 })
+  if (res.ok && res.stdout) return res.stdout
+  // 1 is a dialog that was closed rather than answered. Anything else is a
+  // dialog that never opened, and it has already said why.
+  if (res.code === 1) console.log(dim('  nothing picked'))
+  else log.error(res.stderr.split('\n')[0] || 'the file dialog would not open')
+  return null
 }
 
 async function cmdStatus(args) {

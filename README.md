@@ -97,8 +97,8 @@ omarchy-connect install-service             write a systemd user unit
 ```
 
 `pair --wait` holds the QR code on screen until a phone uses it or the code
-expires; `send --pick` browses for a file instead of taking a path. Both exist
-because the desktop client drives them from a floating terminal.
+expires, which is why the desktop client drives it from a floating terminal.
+`send --pick` opens the GTK file chooser instead of taking a path.
 
 Configuration lives in `~/.config/omarchy-connect/config.json` (mode 0600 —
 it holds the device tokens).
@@ -628,6 +628,7 @@ handshake and the app greys out whatever is missing.
 | Notification history (`notifications.*`, protocol only) | Omarchy's notification history in `~/.local/state/omarchy/` |
 | Screenshot, themes, OSD | the `omarchy-*` helpers |
 | Pairing QR | `qrencode` |
+| Browsing for a file to send (`send --pick`) | the XDG desktop portal (`xdg-desktop-portal` plus a backend) — the file chooser a browser opens. Without one, pass the path: `omarchy-connect send <file>`. |
 | Waking it from the phone | a wired card set to wake the machine — `omarchy-connect wake` says whether yours is, and prints the command |
 
 ### Firewall
