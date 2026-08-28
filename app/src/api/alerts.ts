@@ -152,7 +152,10 @@ export function syncAgentAlerts(sessions: AgentSession[]) {
       id: session.id,
       agent: session.agent,
       title: session.title,
-      preview: (session.preview || '').trim(),
+      // A background agent is the one this notification was really built for —
+      // you sent it off and put the phone away — and the sentence it wrote
+      // about the work beats the last line of its transcript.
+      preview: (session.job?.detail || session.preview || '').trim(),
     })
   }
 

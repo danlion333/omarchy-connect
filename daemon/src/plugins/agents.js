@@ -299,6 +299,9 @@ function upsert(fields) {
     question: null,
     via: fields.via || 'scan',
     goneAt: null,
+    // The status line as the phone last saw it, so a scan can tell whether it
+    // has anything to say. `undefined` until the first scan looks.
+    stamp: undefined,
     /* internals — never leave the daemon */
     previewAt: 0,
     blocks: [],
@@ -702,10 +705,53 @@ function scan() {
       if (created) {
         log.debug(`agent session discovered: ${id} in ${cwd}`)
         emitSession(entry)
+      } else if (restamp(entry)) {
+        // The status line moved. `state` frames carry only the state, so
+        // without this the model, the context meter and the task list would
+        // sit unchanged on the phone from the moment a session was announced
+        // until the next hook fired — which for an agent working through
+        // something long is the whole of the interesting part.
+        emitSession(entry)
       }
     }
   }
   return seen
+}
+
+/**
+ * Has anything on this session's status line changed since the last scan?
+ *
+ * A fingerprint rather than a deep compare because the answer has to be cheap:
+ * this is asked of every session on every sweep. It covers exactly the fields
+ * a `state` frame does not carry — everything the phone would otherwise be
+ * drawing from a snapshot taken minutes ago.
+ *
+ * Nothing here reads a file that has not changed: both `vitals` and the task
+ * summary are remembered against an mtime, so a session sitting still costs
+ * two `stat` calls and no more.
+ */
+function restamp(entry) {
+  const vitals = vitalsOf(entry)
+  const todo = tasks.summary(nativeIdOf(entry))
+  const job = jobMap.get(nativeIdOf(entry)) || null
+  const print = [
+    vitals?.model,
+    vitals?.mode,
+    vitals?.branch,
+    vitals?.title,
+    vitals?.context?.tokens,
+    todo?.total,
+    todo?.done,
+    todo?.active,
+    job?.detail,
+    job?.state,
+  ].join('\u0000')
+  if (entry.stamp === print) return false
+  // The first scan of a session that was announced by a hook is not a change:
+  // the frame it was announced with already carried all of this.
+  const first = entry.stamp === undefined
+  entry.stamp = print
+  return !first
 }
 
 /**
