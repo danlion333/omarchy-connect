@@ -27,7 +27,7 @@ the desktop and the app repaints in the same palette.
 | **Remote control** | Volume and mute, brightness, media keys, Hyprland workspaces and windows (focus, close), lock, sleep, reboot, shut down, screenshot, "where is my desktop". |
 | **Clipboard sync** | Whatever you copy on the desktop appears on the phone, and back. |
 | **Notifications** | Whatever the phone mirrors — messages, calls, app notifications — arrives as a desktop notification. The desktop's own notifications stay on the desktop; the app does not carry an inbox. |
-| **Files** | Send a file or photo from the phone to `~/Downloads/Omarchy Connect/`; push a desktop file to the phone with `omarchy-connect send <file>`. |
+| **Files** | Send a file or photo from the phone to `~/Downloads/Omarchy Connect/`; push a desktop file to the phone with `omarchy-connect send <file>`. A picture arrives on the phone as a picture — thumbnail in the list, full screen on a tap, pinch to read the small print, and one more tap keeps it in the phone's own gallery. An offer the desktop is still holding is there when the app opens, not only while it was watching. |
 | **Themes** | Read and switch the active Omarchy theme from the phone. |
 | **DNS** | Read and switch the system DNS provider (needs a sudo rule, see below). |
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |

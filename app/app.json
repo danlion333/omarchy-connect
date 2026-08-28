@@ -19,7 +19,8 @@
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "Omarchy Connect talks to your desktop over the local network.",
         "NSCameraUsageDescription": "Scanning the pairing QR code shown by the desktop.",
-        "NSPhotoLibraryUsageDescription": "Sending photos to your desktop."
+        "NSPhotoLibraryUsageDescription": "Sending photos to your desktop.",
+        "NSPhotoLibraryAddUsageDescription": "Saving a photo the desktop sent you into your library."
       }
     },
     "android": {
@@ -62,6 +63,14 @@
         "expo-image-picker",
         {
           "photosPermission": "Sending photos to your desktop."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Sending photos to your desktop.",
+          "savePhotosPermission": "Saving a photo the desktop sent you into your library.",
+          "granularPermissions": []
         }
       ],
       "expo-secure-store",
