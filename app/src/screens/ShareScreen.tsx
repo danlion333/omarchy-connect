@@ -17,11 +17,12 @@ import * as Clipboard from 'expo-clipboard'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import * as Sharing from 'expo-sharing'
-import { Directory, File, Paths } from 'expo-file-system'
+import { File } from 'expo-file-system'
 
 import { useConnection } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, Value } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
+import { downloadOffer } from '../lib/download'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind } from '../lib/media'
 import { alpha, font, radius, size, space } from '../theme'
@@ -244,16 +245,9 @@ export function ShareScreen() {
       if (running) return running
       const job = (async () => {
         if (!client) throw new Error('not connected')
-        // A directory per offer, so two files the desktop happened to call the
-        // same thing keep their own bytes — and their own name, which is what
-        // the gallery and the share sheet end up showing.
-        const dir = new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
-        if (!dir.exists) dir.create({ intermediates: true })
-        const target = new File(dir, name)
-        if (target.exists) target.delete()
-        const file = await File.downloadFileAsync(client.downloadUrl(token), target)
-        setLocal((prev) => ({ ...prev, [token]: file.uri }))
-        return file.uri
+        const uri = await downloadOffer(client.downloadUrl(token), token, name)
+        setLocal((prev) => ({ ...prev, [token]: uri }))
+        return uri
       })()
       // A failed fetch is forgotten, so the next tap is allowed to try again.
       job.catch(() => fetching.current.delete(token))

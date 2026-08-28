@@ -17,6 +17,7 @@ import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection } from '../state/ConnectionContext'
+import { focusAgent } from '../api/alerts'
 import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession } from '../api/client'
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
@@ -50,6 +51,15 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   const scroller = useRef<ScrollView | null>(null)
   const atBottom = useRef(true)
   const keyboard = useKeyboardOpen()
+
+  /*
+   * Reading a session is being told about it, so the shade stops saying this
+   * one is waiting — and stays quiet about it for as long as the chat is open.
+   */
+  useEffect(() => {
+    focusAgent(session.id)
+    return () => focusAgent(null)
+  }, [session.id])
 
   /* Open the session, then let the daemon push the rest. */
   useEffect(() => {

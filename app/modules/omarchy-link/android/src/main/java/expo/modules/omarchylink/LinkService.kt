@@ -48,7 +48,7 @@ import com.facebook.react.jstasks.HeadlessJsTaskContext
 class LinkService : Service() {
   companion object {
     private const val CHANNEL = "omarchy-link"
-    private const val NOTIFICATION_ID = 4801
+    internal const val NOTIFICATION_ID = 4801
     private const val TASK = "OmarchyConnectLink"
     const val ACTION_STOP = "expo.modules.omarchylink.STOP"
 
@@ -79,9 +79,20 @@ class LinkService : Service() {
       }
     }
 
+    /**
+     * The line in the shade that says whether this phone can see its desktop.
+     *
+     * It is the app's whole presence while nobody has it open, so it says the
+     * true thing rather than the flattering one: the title used to read
+     * "Connected to <desktop>" for as long as a pairing existed, which meant a
+     * phone that had been off the network since breakfast still claimed to be
+     * connected. The name of the desktop is not news; whether it is reachable
+     * is.
+     */
     private fun buildNotification(context: Context): Notification {
       ensureChannel(context)
       val desktop = LinkPrefs.desktop(context)
+      val connected = LinkPrefs.isConnected(context)
       val status = LinkPrefs.status(context).ifBlank { "starting up" }
       val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
       val tap = launch?.let {
@@ -93,10 +104,19 @@ class LinkService : Service() {
         )
       }
 
-      return NotificationCompat.Builder(context, CHANNEL)
-        .setSmallIcon(R.drawable.omarchy_link_notification)
-        .setContentTitle(desktop?.let { "Connected to $it" } ?: "Omarchy Connect")
-        .setContentText(status)
+      val title = when {
+        connected && desktop != null -> "Connected to $desktop"
+        connected -> "Connected"
+        desktop != null -> "$desktop — $status"
+        else -> "Omarchy Connect"
+      }
+
+      val builder = NotificationCompat.Builder(context, CHANNEL)
+        .setSmallIcon(
+          if (connected) R.drawable.omarchy_link_notification else R.drawable.omarchy_link_offline,
+        )
+        .setContentTitle(title)
+        .setContentText(if (connected) status else "tap to open \u00b7 the phone keeps trying")
         .setContentIntent(tap)
         .setOngoing(true)
         .setSilent(true)
@@ -104,7 +124,24 @@ class LinkService : Service() {
         .setPriority(NotificationCompat.PRIORITY_MIN)
         .setCategory(NotificationCompat.CATEGORY_SERVICE)
         .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
-        .build()
+
+      // Only when it would do something. The backoff already retries on its
+      // own schedule; this is for the case everyone knows — you have just
+      // walked back into the flat and would rather not wait out the timer.
+      if (!connected) builder.addAction(reconnectAction(context))
+
+      return builder.build()
+    }
+
+    private fun reconnectAction(context: Context): NotificationCompat.Action {
+      val intent = Intent(context, LinkActionReceiver::class.java).setAction(LinkActionReceiver.ACTION_RECONNECT)
+      val pending = PendingIntent.getBroadcast(
+        context,
+        NOTIFICATION_ID,
+        intent,
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+      )
+      return NotificationCompat.Action.Builder(R.drawable.omarchy_link_notification, "Reconnect", pending).build()
     }
 
     private fun ensureChannel(context: Context) {
@@ -133,6 +170,10 @@ class LinkService : Service() {
   override fun onCreate() {
     super.onCreate()
     running = true
+    // A fresh service instance means a fresh process and no socket: whatever
+    // the last incarnation wrote about being connected is stale by definition,
+    // and the notification is drawn on the next line.
+    LinkPrefs.setConnected(this, false)
     // Android gives a service started with `startForegroundService` five
     // seconds to put up its notification, so this happens before anything
     // that could conceivably block.
@@ -222,6 +263,10 @@ class LinkService : Service() {
 
   override fun onDestroy() {
     running = false
+    LinkPrefs.setConnected(this, false)
+    // Nothing is left that could carry an answer to the desktop, or fetch a
+    // file it offers to save, so the shade should not keep offering either.
+    Shade.cancelEverything(this)
     pendingListener?.let { host?.removeReactInstanceEventListener(it) }
     pendingListener = null
     finishTask()

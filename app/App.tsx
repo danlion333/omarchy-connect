@@ -1,6 +1,7 @@
-import React, { useState } from 'react'
+import React, { useEffect, useMemo, useState } from 'react'
 import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
 import { StatusBar } from 'expo-status-bar'
+import * as Linking from 'expo-linking'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Feather } from '@expo/vector-icons'
 import { useFonts, JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsMono_700Bold } from '@expo-google-fonts/jetbrains-mono'
@@ -50,6 +51,17 @@ function Splash() {
 function Shell() {
   const { desktop, ready, palette } = useConnection()
   const [tab, setTab] = useState<TabKey>('stats')
+  const route = useRequestedRoute()
+  const [opening, setOpening] = useState<string | null>(null)
+
+  // A tapped notification should land where its news is, not on whatever
+  // screen the app happened to be left on. `useURL` covers both the cold start
+  // and the app already running, so this is the whole of it.
+  useEffect(() => {
+    if (!route) return
+    setTab(route.tab)
+    if (route.agent) setOpening(route.agent)
+  }, [route])
 
   if (!ready) return <Splash />
   if (!desktop) return <PairScreen />
@@ -59,13 +71,45 @@ function Shell() {
       <View style={{ flex: 1 }}>
         {tab === 'stats' ? <DashboardScreen /> : null}
         {tab === 'remote' ? <RemoteScreen /> : null}
-        {tab === 'agents' ? <AgentsScreen /> : null}
+        {tab === 'agents' ? <AgentsScreen open={opening} onOpened={() => setOpening(null)} /> : null}
         {tab === 'share' ? <ShareScreen /> : null}
         {tab === 'setup' ? <SettingsScreen /> : null}
       </View>
       <TabBar current={tab} onChange={setTab} />
     </View>
   )
+}
+
+/**
+ * Where a deep link is asking the app to be.
+ *
+ * Two shapes, both carried by notifications this app raises:
+ * `omarchy-connect://agent/<id>` for the agent that has stopped to ask
+ * something, and `omarchy-connect://share` for a file or the clipboard. The
+ * scheme is already declared for pairing and the activity is `singleTask`, so
+ * one hook answers for a launch from cold and for a tap while the app is up.
+ *
+ * Each link carries a nonce it does not read, which is why identical taps
+ * still register: React Native hands a deep link over as a value, and a value
+ * the same as the last one is not a change.
+ */
+function useRequestedRoute(): { tab: TabKey; agent?: string } | null {
+  const url = Linking.useURL()
+  // Memoised on the URL, not merely computed: a fresh object every render
+  // would re-fire the effect that acts on it, and the tab bar would spring
+  // back to the notification's screen every time anything else re-rendered.
+  return useMemo(() => {
+    if (!url) return null
+    try {
+      const { hostname, path } = Linking.parse(url)
+      if (hostname === 'share') return { tab: 'share' as TabKey }
+      if (hostname !== 'agent') return null
+      const id = (path || '').replace(/^\/+/, '')
+      return id ? { tab: 'agents' as TabKey, agent: decodeURIComponent(id) } : { tab: 'agents' as TabKey }
+    } catch {
+      return null
+    }
+  }, [url])
 }
 
 function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {

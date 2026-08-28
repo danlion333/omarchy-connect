@@ -14,6 +14,7 @@ object LinkPrefs {
   private const val KEY_ENABLED = "enabled"
   private const val KEY_STATUS = "status"
   private const val KEY_DESKTOP = "desktop"
+  private const val KEY_CONNECTED = "connected"
 
   private fun prefs(context: Context) =
     context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -45,5 +46,20 @@ object LinkPrefs {
 
   fun setDesktop(context: Context, value: String?) {
     prefs(context).edit().putString(KEY_DESKTOP, value).apply()
+  }
+
+  /**
+   * Whether the socket is actually up, as opposed to merely wanted.
+   *
+   * The notification used to read the desktop's name and say "Connected to"
+   * regardless, which made it a decoration rather than a status line — the one
+   * thing a KDE Connect style notification exists to be. Kept separately from
+   * the status text because the text is prose and this is what the title, the
+   * icon and the action button all branch on.
+   */
+  fun isConnected(context: Context): Boolean = prefs(context).getBoolean(KEY_CONNECTED, false)
+
+  fun setConnected(context: Context, value: Boolean) {
+    prefs(context).edit().putBoolean(KEY_CONNECTED, value).apply()
   }
 }

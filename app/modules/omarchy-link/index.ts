@@ -6,7 +6,22 @@ export type LinkStatusText = string
 type Events = {
   /** The default network came or went — the moment to re-dial, not to wait. */
   onNetworkChange: () => void
+  /** A notification button asked for something the app has to finish. */
+  onOutbox: () => void
+  /** The reconnect button on the ongoing notification. */
+  onLinkReconnect: () => void
 }
+
+/**
+ * One thing asked for from the shade, waiting for a socket to do it with.
+ *
+ * `reply` — `id` is an agent session, `text` the answer typed into it.
+ * `save` — `id` is an offer token, `text` the file's name.
+ */
+export type OutboxEntry = { kind: 'reply' | 'save'; id: string; text: string }
+
+/** The namespaces a notification can belong to. Mirrors `Shade` in Kotlin. */
+export type AlertKind = 'agent' | 'done' | 'file' | 'clip'
 
 declare class OmarchyLink extends NativeModule<Events> {
   isAvailable(): boolean
@@ -15,7 +30,24 @@ declare class OmarchyLink extends NativeModule<Events> {
   hasChoice(): boolean
   start(): void
   stop(): void
-  setStatus(status: LinkStatusText, desktop: string | null): void
+  setStatus(status: LinkStatusText, desktop: string | null, connected: boolean): void
+  notifyAgentWaiting(
+    id: string,
+    agent: string,
+    title: string,
+    prompt: string,
+    canReply: boolean,
+    alert: boolean,
+  ): void
+  notifyAgentDone(id: string, agent: string, title: string, preview: string): void
+  notifyFile(token: string, name: string, size: string, saveable: boolean): void
+  notifyClipboard(text: string): void
+  clearAlert(kind: AlertKind, key: string): void
+  clearAlerts(kind: AlertKind): void
+  clearEveryAlert(): void
+  noteAgentAlert(id: string, note: string): void
+  noteFileAlert(token: string, name: string, note: string): void
+  drainOutbox(): Promise<OutboxEntry[]>
   canPostNotifications(): boolean
   requestNotificationPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
   isBatteryOptimized(): boolean
@@ -97,11 +129,127 @@ export function stopBackgroundLink(): void {
 }
 
 /** Keeps the ongoing notification honest about what the socket is doing. */
-export function setBackgroundLinkStatus(status: string, desktop: string | null): void {
+export function setBackgroundLinkStatus(status: string, desktop: string | null, connected: boolean): void {
   try {
-    linkService()?.setStatus(status, desktop)
+    linkService()?.setStatus(status, desktop, connected)
   } catch {
     /* the notification is the least important thing in the room */
+  }
+}
+
+/* ── what the phone is allowed to say ───────────────────────────────────── */
+
+/**
+ * The one notification in this app allowed to interrupt.
+ *
+ * `alert` is false when an agent that was already waiting merely reworded its
+ * question: the shade is corrected, the phone stays quiet. `canReply` decides
+ * whether the notification carries a text box — a desktop that cannot type
+ * into that session should not be offering one.
+ */
+export function notifyAgentWaiting(input: {
+  id: string
+  agent: string
+  title: string
+  prompt: string
+  canReply: boolean
+  alert: boolean
+}): void {
+  try {
+    linkService()?.notifyAgentWaiting(
+      input.id,
+      input.agent,
+      input.title,
+      input.prompt,
+      input.canReply,
+      input.alert,
+    )
+  } catch {
+    /* a notification that will not post is not worth a crash */
+  }
+}
+
+/** An agent finished something that had been running long enough to matter. */
+export function notifyAgentDone(input: { id: string; agent: string; title: string; preview: string }): void {
+  try {
+    linkService()?.notifyAgentDone(input.id, input.agent, input.title, input.preview)
+  } catch {
+    /* same */
+  }
+}
+
+/**
+ * A file the desktop is offering. `saveable` is what draws the **Save**
+ * button, and it belongs only on something the gallery can actually hold —
+ * "save" for an arbitrary file means choosing where, and that is a screen.
+ */
+export function notifyFile(input: { token: string; name: string; size: string; saveable: boolean }): void {
+  try {
+    linkService()?.notifyFile(input.token, input.name, input.size, input.saveable)
+  } catch {
+    /* same */
+  }
+}
+
+/** Whatever the desktop last copied, as one silent self-replacing line. */
+export function notifyClipboard(text: string): void {
+  try {
+    linkService()?.notifyClipboard(text)
+  } catch {
+    /* same */
+  }
+}
+
+export function clearAlert(kind: AlertKind, key: string): void {
+  try {
+    linkService()?.clearAlert(kind, key)
+  } catch {
+    /* same */
+  }
+}
+
+export function clearAlerts(kind: AlertKind): void {
+  try {
+    linkService()?.clearAlerts(kind)
+  } catch {
+    /* same */
+  }
+}
+
+export function clearEveryAlert(): void {
+  try {
+    linkService()?.clearEveryAlert()
+  } catch {
+    /* same */
+  }
+}
+
+/** Replaces an alert with a word about what became of what it asked for. */
+export function noteAgentAlert(id: string, note: string): void {
+  try {
+    linkService()?.noteAgentAlert(id, note)
+  } catch {
+    /* same */
+  }
+}
+
+export function noteFileAlert(token: string, name: string, note: string): void {
+  try {
+    linkService()?.noteFileAlert(token, name, note)
+  } catch {
+    /* same */
+  }
+}
+
+/**
+ * Work asked for from a notification while there was nothing running to do it
+ * — after a reboot, or once Android tore the runtime down under the service.
+ */
+export async function drainOutbox(): Promise<OutboxEntry[]> {
+  try {
+    return (await linkService()?.drainOutbox()) ?? []
+  } catch {
+    return []
   }
 }
 

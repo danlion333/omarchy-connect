@@ -45,11 +45,30 @@ class OmarchyLinkModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("OmarchyLink")
 
-    Events("onNetworkChange")
+    Events("onNetworkChange", "onOutbox", "onLinkReconnect")
+
+    /**
+     * The notification buttons run in a broadcast receiver, which has no way
+     * to reach a module instance on its own. This is that way: set while a
+     * runtime exists, and the receiver falls back to its own persistence when
+     * it is null.
+     */
+    OnCreate {
+      LinkActionReceiver.listener = { event, payload ->
+        try {
+          this@OmarchyLinkModule.sendEvent(event, payload)
+        } catch (error: Exception) {
+          /* the runtime went away mid-broadcast; the backlog still has it */
+        }
+      }
+    }
 
     OnStartObserving { watchNetwork() }
     OnStopObserving { unwatchNetwork() }
-    OnDestroy { unwatchNetwork() }
+    OnDestroy {
+      LinkActionReceiver.listener = null
+      unwatchNetwork()
+    }
 
     Function("isAvailable") { true }
 
@@ -77,12 +96,82 @@ class OmarchyLinkModule : Module() {
       LinkService.stop(context)
     }
 
-    /** What the ongoing notification says, kept in step with the socket. */
-    Function("setStatus") { status: String, desktop: String? ->
+    /**
+     * What the ongoing notification says, kept in step with the socket.
+     *
+     * `connected` is separate from the text on purpose: the text is prose for
+     * a human to read, and this is what the title, the icon and the reconnect
+     * button branch on. See `LinkPrefs.isConnected`.
+     */
+    Function("setStatus") { status: String, desktop: String?, connected: Boolean ->
       LinkPrefs.setStatus(context, status)
       LinkPrefs.setDesktop(context, desktop)
+      LinkPrefs.setConnected(context, connected)
       LinkService.refresh(context)
     }
+
+    /* ── what the phone is allowed to say ─────────────────────────────── */
+
+    /**
+     * Raises, or quietly corrects, the alert for one blocked session.
+     *
+     * `alert` false is the correction: the agent was already waiting and only
+     * the wording of its question changed, which is not worth a second buzz.
+     */
+    Function("notifyAgentWaiting") { id: String, agent: String, title: String, prompt: String, canReply: Boolean, alert: Boolean ->
+      AgentAlerts.waiting(
+        context,
+        session = id,
+        agent = agent,
+        title = title,
+        prompt = prompt,
+        desktop = LinkPrefs.desktop(context),
+        canReply = canReply,
+        alert = alert,
+      )
+    }
+
+    /**
+     * An agent finished something long enough to have been worth waiting on.
+     * Whether it was long enough is decided in JavaScript — every turn an
+     * agent takes ends idle, and this must not fire on all of them.
+     */
+    Function("notifyAgentDone") { id: String, agent: String, title: String, preview: String ->
+      AgentAlerts.finished(context, id, agent, title, preview, LinkPrefs.desktop(context))
+    }
+
+    /** A file the desktop is offering. `saveable` draws the gallery button. */
+    Function("notifyFile") { token: String, name: String, size: String, saveable: Boolean ->
+      DesktopAlerts.file(context, token, name, size, LinkPrefs.desktop(context), saveable)
+    }
+
+    /** Whatever the desktop last copied, as one silent self-replacing line. */
+    Function("notifyClipboard") { text: String ->
+      DesktopAlerts.clipboard(context, text, LinkPrefs.desktop(context))
+    }
+
+    /** The agent moved on, the offer expired, or the phone did. */
+    Function("clearAlert") { kind: String, key: String -> Shade.cancel(context, kind, key) }
+
+    Function("clearAlerts") { kind: String -> Shade.cancelAll(context, kind) }
+
+    Function("clearEveryAlert") { Shade.cancelEverything(context) }
+
+    /** Says what became of something asked for from the shade. */
+    Function("noteAgentAlert") { id: String, note: String ->
+      AgentAlerts.note(context, id, note, LinkPrefs.desktop(context))
+    }
+
+    Function("noteFileAlert") { token: String, name: String, note: String ->
+      DesktopAlerts.fileNote(context, token, name, note)
+    }
+
+    /**
+     * Work asked for from a notification while there was no socket to do it
+     * with — after a reboot, or once Android tore the runtime down under the
+     * service. Drained on every connect; see `Outbox`.
+     */
+    AsyncFunction("drainOutbox") { Outbox.drain(context) }
 
     /**
      * The service runs without this — Android 13 only withholds the

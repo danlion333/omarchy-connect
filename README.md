@@ -35,7 +35,8 @@ the desktop and the app repaints in the same palette.
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
 | **Answering calls** | Pick up or decline from the desktop — click the ringing card to answer, right-click it to decline — and over Bluetooth the conversation comes out of your speakers, with that half needing no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
-| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. You get told the moment it stops to ask you something. Off by default, and switched on from the desktop — the panel or the CLI. |
+| **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. The phone tells you the moment one stops to ask you something, and the usual one-word answer can be typed straight into the notification. Off by default, and switched on from the desktop — the panel or the CLI. |
+| **Phone notifications** | One ongoing line saying whether this phone can currently see its desktop — the KDE Connect habit — with a reconnect button on it while it cannot. Then four things it will tell you about: an agent waiting on a question (with a reply box on the notification), an agent that finished something long, a file the desktop sent (with **Save** straight to the gallery), and whatever the desktop last copied (silent, with **Copy**). Each has its own switch. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
@@ -217,6 +218,74 @@ omarchy-connect phone            # what has been mirrored so far
 > that decides whether this phone exists on the desktop when it is in your
 > pocket. iOS has no equivalent: the socket is taken away seconds after the app
 > leaves the screen.
+>
+> That notification earns its place by being a status line rather than a
+> receipt: it says **Connected to `<desktop>`** only while the socket is
+> actually up, and otherwise names the desktop, says what the link is doing —
+> connecting, reconnecting, the error it hit — and carries a **Reconnect**
+> button for the moment you walk back into the flat and would rather not wait
+> out the backoff.
+
+## Being told an agent is waiting
+
+An agent that has stopped on a permission prompt is idle until a person answers
+it. On the desktop that is obvious; with the phone in a pocket it is invisible,
+which is the whole reason this is a notification rather than the badge on the
+tab bar it used to be.
+
+When a session on the desktop enters the waiting state, the phone raises an
+alert with the question on it and a **Reply** box in the notification itself —
+so the ordinary answer never needs the app opened at all. Tapping the
+notification opens *that* conversation rather than the app's last screen.
+
+The rules it keeps:
+
+- **One alert per question.** The desktop re-sends session state freely; the
+  phone buzzes when an agent *enters* the waiting state, and silently corrects
+  the wording if the question changes under it.
+- **Nothing about a session on screen.** Reading the chat is being told.
+- **The alert dies with the question.** Answered from the phone, from the
+  desktop, or by the agent giving up — the card goes either way.
+- **No reply box it cannot honour.** A session the desktop has no way to type
+  into gets an alert without one.
+
+An answer typed into the shade is written to an on-device backlog *before*
+anything tries to send it, so it survives the phone having no socket at that
+moment — after a reboot, or once Android has torn the JavaScript runtime down
+under the service. It goes out at the next `hello`, and the notification says
+whether it was sent. Nothing is retried behind your back: an answer arriving at
+an agent that has since moved on is worse than one that never came.
+
+Switched off under Settings → Notifications, and Android-only for the same
+reason the background link is — see the note above.
+
+## The other three things the phone will say
+
+The same machinery, at three lower volumes. Each is a separate switch under
+Settings → Notifications, because the four are not the same favour: being told
+an agent is waiting is worth a sound at midnight, and being told the desktop
+copied a word is worth a line at the bottom of the shade and nothing more.
+
+- **An agent finished.** Only when it had been working for at least a minute.
+  Every turn an agent takes ends idle, so notifying on all of them would be a
+  reason to switch the feature off; the threshold is what makes it mean "the
+  thing you walked away from is done". The card comes down by itself if that
+  agent starts working again.
+- **A file arrived.** `omarchy-connect send <file>` used to put an offer up and
+  wait to be discovered. Now the phone says so, and for a picture or a video
+  the notification carries a **Save** that fetches the file and files it in the
+  gallery with the app never opened — the download and the save both run in the
+  background service. Anything else is a tap through to the share screen,
+  because "save" for an arbitrary file means choosing where, and that is a
+  conversation rather than a button. On Android 12 and older, writing to the
+  library needs a permission that cannot be asked for without a screen; there
+  the notification says so and the app is one tap away.
+- **The desktop copied something.** Silent, and one notification that keeps
+  replacing itself — a desktop clipboard is a single thing, and a phone that
+  pinged on every Ctrl+C would be uninstalled by lunchtime. **Copy** is handled
+  entirely on the phone: writing the clipboard needs no socket and no app on
+  screen, so the text is one tap from being pasteable. Nothing is said at all
+  while the app is open, where the share card is already showing it.
 
 ## Answering calls
 

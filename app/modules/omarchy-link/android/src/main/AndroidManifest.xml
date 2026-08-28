@@ -28,6 +28,17 @@
       android:stopWithTask="false" />
 
     <!--
+      The buttons on this app's notifications: the reply box on a waiting
+      agent, and the reconnect on the link line. Not exported — the only thing
+      that ever sends these is a PendingIntent this app built itself, and a
+      receiver that answers anyone would let any app on the phone type into a
+      coding agent.
+    -->
+    <receiver
+      android:name=".LinkActionReceiver"
+      android:exported="false" />
+
+    <!--
       A phone that reboots overnight would otherwise be missing from the
       desktop until somebody thought to open the app. BOOT_COMPLETED is one of
       the few broadcasts still allowed to start a foreground service from the

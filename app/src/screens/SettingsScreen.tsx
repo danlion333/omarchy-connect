@@ -4,7 +4,7 @@ import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 
 import { useConnection } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Screen } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, ListRow, Screen } from '../ui/kit'
 import { clock, duration } from '../lib/format'
 import {
   canAnswerCalls,
@@ -28,6 +28,8 @@ import {
   stopBackgroundLink,
 } from '../../modules/omarchy-link'
 import { datagramsSupported } from '../../modules/omarchy-link'
+import { alertPrefs, setAlertPrefs, type AlertCategory, type AlertPrefs } from '../api/alerts'
+import { saveAlertPrefs } from '../api/storage'
 import { font, size, space } from '../theme'
 
 export function SettingsScreen() {
@@ -175,6 +177,8 @@ export function SettingsScreen() {
 
       <BackgroundLink />
 
+      <Notifications />
+
       <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} />
 
       <Card>
@@ -266,6 +270,97 @@ function WakeOnLan() {
           />
         </>
       ) : null}
+    </Card>
+  )
+}
+
+/**
+ * What this phone is allowed to say, and about what.
+ *
+ * Four separate switches rather than one, because the four are not the same
+ * favour. Being told an agent is waiting is worth a sound at midnight; being
+ * told the desktop copied a word is worth a line at the bottom of the shade
+ * and nothing more. Bundling them would mean whoever wanted one and not the
+ * other had to give up both.
+ *
+ * All on by default: a notification nobody sees is an agent sitting idle, a
+ * file nobody knew arrived, and a clipboard that never left the desktop.
+ */
+function Notifications() {
+  const { palette, hello } = useConnection()
+  const supported = backgroundLinkSupported()
+  const [prefs, setPrefs] = useState<AlertPrefs>(alertPrefs)
+
+  const toggle = useCallback(
+    async (key: AlertCategory) => {
+      const next = { ...prefs, [key]: !prefs[key] }
+      setPrefs(next)
+      setAlertPrefs(next)
+      await saveAlertPrefs(next).catch(() => {})
+      // Asked for the moment something is switched on rather than at launch: a
+      // permission dialog nobody asked for is a dialog nobody reads.
+      if (next[key]) await requestNotificationPermission()
+    },
+    [prefs],
+  )
+
+  if (!supported) return null
+
+  const reading = Boolean((hello?.capabilities?.agents as any)?.enabled)
+
+  const rows: { key: AlertCategory; title: string; subtitle: string }[] = [
+    {
+      key: 'waiting',
+      title: 'An agent is waiting',
+      subtitle: reading
+        ? 'the question, and a reply box on the notification itself'
+        : 'reading agents is off on the desktop, so there is nothing to be told about yet',
+    },
+    {
+      key: 'done',
+      title: 'An agent finished',
+      subtitle: 'only after a long run — not for every turn it takes',
+    },
+    {
+      key: 'files',
+      title: 'A file arrived',
+      subtitle: 'with Save straight to the gallery, for a picture or a video',
+    },
+    {
+      key: 'clipboard',
+      title: 'The desktop copied something',
+      subtitle: 'silent, one line, and a Copy button — hidden while the app is open',
+    },
+  ]
+
+  return (
+    <Card>
+      <CardHeader
+        icon="bell"
+        title="Notifications"
+        subtitle={`${rows.filter((row) => prefs[row.key]).length} of ${rows.length} on`}
+        tone={rows.some((row) => prefs[row.key]) ? palette.green : palette.muted}
+      />
+      {rows.map((row, index) => (
+        <View key={row.key}>
+          {index ? <Divider /> : null}
+          {/* The chip is a Pressable in its own right, so it takes the same
+              handler rather than swallowing the row's. */}
+          <ListRow
+            title={row.title}
+            subtitle={row.subtitle}
+            onPress={() => toggle(row.key)}
+            right={
+              <Chip
+                label={prefs[row.key] ? 'on' : 'off'}
+                active={prefs[row.key]}
+                tone={palette.green}
+                onPress={() => toggle(row.key)}
+              />
+            }
+          />
+        </View>
+      ))}
     </Card>
   )
 }

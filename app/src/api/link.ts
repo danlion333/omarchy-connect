@@ -9,7 +9,14 @@ import {
   type Hello,
   type Stats,
 } from './client'
-import { deviceId, forgetDesktop, loadDesktop, saveDesktop, type SavedDesktop } from './storage'
+import {
+  deviceId,
+  forgetDesktop,
+  loadAlertPrefs,
+  loadDesktop,
+  saveDesktop,
+  type SavedDesktop,
+} from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
@@ -17,11 +24,24 @@ import { startPhoneMirror } from './phone'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
+  drainOutbox,
   linkService,
+  noteAgentAlert,
+  noteFileAlert,
   setBackgroundLinkStatus,
   startBackgroundLink,
   stopBackgroundLink,
 } from '../../modules/omarchy-link'
+import {
+  alertClipboard,
+  alertFile,
+  clearFileAlert,
+  resetAlerts,
+  setAlertPrefs,
+  syncAgentAlerts,
+} from './alerts'
+import { downloadOffer } from '../lib/download'
+import { saveToGallery } from '../lib/gallery'
 import { FALLBACK_PALETTE, type Palette } from '../theme'
 
 /**
@@ -139,6 +159,9 @@ class Link {
 
   private async open() {
     this.attachGlobalListeners()
+    // Read before the first event can arrive: a phone that has asked not to be
+    // interrupted must not be interrupted by the reconnect itself.
+    setAlertPrefs(await loadAlertPrefs())
     const saved = await loadDesktop()
     if (this.started) return
     this.started = true
@@ -195,6 +218,10 @@ class Link {
         // Only a desktop that says it wants the report gets one.
         stopReporting?.()
         stopReporting = (msg.capabilities?.device as any)?.report ? startReporting(client) : undefined
+        // Whatever a notification button asked for while the phone had no
+        // socket — after a reboot, or once Android tore the runtime down under
+        // the service. This is the first moment any of it can be done.
+        void this.flushOutbox()
       }),
       client.on('ev:stats', (data: Stats) => this.patch({ stats: data })),
       client.on('ev:theme', (data: Palette) => this.patch({ palette: { ...FALLBACK_PALETTE, ...data } })),
@@ -210,12 +237,22 @@ class Link {
         // place — otherwise the screen would keep telling the user to run a
         // command they have already run.
         if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters, data.write ?? null)
-        this.patch({ agents: reduceAgents(this.state.agents, data) })
+        this.setAgents(reduceAgents(this.state.agents, data))
       }),
-      client.on('ev:clipboard', (data: ClipboardEvent) => this.patch({ clipboard: data })),
-      client.on('ev:file', (data: FileEvent) =>
-        this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) }),
-      ),
+      client.on('ev:clipboard', (data: ClipboardEvent) => {
+        this.patch({ clipboard: data })
+        alertClipboard(data.text)
+      }),
+      client.on('ev:file', (data: FileEvent) => {
+        this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) })
+        // `out` is out of the desktop, which is the only direction that is
+        // news here — a file this phone sent is a file its owner just watched
+        // leave. The token is what makes it fetchable; without one there is
+        // nothing a notification could offer to do.
+        if (data.direction === 'out' && data.token) {
+          alertFile({ token: data.token, name: data.name, size: data.size })
+        }
+      }),
       client.on('latency', (value: number) => this.patch({ latencyMs: value })),
     ]
     return () => {
@@ -245,7 +282,7 @@ class Link {
       this.patch({ hello: { ...hello, capabilities } as Hello })
     }
     if (enabled) void this.refreshAgents()
-    else this.patch({ agents: [] })
+    else this.setAgents([])
   }
 
   private attachGlobalListeners() {
@@ -262,6 +299,16 @@ class Link {
         // A phone that just joined a network cannot resolve the desktop the
         // same millisecond; the first attempt failing is normal and the
         // backoff takes it from there.
+        this.client?.reconnectNow()
+      })
+      // Somebody answered a waiting agent from the notification shade. The
+      // text is already safe in the native backlog; this is the fast path for
+      // the ordinary case where the runtime happened to be up.
+      // A notification button asked for something. Whatever it was is already
+      // safe in the native outbox; this is the fast path for the ordinary case
+      // where the runtime happened to be up.
+      native.addListener('onOutbox', () => void this.flushOutbox())
+      native.addListener('onLinkReconnect', () => {
         this.client?.reconnectNow()
       })
     }
@@ -324,7 +371,7 @@ class Link {
             : status === 'error'
               ? this.state.error || 'not connected'
               : 'not connected'
-    setBackgroundLinkStatus(text, this.state.desktop?.name ?? null)
+    setBackgroundLinkStatus(text, this.state.desktop?.name ?? null, status === 'connected')
   }
 
   /* ── what the app asks of it ─────────────────────────────────────── */
@@ -400,6 +447,7 @@ class Link {
     // Nothing left to stay awake for: the service goes before the socket, so
     // the notification does not linger over a link that no longer exists.
     stopBackgroundLink()
+    resetAlerts()
     this.unwire?.()
     this.unwire = null
     this.client?.close()
@@ -457,11 +505,79 @@ class Link {
     if (!client || client.status !== 'connected') return
     try {
       const res = await client.call<{ sessions: AgentSession[] }>('agents.list', {})
-      this.patch({ agents: res.sessions || [] })
+      this.setAgents(res.sessions || [])
     } catch {
       // Disabled on the desktop, or an older daemon: an empty list is the
       // honest answer, and the screen says why.
-      this.patch({ agents: [] })
+      this.setAgents([])
+    }
+  }
+
+  /**
+   * The one door the session list changes through.
+   *
+   * Everything the phone shows about agents hangs off this — the screen, the
+   * tab badge, and now the notification that interrupts. Routing the three
+   * writers through here is what keeps the shade from disagreeing with the
+   * list: a question answered on the desktop clears its card whether the news
+   * arrived as an event or as a fresh `agents.list` after a reconnect.
+   */
+  private setAgents(agents: AgentSession[]) {
+    this.patch({ agents })
+    syncAgentAlerts(agents)
+  }
+
+  /**
+   * Does whatever a notification button asked for.
+   *
+   * The request was written down natively before this had any chance to run —
+   * see `Outbox` — so failing here is recoverable: the notification says what
+   * happened and the thing is still there to do properly. Nothing is retried
+   * behind the user's back, because an answer arriving at an agent that has
+   * since moved on is worse than one that never came.
+   */
+  private async flushOutbox() {
+    // Draining is destructive, so it waits for a socket that could actually
+    // carry the work out. Anything asked for while the phone was offline stays
+    // in the native outbox until `hello`, which is where this is called again.
+    if (this.client?.status !== 'connected') return
+    for (const entry of await drainOutbox()) {
+      if (entry.kind === 'reply') await this.deliverReply(entry.id, entry.text)
+      else if (entry.kind === 'save') await this.saveOffer(entry.id, entry.text)
+    }
+  }
+
+  private async deliverReply(id: string, text: string) {
+    try {
+      await this.call('agents.send', { id, text })
+      noteAgentAlert(id, `sent: ${text}`)
+    } catch (error) {
+      noteAgentAlert(id, `not sent — ${(error as Error)?.message || 'the desktop did not take it'}`)
+    }
+  }
+
+  /**
+   * Fetches an offered file and puts it in the phone's own gallery.
+   *
+   * Runs with no screen mounted, which is the entire point — **Save** on the
+   * notification is meant to be the whole interaction. On Android 13 and up
+   * that needs no prompt, because writing through MediaStore is allowed
+   * outright; older versions want a storage permission that cannot be asked
+   * for without an activity, and there the notification says so and the app is
+   * one tap away.
+   */
+  private async saveOffer(token: string, name: string) {
+    const client = this.client
+    if (!client) return
+    try {
+      const uri = await downloadOffer(client.downloadUrl(token), token, name)
+      await saveToGallery(uri)
+      noteFileAlert(token, name, 'in your gallery')
+      // Kept on screen for a moment as a receipt, then taken down: the offer
+      // has been dealt with, and a card that lingers invites a second save.
+      setTimeout(() => clearFileAlert(token), 8_000)
+    } catch (error) {
+      noteFileAlert(token, name, `not saved — ${(error as Error)?.message || 'the phone refused it'}`)
     }
   }
 }

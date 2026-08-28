@@ -27,6 +27,7 @@ class BootReceiver : BroadcastReceiver() {
     // The socket is not up yet and the notification is drawn before any
     // JavaScript runs, so say what is actually true.
     LinkPrefs.setStatus(context, "connecting")
+    LinkPrefs.setConnected(context, false)
     try {
       LinkService.start(context)
     } catch (error: Exception) {

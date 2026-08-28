@@ -1,9 +1,11 @@
 import * as SecureStore from 'expo-secure-store'
 
+import { DEFAULT_ALERTS, type AlertPrefs } from './alerts'
 import type { WakeInfo } from '../lib/wol'
 
 const KEY = 'omarchy-connect.desktop'
 const DEVICE_KEY = 'omarchy-connect.device-id'
+const ALERTS_KEY = 'omarchy-connect.agent-alerts'
 
 export type SavedDesktop = {
   host: string
@@ -49,4 +51,35 @@ export async function deviceId(): Promise<string> {
   const id = `phone-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`
   await SecureStore.setItemAsync(DEVICE_KEY, id)
   return id
+}
+
+/**
+ * Which of the phone's notifications are wanted.
+ *
+ * All on unless turned off: a notification nobody sees is an agent sitting
+ * idle, a file nobody knew arrived, and a clipboard that never left the
+ * desktop — and a default of silence would hide every one of those from
+ * everybody who never went looking for the switch.
+ *
+ * Read leniently on purpose. A build that adds a category has to do something
+ * sensible with a preferences blob written before it existed, and "on" is that
+ * something.
+ */
+export async function loadAlertPrefs(): Promise<AlertPrefs> {
+  try {
+    const raw = await SecureStore.getItemAsync(ALERTS_KEY)
+    if (!raw) return { ...DEFAULT_ALERTS }
+    const saved = JSON.parse(raw) as Partial<AlertPrefs>
+    const next = { ...DEFAULT_ALERTS }
+    for (const key of Object.keys(next) as (keyof AlertPrefs)[]) {
+      if (typeof saved[key] === 'boolean') next[key] = saved[key] as boolean
+    }
+    return next
+  } catch {
+    return { ...DEFAULT_ALERTS }
+  }
+}
+
+export async function saveAlertPrefs(prefs: AlertPrefs): Promise<void> {
+  await SecureStore.setItemAsync(ALERTS_KEY, JSON.stringify(prefs))
 }

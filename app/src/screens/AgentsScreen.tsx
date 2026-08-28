@@ -15,10 +15,22 @@ import { space } from '../theme'
  * reach the phone while it is on another screen entirely — and a pull-to-
  * refresh asks for the authoritative answer.
  */
-export function AgentsScreen() {
+export function AgentsScreen({ open: requested, onOpened }: { open?: string | null; onOpened?: () => void } = {}) {
   const { agents, refreshAgents, palette, status, hello } = useConnection()
   const [openId, setOpenId] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
+
+  /**
+   * A session asked for from outside — the notification saying this agent is
+   * waiting. Remembered rather than acted on: on a cold start the list has not
+   * arrived yet, and the chat opens the moment the session it names turns up
+   * in it.
+   */
+  useEffect(() => {
+    if (!requested) return
+    setOpenId(requested)
+    onOpened?.()
+  }, [requested, onOpened])
 
   const connected = status === 'connected'
   const caps = (hello?.capabilities?.agents ?? null) as AgentCapabilities | null
