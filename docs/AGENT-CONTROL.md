@@ -410,6 +410,20 @@ holding the phone still had to get up.
   dropped as the duplicate it is, matched on `tool_use_id`. This also unmakes
   half of an answer claimed below: a session found by scanning `/proc`, with no
   hooks at all, cannot see a question either.
+- *The words the question was held back with cannot be carried at all.* The
+  withheld turn is usually the agent explaining what it is about to ask about —
+  the paragraph a person on the sofa would actually decide on — and no hook has
+  it: `PreToolUse` is handed `tool_input`, which is the question and nothing
+  else. So the phone draws the card and, until the answer releases the turn,
+  nothing above it. What *is* fixable is where those words land when the file
+  finally catches up: they were written before the question, so the card that
+  has been on screen for minutes slides down to stand behind them rather than
+  leaving an explanation printed after the question it explains. The card keeps
+  its `seq` through the move — the phone answers a question by `seq`, and a card
+  that renumbers under a thumb answers the wrong one — and the list is re-sent
+  whole, because a block that moved is not something an appending reader can be
+  told about one block at a time. The live half is only reachable off the
+  terminal itself: `agents.screen`, which is tmux-only.
 - *An option's position is the keystroke that picks it*, so the app draws the
   numbers where the terminal draws them and `agents.answer` takes a block and an
   index rather than a digit. The desktop then checks the option against the

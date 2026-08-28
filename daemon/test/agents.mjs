@@ -541,6 +541,70 @@ check('an option keeps what it means', questionBlock?.questions?.[0]?.options[0]
 const stuck = await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting' && String(e.prompt).includes('database'))
 check('a question on disk is a session waiting', Boolean(stuck), stuck?.prompt)
 
+/* ── the words the question was held back with ─────────────────────────── */
+
+// Claude Code writes an assistant turn down only once the tool inside it has
+// returned, so the sentence the agent said on its way to asking is withheld
+// along with the question: the hook carries the card minutes before the file
+// carries the words. When the file finally catches up, those words must not
+// land *under* a card that was drawn before them — an explanation printed
+// after the question it explains is a conversation read backwards.
+const HELD_ID = 'toolu_ask_held'
+const heldInput = {
+  questions: [
+    {
+      question: 'Remove the pairing on both sides?',
+      header: 'Re-pair',
+      multiSelect: false,
+      options: [{ label: 'Yes, do it' }, { label: 'Just tell me how' }],
+    },
+  ],
+}
+await hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: HELD_ID, tool_input: heldInput })
+const carried = await waitFor(events, (e) => e.kind === 'blocks' && e.blocks.some((b) => b.ref === HELD_ID))
+check('a hook carries a question the file does not have yet', Boolean(carried))
+const heldCard = (await req('agents.open', { id: session.id, limit: 200 })).blocks.find((b) => b.ref === HELD_ID)
+
+// The whole turn arrives at once, the way Claude Code writes it: what the
+// agent said, the question it asked, and the answer that released both.
+fs.appendFileSync(
+  transcript,
+  [
+    line({
+      type: 'assistant',
+      timestamp: at,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'The pairing is only half there.' },
+          { type: 'tool_use', id: HELD_ID, name: 'AskUserQuestion', input: heldInput },
+        ],
+      },
+    }),
+    line({
+      type: 'user',
+      timestamp: at,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: HELD_ID, content: 'Yes, do it' }] },
+    }),
+  ].join(''),
+)
+
+// A block that moved is not something an appending phone can be told about one
+// block at a time, so the list arrives again whole.
+const caught = await waitFor(events, (e) => e.kind === 'blocks' && e.reset === true)
+check('a reordered conversation is sent again whole', Boolean(caught))
+const said = caught?.blocks.findIndex((b) => b.text === 'The pairing is only half there.')
+const card = caught?.blocks.findIndex((b) => b.ref === HELD_ID)
+check('the words the question was held back with come before it', said >= 0 && card > said, `${said} then ${card}`)
+check(
+  'the question is still one card',
+  caught?.blocks.filter((b) => b.ref === HELD_ID && b.kind === 'question').length === 1,
+)
+// The phone answers a question by seq, and a card that renumbers under a thumb
+// is a phone answering the wrong one.
+check('the card keeps the number the phone knows it by', caught?.blocks[card]?.seq === heldCard.seq, `${caught?.blocks[card]?.seq} vs ${heldCard.seq}`)
+check('the answer that released the turn comes after the card', caught?.blocks.findIndex((b) => b.kind === 'result' && b.ref === HELD_ID) > card)
+
 /* ── answering ─────────────────────────────────────────────────────────── */
 
 // The hard half, exercised against a real pane rather than a mock: the point
