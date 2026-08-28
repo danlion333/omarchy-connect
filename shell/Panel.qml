@@ -41,6 +41,13 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
+  // Every glyph on this panel is drawn into a cell of this width rather than
+  // taking whatever width its own outline happens to want. Nerd Fonts draws a
+  // phone, a tray and a robot at three different widths, and a list whose
+  // names start on three different columns is a list you read one row at a
+  // time. One number, and the whole panel lines up.
+  readonly property int iconCell: Math.round(Style.font.body * 1.5)
+
   readonly property bool linked: bridge.online.length > 0
   readonly property bool pairing: Model.pairingActive(bridge.status, root.now)
   readonly property var phone: bridge.primary
@@ -67,20 +74,32 @@ Panel {
   // without being asked. It carries what the four rows of a stats grid used to
   // say between them: whether the channel is encrypted, how long it has been
   // up, and how much battery is behind it.
-  readonly property string statusLine: {
-    if (!bridge.loaded) return "Not installed"
-    if (!bridge.running) return "Daemon stopped"
-    if (pairing) return "Waiting for a phone"
+  //
+  // Built once as glyph-and-words pairs, because it is read twice: the hero
+  // draws the glyphs, and the IPC verb answers with the words alone. A script
+  // asking this panel what the link is doing wants a sentence, not four
+  // private-use codepoints it has no font for.
+  readonly property var statusParts: {
+    if (!bridge.loaded) return [{ glyph: "󰋽", text: "Not installed" }]
+    if (!bridge.running) return [{ glyph: "󰚦", text: "Daemon stopped" }]
+    if (pairing) return [{ glyph: "󰐲", text: "Waiting for a phone" }]
     if (linked) {
-      var parts = [phone && phone.secure === false ? "Unencrypted" : "Encrypted"]
+      var parts = [phone && phone.secure === false
+        ? { glyph: "󱙱", text: "Unencrypted" }
+        : { glyph: "󰌾", text: "Encrypted" }]
       var up = Model.uptime(phone.since, root.now)
-      if (up !== "") parts.push(up)
-      if (phone.battery) parts.push(Model.batteryText(phone.battery))
-      return parts.join(" · ")
+      if (up !== "") parts.push({ glyph: "󰅐", text: up })
+      // The battery glyph tracks the level and grows a bolt while it charges,
+      // so the shape of it says the number before the number is read.
+      if (phone.battery) parts.push({ glyph: Model.batteryGlyph(phone.battery), text: Model.batteryText(phone.battery) })
+      return parts
     }
-    if (!paired) return "No phone paired"
-    return "Offline · last seen " + Model.since(phone ? phone.lastSeen : 0, root.now)
+    if (!paired) return [{ glyph: "󰥍", text: "No phone paired" }]
+    return [{ glyph: "󰌺", text: "Offline · last seen " + Model.since(phone ? phone.lastSeen : 0, root.now) }]
   }
+
+  readonly property string statusLine: statusParts.map(function (p) { return p.text }).join(" · ")
+  readonly property string heroMeta: statusParts.map(function (p) { return p.glyph + " " + p.text }).join("  ·  ")
 
   // Every row behind *Details* is gated on having something to say. A readout
   // whose whole content is "no" is not a readout: an Android phone on the LAN
@@ -108,11 +127,13 @@ Panel {
     // out — never both. Offering Pair beside a phone that is already paired
     // would be a button whose only outcome is a refusal.
     var list = [root.paired
-      ? { key: "unpair", label: "Unpair", icon: "󰅖",
+      ? { key: "unpair", label: "Unpair", icon: "󰥍",
           tooltip: "Forget " + (bridge.device ? bridge.device.name : "this phone") + " — a desktop pairs one phone at a time" }
-      : { key: "pair", label: "Pair", icon: "󰐗", tooltip: "Show a pairing QR code" }]
-    if (bridge.running) list.push({ key: "send", label: "Send", icon: "󰈤", tooltip: "Pick a file to send to the phone" })
-    list.push({ key: "inbox", label: "Inbox", icon: "󰉋", tooltip: "Open the folder phones drop files into" })
+      // A QR code is what the button actually puts on screen, so it is what the
+      // button wears.
+      : { key: "pair", label: "Pair", icon: "󰐲", tooltip: "Show a pairing QR code" }]
+    if (bridge.running) list.push({ key: "send", label: "Send", icon: "󱀹", tooltip: "Pick a file to send to the phone" })
+    list.push({ key: "inbox", label: "Inbox", icon: "󰷏", tooltip: "Open the folder phones drop files into" })
     return list
   }
 
@@ -293,7 +314,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.barClock !== ""
-      ? "󰂰  " + root.barClock
+      ? "󰏶  " + root.barClock
       : Model.deviceGlyph(root.phone ? root.phone.platform : "")
     foreground: bridge.ringing ? root.urgent : root.barIconColor
     active: root.pairing
@@ -409,7 +430,7 @@ Panel {
               width: parent.width
               title: root.phone ? String(root.phone.name) : (bridge.status ? String(bridge.status.name) : "Omarchy Connect")
               detail: root.phone ? Model.platformLabel(root.phone.platform) : ""
-              meta: root.statusLine
+              meta: root.heroMeta
               foreground: root.foreground
               fontFamily: root.fontFamily
               iconOpacity: root.linked ? 1.0 : 0.55
@@ -446,14 +467,32 @@ Panel {
 
           /* ── messages ───────────────────────────────────────────── */
 
-          Text {
-            visible: text !== ""
+          Row {
+            id: messageRow
+            visible: messageText.text !== ""
             width: parent.width
-            text: bridge.actionStatus !== "" ? bridge.actionStatus : bridge.lastError
-            color: bridge.lastError !== "" && bridge.actionStatus === "" ? root.urgent : root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
-            wrapMode: Text.WordWrap
+            spacing: Style.space(8)
+
+            readonly property bool failed: bridge.lastError !== "" && bridge.actionStatus === ""
+
+            Text {
+              width: root.iconCell
+              text: messageRow.failed ? "󰅚" : "󰋼"
+              color: messageRow.failed ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              id: messageText
+              width: parent.width - root.iconCell - parent.spacing
+              text: bridge.actionStatus !== "" ? bridge.actionStatus : bridge.lastError
+              color: messageRow.failed ? root.urgent : root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.WordWrap
+            }
           }
 
           // A live pairing code, front and centre — it expires in three minutes
@@ -482,7 +521,7 @@ Panel {
               spacing: Style.space(10)
 
               Text {
-                text: "󰐗"
+                text: "󰄡"
                 color: root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.icon
@@ -589,7 +628,7 @@ Panel {
                   }
 
                   PanelActionButton {
-                    iconText: "󰏳"
+                    iconText: "󰏵"
                     tooltipText: bridge.ringing ? "Decline" : "Hang up"
                     foreground: root.urgent
                     fontFamily: root.fontFamily
@@ -619,13 +658,27 @@ Panel {
               anchors.rightMargin: Style.space(10)
               spacing: Style.space(4)
 
-              Text {
+              Row {
                 width: parent.width
-                text: "Port " + (bridge.status ? bridge.status.port : "") + " is closed — phones cannot reach this desktop."
-                color: root.urgent
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.bodySmall
-                wrapMode: Text.WordWrap
+                spacing: Style.space(8)
+
+                Text {
+                  width: root.iconCell
+                  text: "󰻍"
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignHCenter
+                }
+
+                Text {
+                  width: parent.width - root.iconCell - parent.spacing
+                  text: "Port " + (bridge.status ? bridge.status.port : "") + " is closed — phones cannot reach this desktop."
+                  color: root.urgent
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  wrapMode: Text.WordWrap
+                }
               }
 
               Row {
@@ -670,10 +723,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader {
-              text: "CODING AGENTS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+            SectionHeader {
+              glyph: "󰚩"
+              label: "CODING AGENTS"
             }
 
             Column {
@@ -683,41 +735,24 @@ Panel {
               Repeater {
                 model: bridge.agentSessions.slice(0, 3)
 
-                delegate: Row {
+                // The mark is the agent's own — Claude's, where Claude is what
+                // is running. Which agent this is answers a question the words
+                // never do, and it answers it without spending a word: the
+                // line beside it is already carrying what the session is doing.
+                delegate: ListRow {
                   required property var modelData
-                  width: parent.width
-                  spacing: Style.space(8)
-
                   readonly property bool waiting: modelData.state === "waiting"
 
-                  Text {
-                    id: agentGlyph
-                    text: Model.agentGlyph(modelData)
-                    color: waiting ? root.urgent : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    id: agentName
-                    text: Model.agentTitle(modelData)
-                    color: waiting ? root.urgent : root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    width: Math.max(0, parent.width - agentGlyph.width - agentName.width - parent.spacing * 2)
-                    text: Model.agentDetail(modelData, root.now)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    horizontalAlignment: Text.AlignRight
-                    elide: Text.ElideRight
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
+                  // A session that never said which agent it is gets no URL at
+                  // all rather than a resolved directory, which Image would
+                  // spend a load failing before falling back anyway.
+                  mark: Model.agentMark(modelData) === "" ? "" : Qt.resolvedUrl(Model.agentMark(modelData))
+                  glyph: Model.agentGlyph(modelData)
+                  glyphColor: waiting ? root.urgent : root.dim
+                  title: Model.agentTitle(modelData)
+                  titleColor: waiting ? root.urgent : root.foreground
+                  detail: Model.agentDetail(modelData, root.now)
+                  detailColor: waiting ? root.urgent : root.dim
                 }
               }
             }
@@ -740,10 +775,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader {
-              text: "FROM THE PHONE"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+            SectionHeader {
+              glyph: "󰄜"
+              label: "FROM THE PHONE"
             }
 
             Column {
@@ -753,39 +787,15 @@ Panel {
               Repeater {
                 model: bridge.phoneRecent.slice(0, 4)
 
-                delegate: Row {
+                delegate: ListRow {
                   required property var modelData
-                  width: parent.width
-                  spacing: Style.space(8)
+                  readonly property bool missed: modelData.missed === true
 
-                  Text {
-                    id: phoneGlyph
-                    text: Model.phoneGlyph(modelData)
-                    color: modelData.missed === true ? root.urgent : root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    id: phoneWho
-                    text: Model.phoneWho(modelData)
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    width: Math.max(0, parent.width - phoneGlyph.width - phoneWho.width - parent.spacing * 2)
-                    text: Model.phoneDetail(modelData, root.now)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    horizontalAlignment: Text.AlignRight
-                    elide: Text.ElideRight
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
+                  glyph: Model.phoneGlyph(modelData)
+                  glyphColor: missed ? root.urgent : root.dim
+                  title: Model.phoneWho(modelData)
+                  titleColor: missed ? root.urgent : root.foreground
+                  detail: Model.phoneDetail(modelData, root.now)
                 }
               }
             }
@@ -804,10 +814,9 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            PanelSectionHeader {
-              text: "RECENT TRANSFERS"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+            SectionHeader {
+              glyph: "󱁥"
+              label: "RECENT TRANSFERS"
             }
 
             Column {
@@ -817,39 +826,15 @@ Panel {
               Repeater {
                 model: bridge.transfers.slice(0, 4)
 
-                delegate: Row {
+                // A file name is worth more in the middle than at either end,
+                // so this is the one list that elides from the middle.
+                delegate: ListRow {
                   required property var modelData
-                  width: parent.width
-                  spacing: Style.space(8)
 
-                  Text {
-                    id: transferGlyph
-                    text: Model.transferGlyph(modelData.direction)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    id: transferName
-                    width: Math.max(0, parent.width - transferGlyph.width - transferMeta.implicitWidth - parent.spacing * 2)
-                    text: String(modelData.name || "")
-                    color: root.foreground
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    elide: Text.ElideMiddle
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
-
-                  Text {
-                    id: transferMeta
-                    text: Model.transferLabel(modelData, root.now)
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.caption
-                    anchors.verticalCenter: parent.verticalCenter
-                  }
+                  glyph: Model.transferGlyph(modelData.direction)
+                  title: String(modelData.name || "")
+                  titleElide: Text.ElideMiddle
+                  detail: Model.transferLabel(modelData, root.now)
                 }
               }
             }
@@ -903,6 +888,7 @@ Panel {
             width: parent.width
             visible: bridge.loaded
             label: "Details"
+            glyph: "󰋽"
             section: "details"
             expanded: root.detailsOpen
             onToggled: root.toggleDetails()
@@ -911,29 +897,26 @@ Panel {
           GridLayout {
             visible: bridge.loaded && root.detailsOpen
             width: parent.width
-            columns: 4
+            columns: 2
             columnSpacing: Style.space(20)
             rowSpacing: Style.spacing.labelGap
 
             // The transport is the one thing here that is true whether or not a
             // phone is on the other end, so it is the one row with no gate.
-            InfoLabel { text: "Transport" }
+            InfoLabel { glyph: "󰒍"; text: "Transport" }
             DetailValue {
-              Layout.columnSpan: 3
-              text: bridge.tls ? "tls · pinned" : "plain"
+              text: bridge.tls ? "󰦝 tls · pinned" : "󰦜 plain"
               color: bridge.tls ? root.foreground : root.dim
             }
 
-            InfoLabel { text: "Files"; visible: root.showTransfers }
+            InfoLabel { glyph: "󱀲"; text: "Files"; visible: root.showTransfers }
             DetailValue {
-              Layout.columnSpan: 3
               visible: root.showTransfers
               text: String(bridge.counters.filesIn || 0) + " in · " + String(bridge.counters.filesOut || 0) + " out"
             }
 
-            InfoLabel { text: "Notified"; visible: root.showNotified }
+            InfoLabel { glyph: "󰂜"; text: "Notified"; visible: root.showNotified }
             DetailValue {
-              Layout.columnSpan: 3
               visible: root.showNotified
               // Missed calls are the half of this row worth a colour, so they
               // only appear once there are any.
@@ -945,17 +928,15 @@ Panel {
               color: (bridge.phone.missed || 0) > 0 ? root.urgent : root.foreground
             }
 
-            InfoLabel { text: "Bluetooth"; visible: root.showHandsfree }
+            InfoLabel { glyph: "󰂯"; text: "Bluetooth"; visible: root.showHandsfree }
             DetailValue {
-              Layout.columnSpan: 3
               visible: root.showHandsfree
               text: Model.handsfreeText(bridge.bluetooth)
               color: bridge.bluetooth && bridge.bluetooth.connected === true ? root.foreground : root.dim
             }
 
-            InfoLabel { text: "iPhone"; visible: root.showIos }
+            InfoLabel { glyph: "󰀷"; text: "iPhone"; visible: root.showIos }
             DetailValue {
-              Layout.columnSpan: 3
               visible: root.showIos
               text: Model.iosText(bridge.ios)
               color: bridge.ios && bridge.ios.subscribed === true ? root.foreground : root.dim
@@ -964,16 +945,14 @@ Panel {
             // These two are the only values too long for a quarter of the card,
             // so they take a whole row each rather than being elided into
             // uselessness — a truncated fingerprint verifies nothing.
-            InfoLabel { text: "Address" }
+            InfoLabel { glyph: "󰩠"; text: "Address" }
             DetailValue {
-              Layout.columnSpan: 3
               text: bridge.address || "--"
               copyable: !!bridge.address
               tooltipText: "Copy the address"
             }
-            InfoLabel { text: "Fingerprint" }
+            InfoLabel { glyph: "󰈷"; text: "Fingerprint" }
             DetailValue {
-              Layout.columnSpan: 3
               text: bridge.status ? String(bridge.status.fingerprint) : "--"
               copyable: !!bridge.status
               tooltipText: "Copy the fingerprint"
@@ -989,6 +968,7 @@ Panel {
           Expander {
             width: parent.width
             label: "Settings"
+            glyph: "󰒓"
             section: "settings"
             expanded: root.settingsOpen
             onToggled: root.toggleSettings()
@@ -1006,7 +986,7 @@ Panel {
               visible: bridge.agentsAvailable
               width: parent.width
               label: bridge.agentsEnabled ? "The phone can read and answer agents" : "Let the phone read and answer agents"
-              description: Model.agentsText(bridge.agents, bridge.running)
+              description: (bridge.agentsEnabled ? "󰛐  " : "󰛑  ") + Model.agentsText(bridge.agents, bridge.running)
               checked: bridge.agentsEnabled
               hasCursor: root.cursorActive && root.focusSection === "agents"
               onHovered: function (on) { if (on) root.setCursor("agents") }
@@ -1040,6 +1020,16 @@ Panel {
                 spacing: Style.space(10)
 
                 Text {
+                  text: "󰀦"
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  horizontalAlignment: Text.AlignHCenter
+                  Layout.preferredWidth: root.iconCell
+                  Layout.alignment: Qt.AlignVCenter
+                }
+
+                Text {
                   Layout.fillWidth: true
                   text: "No hooks yet — the desktop can see an agent working, but not that it has stopped to ask you something."
                   color: root.dim
@@ -1068,9 +1058,9 @@ Panel {
             Toggle {
               width: parent.width
               label: "Start at login"
-              description: bridge.serviceInstalled
+              description: "󰐥  " + (bridge.serviceInstalled
                 ? (bridge.serviceEnabled ? "The daemon comes up with the session" : "The daemon only runs when you start it")
-                : "The service is not installed yet"
+                : "The service is not installed yet")
               checked: bridge.serviceEnabled
               hasCursor: root.cursorActive && root.focusSection === "autostart"
               onHovered: function (on) { if (on) root.setCursor("autostart") }
@@ -1081,14 +1071,28 @@ Panel {
             }
           }
 
-          Text {
+          Row {
             width: parent.width
             visible: !bridge.loaded
-            text: "No status file yet. Run `omarchy-connect panel install` once, then start the daemon."
-            color: root.dim
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.caption
-            wrapMode: Text.WordWrap
+            spacing: Style.space(8)
+
+            Text {
+              width: root.iconCell
+              text: "󰋽"
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignHCenter
+            }
+
+            Text {
+              width: parent.width - root.iconCell - parent.spacing
+              text: "No status file yet. Run `omarchy-connect panel install` once, then start the daemon."
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
           }
         }
       }
@@ -1122,6 +1126,7 @@ Panel {
   component Expander: CursorSurface {
     id: expander
     property string label: ""
+    property string glyph: ""
     property string section: ""
     property bool expanded: false
 
@@ -1157,12 +1162,146 @@ Panel {
       }
 
       Text {
+        width: root.iconCell
+        text: expander.glyph
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        horizontalAlignment: Text.AlignHCenter
+        anchors.verticalCenter: parent.verticalCenter
+      }
+
+      Text {
         text: expander.label
         color: root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         anchors.verticalCenter: parent.verticalCenter
       }
+    }
+  }
+
+  // The header over a section, with the section's own glyph in the shared icon
+  // column — so the mark on every row below it sits directly under the mark on
+  // the header rather than beside it.
+  component SectionHeader: Row {
+    id: sectionHeader
+    property string glyph: ""
+    property string label: ""
+
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(8)
+
+    Text {
+      width: root.iconCell
+      text: sectionHeader.glyph
+      color: Qt.darker(root.foreground, 1.4)
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      horizontalAlignment: Text.AlignHCenter
+      topPadding: Math.ceil(Style.font.caption * 0.15)
+    }
+
+    PanelSectionHeader {
+      text: sectionHeader.label
+      foreground: root.foreground
+      fontFamily: root.fontFamily
+    }
+  }
+
+  /**
+   * One line in one of the three lists: a mark, a name, and the one thing
+   * worth saying about it, right-aligned.
+   *
+   * The mark is an SVG the agent or the source ships where there is one and a
+   * font glyph where there is not, and either way it is drawn into the shared
+   * icon column rather than at its own width — a call, a file and a coding
+   * agent are three different outlines, and a list whose names start in three
+   * different places is a list you have to read one row at a time.
+   *
+   * Both texts flex. The name takes whatever room is going; the detail is
+   * capped at the width of what it has to say, so a short "12 KB · 3m ago"
+   * never steals half the row, and a long prompt still gets its share instead
+   * of the name squeezing it out of existence the way the old arithmetic did.
+   */
+  component ListRow: RowLayout {
+    id: listRow
+
+    property string mark: ""
+    property string glyph: ""
+    property color glyphColor: root.dim
+    property string title: ""
+    property color titleColor: root.foreground
+    property string detail: ""
+    property color detailColor: root.dim
+    property int titleElide: Text.ElideRight
+
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(8)
+
+    // The detail is capped at the width of what it has to say, and that width
+    // is measured here rather than read off the label itself. An eliding Text
+    // reports the width it *is* drawing, not the width it wants, so capping it
+    // with its own implicitWidth is a ratchet: one narrow layout pass elides
+    // the text, the cap follows it down, and "ringing" spends the rest of the
+    // session as "ringi…" beside half a row of empty space.
+    TextMetrics {
+      id: detailMetrics
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      text: listRow.detail
+    }
+
+    Item {
+      Layout.preferredWidth: root.iconCell
+      Layout.preferredHeight: root.iconCell
+      Layout.alignment: Qt.AlignVCenter
+
+      Image {
+        id: markImage
+        anchors.centerIn: parent
+        width: root.iconCell
+        height: root.iconCell
+        source: listRow.mark
+        sourceSize.width: root.iconCell * 2
+        sourceSize.height: root.iconCell * 2
+        fillMode: Image.PreserveAspectFit
+        visible: status === Image.Ready
+      }
+
+      Text {
+        anchors.centerIn: parent
+        visible: !markImage.visible
+        text: listRow.glyph
+        color: listRow.glyphColor
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+
+    Text {
+      text: listRow.title
+      color: listRow.titleColor
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      elide: listRow.titleElide
+      Layout.fillWidth: true
+      Layout.minimumWidth: 0
+      Layout.alignment: Qt.AlignVCenter
+    }
+
+    Text {
+      text: listRow.detail
+      color: listRow.detailColor
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignRight
+      elide: Text.ElideRight
+      visible: text !== ""
+      Layout.fillWidth: true
+      Layout.minimumWidth: 0
+      Layout.maximumWidth: Math.ceil(detailMetrics.advanceWidth) + 1
+      Layout.alignment: Qt.AlignVCenter
     }
   }
 
@@ -1190,11 +1329,36 @@ Panel {
     }
   }
 
-  component InfoLabel: Text {
-    color: root.foreground
-    opacity: 0.6
-    font.family: root.fontFamily
-    font.pixelSize: Style.font.bodySmall
+  // A label in *Details*, led by the glyph for what it is a reading of. Same
+  // icon column as everything else, so the seven rows behind that expander read
+  // as one table rather than as seven sentences that happen to be stacked.
+  component InfoLabel: Row {
+    id: infoLabel
+    property string glyph: ""
+    property string text: ""
+
+    spacing: Style.space(8)
+    Layout.alignment: Qt.AlignLeft | Qt.AlignVCenter
+
+    Text {
+      width: root.iconCell
+      text: infoLabel.glyph
+      color: root.foreground
+      opacity: 0.45
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      horizontalAlignment: Text.AlignHCenter
+      anchors.verticalCenter: parent.verticalCenter
+    }
+
+    Text {
+      text: infoLabel.text
+      color: root.foreground
+      opacity: 0.6
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.bodySmall
+      anchors.verticalCenter: parent.verticalCenter
+    }
   }
 
   component InfoValue: Text {

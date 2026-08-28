@@ -86,7 +86,9 @@ function batteryText(battery) {
 }
 
 function transferGlyph(direction) {
-  return String(direction) === "out" ? "󰁝" : "󰁅"
+  // A tray rather than a bare arrow: the direction is half the answer, and the
+  // other half — that this row is a file at all — is what the tray carries.
+  return String(direction) === "out" ? "󰄝" : "󰄠"
 }
 
 function transferLabel(entry, now) {
@@ -133,14 +135,16 @@ function pairingActive(status, now) {
   return num(status.pairing.expiresAt, 0) > num(now, 0)
 }
 
-/** SMS or call, and whether anybody picked up. */
+/** SMS or call, which way it went, and whether anybody picked up. */
 function phoneGlyph(entry) {
   if (!entry) return "󰍩"
-  if (entry.kind === "notification") return "󰂚"
+  if (entry.kind === "notification") return "󰂜"
   if (entry.kind === "sms") return "󰍩"
-  if (entry.missed) return "󰏶"
-  if (entry.direction === "outgoing") return "󰏳"
-  return "󰏲"
+  if (entry.missed) return "󰏺"
+  if (entry.state === "ringing") return "󱆫"
+  if (entry.state === "active") return "󰏶"
+  if (entry.direction === "outgoing") return "󰏻"
+  return "󰏷"
 }
 
 /** Who it was with — a name where the phone knew one, the number otherwise. */
@@ -245,9 +249,9 @@ function callWho(call) {
 function callHeadline(call) {
   if (!call) return ""
   var who = callWho(call)
-  if (call.state === "incoming" || call.state === "waiting" || call.state === "ringing") return "󰏲  " + who
-  if (call.state === "dialing" || call.state === "alerting") return "󰏳  " + who
-  return "󰂰  " + who
+  if (call.state === "incoming" || call.state === "waiting" || call.state === "ringing") return "󱆫  " + who
+  if (call.state === "dialing" || call.state === "alerting") return "󰏻  " + who
+  return "󰏶  " + who
 }
 
 /** The dim second line: what the call is doing, and where the sound goes. */
@@ -333,9 +337,10 @@ function agentTitle(session) {
  */
 function agentDetail(session, now) {
   if (!isObject(session)) return ""
+  var mark = agentStateGlyph(session) + " "
   if (session.state === "waiting") {
     var prompt = String(session.prompt || "").replace(/\s+/g, " ").trim()
-    return prompt !== "" ? prompt : "waiting for an answer"
+    return mark + (prompt !== "" ? prompt : "waiting for an answer")
   }
   // Right-aligned and elided from the right, so the order is what survives
   // being cut: what it is doing, when it last did it, and only then that the
@@ -344,10 +349,50 @@ function agentDetail(session, now) {
   // under a header that says CODING AGENTS does not need to repeat it.
   var parts = [session.state === "working" ? "working" : "idle", since(session.lastActivity, now)]
   if (session.via === "scan") parts.push("scanned")
-  return parts.join(" · ")
+  return mark + parts.join(" · ")
 }
 
-/** One glyph per session: the alert is the whole point of the card. */
+/** Which agent this is, lowercased, or "" for a session that never said. */
+function agentId(session) {
+  if (isObject(session)) return String(session.agent || "").toLowerCase()
+  return String(session || "").toLowerCase()
+}
+
+/**
+ * The agent's own mark, as a file beside the panel.
+ *
+ * Marks resolve by convention — `assets/<id>.svg` — which is the same rule the
+ * shell's own agents panel follows, and it means a second agent needs a file
+ * dropped in a folder rather than a line of code here. A session whose agent
+ * ships nothing falls back to `agentGlyph`, and the row never notices.
+ */
+function agentMark(session) {
+  var id = agentId(session)
+  return id === "" ? "" : "assets/" + id + ".svg"
+}
+
+/**
+ * The font's answer to the same question, for a mark that failed to load.
+ *
+ * Nerd Fonts draws the two agents anybody is likely to be running; a terminal
+ * stands in for the rest, which is what an agent is when you cannot name it.
+ */
 function agentGlyph(session) {
-  return isObject(session) && session.state === "waiting" ? "󰀦" : "󰆍"
+  var id = agentId(session)
+  if (id === "claude") return ""
+  if (id === "codex" || id === "openai") return ""
+  if (id === "copilot") return ""
+  return "󰆍"
+}
+
+/**
+ * What the session is doing, as one glyph in front of the line that says it in
+ * words. The alert is the whole point of the card; the other two are there so
+ * a glance down the list reads as a shape rather than as three sentences.
+ */
+function agentStateGlyph(session) {
+  if (!isObject(session)) return ""
+  if (session.state === "waiting") return "󰀦"
+  if (session.state === "working") return "󰦖"
+  return "󰒲"
 }

@@ -26,7 +26,7 @@ still while nothing is linked, and in the bar's active colour while a pairing
 code is live. It goes urgent the moment the phone rings.
 
 A call that has been picked up is the one thing it says in words: the glyph
-becomes a clock (`󰂰  04:12`) and counts for as long as the conversation lasts,
+becomes a clock (`󰏶  04:12`) and counts for as long as the conversation lasts,
 whether or not the panel is open. Answering from the desktop leaves the
 handset on the table with its own timer on a screen nobody is looking at, so
 the count belongs somewhere it can be caught out of the corner of an eye. The
@@ -43,10 +43,14 @@ it is drawn.
 - **Hero** — the connected phone's name and platform, one line of state, and a
   switch that starts and stops the daemon. That line is the panel's only
   unconditional readout, and it carries what a grid of a dozen cells used to
-  say between them: `Encrypted · 2h 14m · 63%` while the link is up,
+  say between them: `󰌾 Encrypted · 󰅐 2h 14m · 󰂁 63%` while the link is up,
   `Offline · last seen 3m ago` once it drops, and the reason otherwise —
   daemon stopped, no phone paired, waiting for a phone. With no phone connected
-  the hero falls back to the desktop's own name.
+  the hero falls back to the desktop's own name. The battery glyph tracks the
+  level and grows a bolt while it is charging, so the shape of the line says
+  the number before the number is read. Only the hero is decorated this way;
+  `omarchy-shell omarchy-connect status` answers with the same line in words,
+  because a script has no font for a private-use codepoint.
 - **Pairing card** — only while a code is live: the six digits, a countdown,
   and a button that reopens the QR code.
 - **Call card** — the one card that is a remote control rather than a readout.
@@ -64,9 +68,12 @@ it is drawn.
   closed, and carries the exact `ufw` command. The panel never runs it;
   opening a port is the user's call.
 - **Coding agents** — whatever is running, with an agent that has stopped to
-  ask you something in the urgent colour. Only the sessions: the switch that
-  decides whether the phone may see them is a preference and lives under
-  *Settings*. Hidden until reading is on and something is actually running.
+  ask you something in the urgent colour. Each session wears its agent's own
+  mark — Claude's, where Claude is what is running — because which agent this
+  is answers a question the line beside it never does, and answers it without
+  spending a word on it. Only the sessions: the switch that decides whether the
+  phone may see them is a preference and lives under *Settings*. Hidden until
+  reading is on and something is actually running.
 - **From the phone** — the last few mirrored messages, calls and app
   notifications, missed calls in the urgent colour. Three sources feed one
   list: an Android build over the LAN, the hands-free link, and an iPhone's own
@@ -116,6 +123,30 @@ it is drawn.
 Both sections start shut on every open. A panel that remembered being expanded
 would be back to drawing everything at once within a week.
 
+## Icons
+
+Every glyph on the panel is drawn into a cell one and a half body-widths wide
+rather than at whatever width its own outline happens to want. Nerd Fonts draws
+a phone, a tray and a robot at three different widths, and a list whose names
+start on three different columns is a list you read one row at a time. One
+number in `Panel.qml` — `iconCell` — and the section headers, the three lists,
+the *Details* labels and both expanders line up down a single edge.
+
+The three lists share one row component, so a call, a file and a coding agent
+are laid out by the same rules: the mark in that cell, the name taking whatever
+room is going, and the detail right-aligned and capped at the width of what it
+actually has to say. The cap is measured with `TextMetrics` rather than read off
+the label, because an eliding `Text` reports the width it *is* drawing rather
+than the width it wants — capping it with its own `implicitWidth` is a ratchet
+that turns `ringing` into `ringi…` beside half a row of empty space and never
+lets it back.
+
+A coding-agent row prefers the agent's own mark to a glyph. Marks resolve by
+convention — `assets/<agent-id>.svg`, the same rule the shell's own agents
+panel follows — so a second agent needs a file dropped in a folder rather than
+a line of code. Nothing there is a failure: the row falls back to the font's
+logo for that agent, and to a terminal for an agent nobody draws.
+
 There is no **Paired phone** row any more. It said the phone's name, platform
 and state — which is the hero, three centimetres above it — and carried an
 unpair button that is also the first slot of the action row. Its address moved
@@ -123,7 +154,8 @@ into *Details*, and nothing else on it was ever news.
 
 ## Data
 
-The panel is strictly a display. The daemon publishes one file:
+The panel is strictly a display. Beside the QML it carries only `assets/`, the
+agent marks the coding-agent rows draw. The daemon publishes one file:
 
 ```
 ~/.local/state/omarchy-connect/status.json
