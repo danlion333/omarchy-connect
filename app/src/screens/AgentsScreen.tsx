@@ -25,7 +25,7 @@ import { space } from '../theme'
  * and the second is the only place a `--bg` session appears at all.
  */
 export function AgentsScreen({ open: requested, onOpened }: { open?: string | null; onOpened?: () => void } = {}) {
-  const { agents, agentLimits, agentJobs, refreshAgents, palette, status, hello, call } = useConnection()
+  const { agents, agentLimits, agentJobs, refreshAgents, refreshAgentJobs, palette, status, hello } = useConnection()
   const [openId, setOpenId] = useState<string | null>(null)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -53,18 +53,11 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
   const load = useCallback(async () => {
     setRefreshing(true)
     await refreshAgents()
-    // The jobs themselves are pushed; which of them the phone can walk into is
-    // not, so that half is asked for.
-    if (caps?.jobs) {
-      try {
-        const res = await call<{ open: Record<string, string> }>('agents.jobs', {})
-        setJobOpen(res.open || {})
-      } catch {
-        setJobOpen({})
-      }
-    }
+    // Changes are pushed, but a phone that has just connected has missed every
+    // change there ever was — an event stream is not a starting state.
+    if (caps?.jobs) setJobOpen(await refreshAgentJobs())
     setRefreshing(false)
-  }, [call, caps?.jobs, refreshAgents])
+  }, [caps?.jobs, refreshAgentJobs, refreshAgents])
 
   useEffect(() => {
     if (connected && caps?.enabled) void load()

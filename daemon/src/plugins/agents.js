@@ -115,9 +115,20 @@ const requireEnabled = () => {
  */
 let jobMap = new Map()
 
+/** The jobs as of the last sweep, so the map and the event share one walk. */
+let jobList = []
+
 const refreshJobs = () => {
   try {
-    jobMap = jobs.bySession()
+    jobList = jobs.available() ? jobs.list() : []
+    const map = new Map()
+    for (const job of jobList) {
+      // The resumed id last so that it wins: when a job carries both, the
+      // resumed conversation is the file it is actually writing to.
+      map.set(job.sessionId, job)
+      if (job.resumedFrom) map.set(job.resumedFrom, job)
+    }
+    jobMap = map
   } catch {
     // A jobs directory being written under us is not worth a log line; the
     // sessions simply lose their job badge until the next sweep.
@@ -981,6 +992,11 @@ function unwatch() {
   for (const entry of sessions.values()) closeTail(entry)
   sessions.clear()
   backgrounds.clear()
+  jobList = []
+  // The fingerprints are what stop an event per sweep; they must not also stop
+  // the *first* one after the feature comes back on.
+  jobsPrint = ''
+  limitsPrint = ''
 }
 
 /**
@@ -1183,11 +1199,10 @@ function announceLimits() {
 let jobsPrint = ''
 
 function announceJobs() {
-  const running = jobs.available() ? jobs.list() : []
-  const print = running.map((job) => `${job.id}:${job.state}:${job.detail}:${job.tokens}`).join('|')
+  const print = jobList.map((job) => `${job.id}:${job.state}:${job.detail}:${job.tokens}`).join('|')
   if (print === jobsPrint) return
   jobsPrint = print
-  emit({ kind: 'jobs', jobs: running })
+  emit({ kind: 'jobs', jobs: jobList })
 }
 
 /* ── plugin ────────────────────────────────────────────────────────────── */
@@ -1596,7 +1611,9 @@ export default {
      */
     'agents.jobs'({ all = false } = {}) {
       requireEnabled()
-      const running = jobs.list({ all: all === true })
+      // `all` reaches past what the sweep keeps, which is only what is current.
+      if (all !== true) refreshJobs()
+      const running = all === true ? jobs.list({ all: true }) : jobList
       return {
         jobs: running,
         // Which of them the phone can walk into: a job whose transcript this

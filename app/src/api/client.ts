@@ -140,6 +140,8 @@ export type AgentTasks = {
   total: number
   done: number
   active: AgentTask | null
+  /** What it will pick up next, for the moment between two tasks. */
+  next: AgentTask | null
 }
 
 /** One usage window: how much of it is spent, and when it turns over. */
@@ -215,7 +217,7 @@ export type AgentSession = {
   /** The background job behind this conversation, when it is one. */
   job?: AgentJob | null
   /** What it is working through, small enough to ride on every frame. */
-  tasks?: { total: number; done: number; active: string | null } | null
+  tasks?: { total: number; done: number; active: string | null; next?: string | null } | null
 }
 
 /** The best road a desktop has into a terminal, whatever a session is on. */

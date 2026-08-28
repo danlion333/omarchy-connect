@@ -545,6 +545,32 @@ class Link {
   }
 
   /**
+   * The background agents, asked for rather than waited on.
+   *
+   * Changes are pushed — a detached agent's commentary moves every few seconds
+   * and the phone is its only screen — but a phone that has just connected has
+   * missed every change there ever was. An event stream is not a starting
+   * state, so the screen asks once and listens after that.
+   *
+   * The answer carries one thing only a round trip knows: which of the jobs
+   * this daemon also has a live session for, and so which of them the phone
+   * can walk into rather than only read about.
+   */
+  async refreshAgentJobs(): Promise<Record<string, string>> {
+    const client = this.client
+    if (!client || client.status !== 'connected') return {}
+    try {
+      const res = await client.call<{ jobs: AgentJob[]; open: Record<string, string> }>('agents.jobs', {})
+      this.patch({ agentJobs: res.jobs || [] })
+      return res.open || {}
+    } catch {
+      // Disabled on the desktop, or a daemon too old to know the call.
+      this.patch({ agentJobs: [] })
+      return {}
+    }
+  }
+
+  /**
    * The one door the session list changes through.
    *
    * Everything the phone shows about agents hangs off this — the screen, the

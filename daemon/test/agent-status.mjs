@@ -241,6 +241,7 @@ check('the task list is read in the order it was written', todo?.tasks.map((t) =
 check('anything that is not a task is not one', todo?.total === 3, String(todo?.total))
 check('what is behind it is counted', todo?.done === 1, String(todo?.done))
 check('and what it is on right now is named', todo?.active?.id === '2')
+check('and what it would pick up next, for the moment between two', todo?.next?.id === '10', String(todo?.next?.id))
 check(
   'the sentence is the one the CLI puts in its own spinner',
   tasks.summary(TASK_SESSION)?.active === 'Adding the endpoint',

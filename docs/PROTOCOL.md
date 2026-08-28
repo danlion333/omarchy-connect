@@ -597,7 +597,7 @@ A session is what the phone lists and opens:
   "via": "hook" | "scan",
   "vitals": { … },                  // the desktop's own status line, below
   "job": { … } | null,              // the background job behind it, when it is one
-  "tasks": { "total": 7, "done": 3, "active": "Adding the endpoint" } | null
+  "tasks": { "total": 7, "done": 3, "active": "Adding the endpoint", "next": null } | null
 }
 ```
 
@@ -647,7 +647,9 @@ little news: the transcript says it ran `grep`, then read a file, then ran
 wants to know whether the thing they asked for is nearly done.
 
 `active` is the task's `activeForm`, the present-continuous the CLI shows in
-its own spinner. That is the field this is carried for: a row that says
+its own spinner; `next` is the first unblocked pending one, for the moment
+between two tasks — a strip that says "nothing in progress" then reads as an
+agent that has stopped, which is the one thing it has not done. That is the field this is carried for: a row that says
 "Adding the endpoint" is one you can act on, and `Bash grep -rn router src` is
 not. The summary rides on every session frame; `agents.tasks` returns the list
 itself, because the summary is what tells six rows apart and the list is what

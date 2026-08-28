@@ -23,6 +23,8 @@ type ConnectionValue = {
   agentLimits: AgentLimits | null
   /** The agents running with no terminal — the phone is their only screen. */
   agentJobs: AgentJob[]
+  /** Asks for them, and answers with which are also sessions to walk into. */
+  refreshAgentJobs: () => Promise<Record<string, string>>
   refreshAgents: () => Promise<void>
   clipboard: ClipboardEvent | null
   files: FileEvent[]
@@ -70,6 +72,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const reconnect = useCallback(() => link.reconnectNow(), [])
   const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
+  const refreshAgentJobs = useCallback(() => link.refreshAgentJobs(), [])
 
   const can = useCallback(
     (plugin: string, feature: string) => Boolean((state.hello?.capabilities?.[plugin] as any)?.[feature]),
@@ -89,6 +92,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       ...state,
       agentsWaiting,
       refreshAgents,
+      refreshAgentJobs,
       fingerprint,
       call,
       pair,
@@ -97,7 +101,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       forget,
       can,
     }),
-    [state, agentsWaiting, refreshAgents, fingerprint, call, pair, reconnect, wake, forget, can],
+    [state, agentsWaiting, refreshAgents, refreshAgentJobs, fingerprint, call, pair, reconnect, wake, forget, can],
   )
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>

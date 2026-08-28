@@ -103,6 +103,10 @@ export function read(sessionId) {
         // What it is on right now. More than one can be in progress when work
         // was split; the first is the one a one-line summary quotes.
         active: tasks.find((t) => t.status === 'in_progress') || null,
+        // …and what it will pick up next, for the moment between two tasks.
+        // A strip that says "nothing in progress" during that moment reads as
+        // an agent that has stopped, which is the one thing it has not done.
+        next: tasks.find((t) => t.status === 'pending' && !t.blockedBy.length) || null,
       }
     : null
 
@@ -125,5 +129,6 @@ export function summary(sessionId) {
     total: value.total,
     done: value.done,
     active: value.active ? value.active.activeForm : null,
+    next: value.next ? value.next.subject : null,
   }
 }

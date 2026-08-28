@@ -354,7 +354,11 @@ function TaskStrip({ session }: { session: AgentSession }) {
 
   if (!summary?.total) return null
   const fraction = summary.total ? summary.done / summary.total : 0
-  const line = summary.active || (summary.done === summary.total ? 'all done' : 'nothing in progress')
+  // Between two tasks an agent has not stopped, and a strip that says
+  // "nothing in progress" in that moment reads as though it had.
+  const line =
+    summary.active ||
+    (summary.next ? `next: ${summary.next}` : summary.done === summary.total ? 'all done' : 'nothing in progress')
 
   return (
     <View
