@@ -108,6 +108,13 @@ fs.writeFileSync(
   }),
 )
 
+// The list this session is working through.
+fs.mkdirSync(path.join(sandbox, '.claude', 'tasks', SESSION), { recursive: true })
+fs.writeFileSync(
+  path.join(sandbox, '.claude', 'tasks', SESSION, '1.json'),
+  JSON.stringify({ id: '1', subject: 'Read the router', activeForm: 'Reading the router', status: 'in_progress', blockedBy: [] }),
+)
+
 const results = []
 const check = (name, ok, detail = '') => {
   results.push({ name, ok, detail })
@@ -506,6 +513,12 @@ check('the conversations on disk are listed', history.sessions.some((e) => e.ses
 const mine = history.sessions.find((e) => e.sessionId === SESSION)
 check('an open one says so, and says which session it is', mine?.live === true && mine?.liveId === session.id)
 check('the working directory is read off the file, not off the slug', mine?.cwd === CWD, String(mine?.cwd))
+
+// What it is working on beats what it last did: a row that quotes the agent's
+// own sentence about the work is one you can act on, and "Bash grep" is not.
+check('the session says what it is working through', session.tasks?.active === 'Reading the router', String(session.tasks?.active))
+const todo = await req('agents.tasks', { id: session.id })
+check('and the list itself is one call away', todo.tasks?.[0]?.subject === 'Read the router', String(todo.total))
 
 const jobs = await req('agents.jobs')
 check('background agents are listed with what they are doing', jobs.jobs?.[0]?.detail === 'reading the router')

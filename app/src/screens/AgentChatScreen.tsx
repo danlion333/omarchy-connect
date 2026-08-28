@@ -18,10 +18,10 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection } from '../state/ConnectionContext'
 import { focusAgent } from '../api/alerts'
-import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession } from '../api/client'
+import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } from '../api/client'
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
-import { Body, Button, Caps, Chip } from '../ui/kit'
+import { Body, Button, Caps, Chip, Meter } from '../ui/kit'
 import { StatusLine } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
@@ -214,6 +214,11 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         onStatus={() => setSkills(true)}
       />
 
+      {/* Pinned rather than scrolled past: this is status, not conversation.
+          It is also the only thing on the screen that answers "is it nearly
+          done", which is the question that brought anyone here. */}
+      <TaskStrip session={session} />
+
       {raw !== null ? <RawScreen session={session} /> : null}
 
       <ScrollView
@@ -313,6 +318,113 @@ function useKeyboardOpen(): boolean {
     }
   }, [])
   return open
+}
+
+/**
+ * The list the agent is working through, folded to one line.
+ *
+ * An agent at work produces a great deal of traffic and very little news — it
+ * ran `grep`, then read a file, then ran `grep` again — and none of it answers
+ * the question somebody on a sofa is actually asking, which is whether the
+ * thing they asked for is nearly done. The task list does: a handful of
+ * sentences the agent wrote about the *work* rather than about the tools, and
+ * a count of how many are behind it.
+ *
+ * Folded by default because one line is usually the whole answer. The count
+ * and the sentence are already on the session frame, so the strip draws
+ * immediately and the full list is fetched only if somebody opens it.
+ */
+function TaskStrip({ session }: { session: AgentSession }) {
+  const { call, palette } = useConnection()
+  const [open, setOpen] = useState(false)
+  const [list, setList] = useState<AgentTasks | null>(null)
+  const summary = session.tasks
+
+  /* Re-read whenever the count moves, so an open strip keeps up. */
+  useEffect(() => {
+    if (!open) return
+    let live = true
+    call<AgentTasks>('agents.tasks', { id: session.id })
+      .then((res) => live && setList(res))
+      .catch(() => live && setList(null))
+    return () => {
+      live = false
+    }
+  }, [call, open, session.id, summary?.done, summary?.total, summary?.active])
+
+  if (!summary?.total) return null
+  const fraction = summary.total ? summary.done / summary.total : 0
+  const line = summary.active || (summary.done === summary.total ? 'all done' : 'nothing in progress')
+
+  return (
+    <View
+      style={{
+        paddingHorizontal: space.lg,
+        paddingVertical: space.sm,
+        backgroundColor: palette.darker_background,
+        borderBottomWidth: StyleSheet.hairlineWidth * 2,
+        borderBottomColor: palette.lighter_background,
+      }}
+    >
+      <Pressable
+        onPress={() => setOpen((was) => !was)}
+        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: space.sm, opacity: pressed ? 0.6 : 1 })}
+      >
+        <Feather name={open ? 'chevron-down' : 'chevron-right'} size={12} color={palette.muted} />
+        <Text
+          style={{ flex: 1, color: palette.light_foreground, fontFamily: font.regular, fontSize: size.label }}
+          numberOfLines={1}
+        >
+          {line}
+        </Text>
+        <Text style={{ color: palette.muted, fontFamily: font.medium, fontSize: size.micro }}>
+          {summary.done}/{summary.total}
+        </Text>
+        <View style={{ width: 44 }}>
+          <Meter fraction={fraction} tone={fraction === 1 ? palette.green : palette.accent} height={3} />
+        </View>
+      </Pressable>
+
+      {open ? (
+        // A long plan must not push the conversation off the screen: the strip
+        // is a header, and a header that takes half the display is a screen.
+        <ScrollView nestedScrollEnabled style={{ maxHeight: 200, marginTop: space.sm }} contentContainerStyle={{ gap: 3 }}>
+          {(list?.tasks || []).map((task) => (
+            <View key={task.id} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
+              <Feather
+                name={
+                  task.status === 'completed' ? 'check-square' : task.status === 'in_progress' ? 'play' : 'square'
+                }
+                size={12}
+                color={
+                  task.status === 'completed'
+                    ? palette.green
+                    : task.status === 'in_progress'
+                      ? palette.accent
+                      : palette.muted
+                }
+                style={{ marginTop: 3 }}
+              />
+              <Text
+                style={{
+                  flex: 1,
+                  color: task.status === 'completed' ? palette.muted : palette.light_foreground,
+                  fontFamily: task.status === 'in_progress' ? font.medium : font.regular,
+                  fontSize: size.micro,
+                  lineHeight: 16,
+                  textDecorationLine: task.status === 'completed' ? 'line-through' : 'none',
+                }}
+                numberOfLines={2}
+              >
+                {task.subject}
+              </Text>
+            </View>
+          ))}
+          {list === null ? <ActivityIndicator size="small" color={palette.accent} /> : null}
+        </ScrollView>
+      ) : null}
+    </View>
+  )
 }
 
 /**
@@ -1244,30 +1356,41 @@ function Composer({
         </ScrollView>
       ) : null}
 
-      <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm }}>
-        {QUICK.map((quick) => (
-          <Chip
-            key={quick.key}
-            label={quick.label}
-            tone={session.state === 'waiting' ? palette.orange : undefined}
-            active={session.state === 'waiting'}
-            onPress={() => press(quick.key)}
-          />
-        ))}
-        <View style={{ flex: 1 }} />
-        {/* Compacting is the one command that earns a permanent button, and
-            only once it is the thing you would want. A conversation past two
-            thirds of its window is about to start losing the beginning of
-            itself, and on a phone that is news you would otherwise never
-            get — nothing else on this screen is going to mention it. */}
-        {crowded ? (
-          <Chip
-            label="compact"
-            tone={palette.orange}
-            active
-            onPress={() => void guard(() => call('agents.command', { id: session.id, name: 'compact' }))}
-          />
-        ) : null}
+      {/* The keys scroll and `stop` does not. Seven chips do not fit across a
+          phone, and the one that must always be reachable is the one that
+          interrupts — a row that pushed it off the edge would hide it exactly
+          when it was wanted. */}
+      <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm, alignItems: 'center' }}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          contentContainerStyle={{ gap: space.sm }}
+          style={{ flex: 1 }}
+        >
+          {QUICK.map((quick) => (
+            <Chip
+              key={quick.key}
+              label={quick.label}
+              tone={session.state === 'waiting' ? palette.orange : undefined}
+              active={session.state === 'waiting'}
+              onPress={() => press(quick.key)}
+            />
+          ))}
+          {/* Compacting is the one command that earns a permanent button, and
+              only once it is the thing you would want. A conversation past two
+              thirds of its window is about to start losing the beginning of
+              itself, and on a phone that is news you would otherwise never
+              get — nothing else on this screen is going to mention it. */}
+          {crowded ? (
+            <Chip
+              label="compact"
+              tone={palette.orange}
+              active
+              onPress={() => void guard(() => call('agents.command', { id: session.id, name: 'compact' }))}
+            />
+          ) : null}
+        </ScrollView>
         <Chip label="stop" tone={palette.red} onPress={() => press('C-c')} />
       </View>
 

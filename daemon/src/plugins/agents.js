@@ -12,6 +12,7 @@ import * as drops from '../agents/drops.js'
 import * as skills from '../agents/skills.js'
 import * as limits from '../agents/limits.js'
 import * as jobs from '../agents/jobs.js'
+import * as tasks from '../agents/tasks.js'
 import * as tmux from '../agents/tmux.js'
 import { pair } from '../agents/pairing.js'
 import { alive, ancestors, commOf, hasTty, procFile, startedAt, startTicks } from '../agents/proc.js'
@@ -167,6 +168,10 @@ const publicSession = (entry) => {
     // Model, context, permission mode, branch — the desktop's own status line,
     // read off the transcript rather than asked of the session.
     vitals,
+    // What it is working through. An agent at work produces a lot of traffic
+    // and very little news; this is the sentence it wrote about the work
+    // rather than about the tool it happened to reach for.
+    tasks: tasks.summary(nativeIdOf(entry)),
     // The background agent behind this conversation, when there is one. This
     // is the only place a `--bg` session says what it thinks it is doing:
     // nothing is on screen for it anywhere on the desktop.
@@ -743,6 +748,7 @@ function reap(seen = null) {
 function sweep() {
   refreshJobs()
   announceLimits()
+  announceJobs()
   let seen = null
   try {
     seen = scan()
@@ -1164,6 +1170,26 @@ function announceLimits() {
   emit({ kind: 'limits', limits: value })
 }
 
+/**
+ * The background agents, and a nudge when one of them says something new.
+ *
+ * A detached agent has no terminal and nothing on the desktop draws it, so the
+ * phone is the only screen it has — and a screen that only updates when you
+ * pull it down is not a screen you would watch. The sentence a job writes
+ * about itself changes every few seconds, which is exactly why the
+ * fingerprint covers it: an event per change, and nothing at all while the
+ * jobs sit still.
+ */
+let jobsPrint = ''
+
+function announceJobs() {
+  const running = jobs.available() ? jobs.list() : []
+  const print = running.map((job) => `${job.id}:${job.state}:${job.detail}:${job.tokens}`).join('|')
+  if (print === jobsPrint) return
+  jobsPrint = print
+  emit({ kind: 'jobs', jobs: running })
+}
+
 /* ── plugin ────────────────────────────────────────────────────────────── */
 
 export default {
@@ -1190,6 +1216,7 @@ export default {
       skills: true,
       history: true,
       commands: true,
+      tasks: true,
       jobs: jobs.available(),
       limits: enabled() ? limits.read() : null,
     }
@@ -1229,6 +1256,7 @@ export default {
         skills: true,
         history: true,
         commands: true,
+        tasks: true,
         jobs: jobs.available(),
         limits: limits.read(),
       }
@@ -1437,6 +1465,20 @@ export default {
     'agents.limits'() {
       requireEnabled()
       return { limits: limits.read() }
+    },
+
+    /**
+     * The list this session is working through.
+     *
+     * Kept out of the session frame in full and summarised onto it, because
+     * the summary is what tells six rows apart and the list is what you read
+     * once you have picked one.
+     */
+    'agents.tasks'({ id } = {}) {
+      requireEnabled()
+      const entry = sessions.get(String(id))
+      if (!entry) throw new Error('no such agent session')
+      return { id: entry.id, ...(tasks.read(nativeIdOf(entry)) || { tasks: [], total: 0, done: 0, active: null }) }
     },
 
     /* ── skills and commands ───────────────────────────────────────────── */

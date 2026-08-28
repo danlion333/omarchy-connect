@@ -101,6 +101,15 @@ write(
   JSON.stringify({ state: 'done', sessionId: 'dddddddd-2222-3333-4444-555555555555', updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }),
 )
 
+// The list a session is working through, where the CLI keeps it.
+const TASK_SESSION = '11111111-2222-3333-4444-555555555555'
+const taskDir = path.join(sandbox, '.claude', 'tasks', TASK_SESSION)
+write(path.join(taskDir, '1.json'), JSON.stringify({ id: '1', subject: 'Read the router', description: 'find it', activeForm: 'Reading the router', status: 'completed', blockedBy: [] }))
+write(path.join(taskDir, '2.json'), JSON.stringify({ id: '2', subject: 'Add the endpoint', description: 'write it', activeForm: 'Adding the endpoint', status: 'in_progress', blockedBy: ['1'] }))
+// Numbered, so ten must sort after nine rather than beside one.
+write(path.join(taskDir, '10.json'), JSON.stringify({ id: '10', subject: 'Write a test', description: 'prove it', status: 'pending', blockedBy: [] }))
+write(path.join(taskDir, 'notes.txt'), 'not a task')
+
 const at = '2026-08-25T19:24:33.475Z'
 const usage = (cacheRead) => ({
   input_tokens: 2,
@@ -222,6 +231,24 @@ check('a conversation past 200k is self-evidently not on a 200k window', huge?.c
 write(path.join(sandbox, '.claude', 'settings.json'), JSON.stringify({ model: 'opus[1m]' }))
 const long = claude.vitals(path.join(projects, `${HUGE}.jsonl`) + '', CWD)
 check('and a configured long window is believed before the arithmetic', long?.context?.window === 1_000_000)
+
+/* ── the list it is working through ────────────────────────────────────── */
+
+const tasks = await import('../src/agents/tasks.js')
+const todo = tasks.read(TASK_SESSION)
+
+check('the task list is read in the order it was written', todo?.tasks.map((t) => t.id).join(' ') === '1 2 10', todo?.tasks.map((t) => t.id).join(' '))
+check('anything that is not a task is not one', todo?.total === 3, String(todo?.total))
+check('what is behind it is counted', todo?.done === 1, String(todo?.done))
+check('and what it is on right now is named', todo?.active?.id === '2')
+check(
+  'the sentence is the one the CLI puts in its own spinner',
+  tasks.summary(TASK_SESSION)?.active === 'Adding the endpoint',
+  String(tasks.summary(TASK_SESSION)?.active),
+)
+check('a task with no spinner sentence falls back to its subject', todo?.tasks.find((t) => t.id === '10')?.activeForm === 'Write a test')
+check('a session that keeps no list gets no panel', tasks.read('99999999-0000-0000-0000-000000000000') === null)
+check('a session id is not a path', tasks.read('../../projects') === null)
 
 /* ── the conversations on disk ─────────────────────────────────────────── */
 

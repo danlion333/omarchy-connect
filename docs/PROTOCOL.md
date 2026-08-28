@@ -572,6 +572,7 @@ see **Security model**, because writing to an agent is a shell.
 | `agents.skills` | `{ id \| cwd }` | `{ cwd, skills, commands, builtins }` — everything the agent answers to by name. |
 | `agents.command` | `{ id, name, args, submit }` | `{ ok, command, via }` — runs one, with `name` checked against that list. |
 | `agents.history` | `{ cwd, limit }` | `{ sessions, spawn }` — the conversations on disk, running or not. |
+| `agents.tasks` | `{ id }` | `{ tasks, total, done, active }` — the list this session is working through. |
 | `agents.jobs` | `{ all }` | `{ jobs, open }` — background agents, and which of them are also live sessions. |
 | `agents.job` | `{ id }` | `{ job }` — one of them, with the last few things it said about itself. |
 | `agents.spawn` | `{ cwd, resume, prompt, background, name }` | `{ ok, cwd, resumed, via }` — starts one. Behind its own switch. |
@@ -595,7 +596,8 @@ A session is what the phone lists and opens:
   "prompt": "Claude needs your permission to use Bash",   // when waiting
   "via": "hook" | "scan",
   "vitals": { … },                  // the desktop's own status line, below
-  "job": { … } | null               // the background job behind it, when it is one
+  "job": { … } | null,              // the background job behind it, when it is one
+  "tasks": { "total": 7, "done": 3, "active": "Adding the endpoint" } | null
 }
 ```
 
@@ -634,6 +636,22 @@ it.
 brand-new session with the last title the project had and generates its own
 only once there is something to name, so handing that on unguarded would put
 yesterday's sentence over an empty session.
+
+#### What it is working through
+
+`tasks` is read from `~/.claude/tasks/<session id>/`, one small JSON file per
+task, which is where Claude Code keeps the list it is working through. It
+matters because an agent at work produces a great deal of traffic and very
+little news: the transcript says it ran `grep`, then read a file, then ran
+`grep` again — all true, and no use at all to somebody holding a phone who
+wants to know whether the thing they asked for is nearly done.
+
+`active` is the task's `activeForm`, the present-continuous the CLI shows in
+its own spinner. That is the field this is carried for: a row that says
+"Adding the endpoint" is one you can act on, and `Bash grep -rn router src` is
+not. The summary rides on every session frame; `agents.tasks` returns the list
+itself, because the summary is what tells six rows apart and the list is what
+you read once you have picked one.
 
 #### Limits
 

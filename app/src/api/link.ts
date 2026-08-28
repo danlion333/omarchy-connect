@@ -3,6 +3,7 @@ import { AppState, Platform } from 'react-native'
 import {
   ConnectClient,
   type AgentEvent,
+  type AgentJob,
   type AgentLimits,
   type AgentSession,
   type AgentWrite,
@@ -84,6 +85,15 @@ export type LinkState = {
    * made on the list screen before any session is opened.
    */
   agentLimits: AgentLimits | null
+  /**
+   * The agents running with no terminal.
+   *
+   * Beside the sessions rather than among them: a background agent is not a
+   * session this phone can open until the desktop has one for its transcript,
+   * and until then it is still the only thing anywhere saying the machine is
+   * working.
+   */
+  agentJobs: AgentJob[]
   clipboard: ClipboardEvent | null
   files: FileEvent[]
   latencyMs: number | null
@@ -107,6 +117,7 @@ const INITIAL: LinkState = {
   stats: null,
   agents: [],
   agentLimits: null,
+  agentJobs: [],
   clipboard: null,
   files: [],
   latencyMs: null,
@@ -249,6 +260,7 @@ class Link {
         // command they have already run.
         if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters, data.write ?? null)
         if (data.kind === 'limits') return this.patch({ agentLimits: data.limits })
+        if (data.kind === 'jobs') return this.patch({ agentJobs: data.jobs || [] })
         this.setAgents(reduceAgents(this.state.agents, data))
       }),
       client.on('ev:clipboard', (data: ClipboardEvent) => {
@@ -296,7 +308,7 @@ class Link {
     if (enabled) void this.refreshAgents()
     else {
       this.setAgents([])
-      this.patch({ agentLimits: null })
+      this.patch({ agentLimits: null, agentJobs: [] })
     }
   }
 

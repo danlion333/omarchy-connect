@@ -118,6 +118,30 @@ export type AgentJob = {
   updatedAt: number
 }
 
+/**
+ * One item on the list an agent is working through.
+ *
+ * `activeForm` is the present-continuous the CLI shows in its own spinner, and
+ * it is the field this is worth carrying for: "Pushing background-agent state
+ * live" is what a phone wants where it would otherwise print the name of a
+ * tool.
+ */
+export type AgentTask = {
+  id: string
+  subject: string
+  description: string
+  activeForm: string
+  status: 'pending' | 'in_progress' | 'completed' | string
+  blockedBy: string[]
+}
+
+export type AgentTasks = {
+  tasks: AgentTask[]
+  total: number
+  done: number
+  active: AgentTask | null
+}
+
 /** One usage window: how much of it is spent, and when it turns over. */
 export type AgentLimit = {
   kind: string
@@ -190,6 +214,8 @@ export type AgentSession = {
   vitals?: AgentVitals | null
   /** The background job behind this conversation, when it is one. */
   job?: AgentJob | null
+  /** What it is working through, small enough to ride on every frame. */
+  tasks?: { total: number; done: number; active: string | null } | null
 }
 
 /** The best road a desktop has into a terminal, whatever a session is on. */
@@ -215,6 +241,8 @@ export type AgentCapabilities = {
   history?: boolean
   /** …and the background agents it has going. */
   jobs?: boolean
+  /** …and the task list a session is working through. */
+  tasks?: boolean
   /** The plan's headroom as of `hello`; kept current by `ev:agent`. */
   limits?: AgentLimits | null
 }
@@ -266,6 +294,11 @@ export type AgentEvent =
   // The plan's headroom moved. Sent only when a percentage actually changes,
   // so this is rare enough to be worth pushing rather than polling.
   | { kind: 'limits'; limits: AgentLimits | null }
+  // A background agent said something new about itself. Sent only when one
+  // actually changes, which is what makes it worth pushing: a detached agent
+  // has no screen anywhere else, and a list that only updates on a pull-down
+  // is not one anybody watches.
+  | { kind: 'jobs'; jobs: AgentJob[] }
 
 type Listener = (data: any) => void
 

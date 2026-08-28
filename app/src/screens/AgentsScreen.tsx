@@ -25,11 +25,13 @@ import { space } from '../theme'
  * and the second is the only place a `--bg` session appears at all.
  */
 export function AgentsScreen({ open: requested, onOpened }: { open?: string | null; onOpened?: () => void } = {}) {
-  const { agents, agentLimits, refreshAgents, palette, status, hello, call } = useConnection()
+  const { agents, agentLimits, agentJobs, refreshAgents, palette, status, hello, call } = useConnection()
   const [openId, setOpenId] = useState<string | null>(null)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
-  const [jobs, setJobs] = useState<AgentJob[]>([])
+  // Which background agents are also live sessions. The list itself arrives as
+  // an event; this is the one part of the answer only a round trip has, and it
+  // changes about as often as a session opens.
   const [jobOpen, setJobOpen] = useState<Record<string, string>>({})
 
   /**
@@ -51,16 +53,14 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
   const load = useCallback(async () => {
     setRefreshing(true)
     await refreshAgents()
-    // Background agents are not sessions and do not arrive as events: the
-    // desktop learns about them by reading the CLI's job directory, so the
-    // phone asks whenever it asks for anything else.
+    // The jobs themselves are pushed; which of them the phone can walk into is
+    // not, so that half is asked for.
     if (caps?.jobs) {
       try {
-        const res = await call<{ jobs: AgentJob[]; open: Record<string, string> }>('agents.jobs', {})
-        setJobs(res.jobs || [])
+        const res = await call<{ open: Record<string, string> }>('agents.jobs', {})
         setJobOpen(res.open || {})
       } catch {
-        setJobs([])
+        setJobOpen({})
       }
     }
     setRefreshing(false)
@@ -114,7 +114,7 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
   }
 
   /* Background agents already open as a session are that session's row. */
-  const detached = jobs.filter((job) => !jobOpen[job.id])
+  const detached = agentJobs.filter((job) => !jobOpen[job.id])
 
   return (
     <Screen refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} tintColor={palette.muted} />}>
@@ -204,11 +204,17 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
         title={session.title}
         tone={session.state === 'waiting' ? palette.bright_foreground : undefined}
         subtitle={[
-          session.state === 'waiting' ? session.prompt || 'waiting for an answer' : session.job?.detail || session.preview,
+          // What it is working on, in the agent's own words, beats what it
+          // last did: a row that says "Pushing background-agent state live" is
+          // one you can act on, and "Bash grep -rn router src" is not.
+          session.state === 'waiting'
+            ? session.prompt || 'waiting for an answer'
+            : (session.state === 'working' && session.tasks?.active) || session.job?.detail || session.preview,
           [
             // Once the title is the conversation's own name, the project it is
             // in stops being obvious — so it is said here instead.
             session.project,
+            session.tasks?.total ? `${session.tasks.done}/${session.tasks.total} done` : null,
             ago(session.lastActivity),
             session.job ? 'background' : session.via === 'scan' ? 'found by scan' : null,
             // Which road in, because it decides whether the composer is a text

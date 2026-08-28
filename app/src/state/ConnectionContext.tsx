@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 
-import type { AgentLimits, AgentSession, ConnectClient, ConnectionStatus, Hello, Stats } from '../api/client'
+import type { AgentJob, AgentLimits, AgentSession, ConnectClient, ConnectionStatus, Hello, Stats } from '../api/client'
 import { link, type ClipboardEvent, type FileEvent, type LinkState } from '../api/link'
 import type { SavedDesktop } from '../api/storage'
 import type { PairingTarget } from '../api/discovery'
@@ -21,6 +21,8 @@ type ConnectionValue = {
   agentsWaiting: number
   /** How much of the plan is left, or null while the desktop has not said. */
   agentLimits: AgentLimits | null
+  /** The agents running with no terminal — the phone is their only screen. */
+  agentJobs: AgentJob[]
   refreshAgents: () => Promise<void>
   clipboard: ClipboardEvent | null
   files: FileEvent[]
