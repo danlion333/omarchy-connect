@@ -195,7 +195,14 @@ function userText(raw) {
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/g, '')
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<command-message>[\s\S]*?<\/command-message>/g, '')
+    // A background task reporting in. The harness injects it as a user turn,
+    // but nobody typed it — and the payload is a page of XML that was landing
+    // in the chat as if the person on the phone had sent it.
+    .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
     .trim()
+  // What is left of a harness injection once its payload is stripped is still
+  // not something the person said — it announces itself, so believe it.
+  if (/^\[SYSTEM NOTIFICATION/.test(text)) return ''
   return text
 }
 
@@ -593,32 +600,64 @@ export default {
   },
 
   /**
-   * Was this conversation had in the background, or at a keyboard?
+   * What a transcript says about itself: whose kind of session wrote it, and
+   * when it last had anything to say.
    *
-   * The scan matches a process to a transcript by working directory, and a
-   * working directory is not unique: a background job and the session that
-   * launched it sit in the same project, and the transcript relocates between
-   * project directories a beat *after* the agent moves, so for that beat the
-   * two are indistinguishable by directory alone. That beat was enough to show
-   * a background agent's conversation under the interactive session's pid.
+   * **Kind.** The scan matches a process to a transcript by working directory,
+   * and a working directory is not unique: a background job and the session
+   * that launched it sit in the same project, and the transcript relocates
+   * between project directories a beat *after* the agent moves, so for that
+   * beat the two are indistinguishable by directory alone. That beat was
+   * enough to show a background agent's conversation under the interactive
+   * session's pid.
    *
-   * Claude Code stamps every real turn with `sessionKind`, and a background
-   * session says `bg` where a session at a terminal says nothing at all. That
-   * lines up exactly with the one thing `/proc` already knows for free —
-   * whether the process has a controlling terminal — so the two can be asked
-   * to agree.
+   * Claude Code stamps a background turn with `sessionKind: "bg"` and writes
+   * nothing at all on a session at a terminal. That lines up exactly with the
+   * one thing `/proc` already knows for free — whether the process has a
+   * controlling terminal — so the two can be asked to agree.
    *
-   * `null` means the file has not said yet, and an unknown answer constrains
-   * nothing: a transcript too young to have a turn in it is still a candidate.
+   * The whole window has to be looked at, not only the newest turn in it: some
+   * entries carry `entrypoint` without carrying `sessionKind`, and a
+   * background transcript whose last line happened to be one of those was
+   * answering "foreground" and being handed to whichever session was sitting
+   * at a keyboard. So one stamp anywhere in the window settles it, and only a
+   * window with turns in it and no stamp among them means a terminal.
+   * `background: null` means the file has not said yet, and an unknown answer
+   * constrains nothing: a transcript too young to have a turn in it is still a
+   * candidate.
+   *
+   * **Age.** An mtime is not when a conversation last happened. The CLI keeps
+   * appending bookkeeping to transcripts whose conversation is long over —
+   * `bridge-session`, `atis-latch`, `last-prompt`, none of them timestamped —
+   * and every one of those writes moves the mtime. A conversation that ended
+   * at lunchtime was being offered to the phone as forty minutes old, and the
+   * pairing below ranks candidates by exactly this number, so a dead
+   * transcript with a freshly-bumped mtime can outrank the live one it is
+   * sitting beside.
+   *
+   * The entries that describe a turn *are* timestamped, so the newest of those
+   * is the honest answer. `at: 0` means the tail held none — a brand-new
+   * session, most often — and the caller falls back to the mtime, which for a
+   * file that has only just been created is right.
    */
-  background(file) {
+  recency(file) {
+    let background = null
+    let turns = false
+    let at = 0
     for (const entry of tailEntries(file)) {
-      // `entrypoint` marks the entries that describe a turn; the bookkeeping
-      // lines around them carry neither field and say nothing either way.
-      if (!entry.entrypoint) continue
-      return entry.sessionKind === 'bg'
+      if (!at && entry.timestamp) {
+        const parsed = Date.parse(entry.timestamp)
+        if (Number.isFinite(parsed)) at = parsed
+      }
+      if (background === null) {
+        if (entry.sessionKind) background = entry.sessionKind === 'bg'
+        // `entrypoint` marks the entries that describe a turn; the bookkeeping
+        // lines around them carry neither field and say nothing either way.
+        else if (entry.entrypoint) turns = true
+      }
+      if (at && background !== null) break
     }
-    return null
+    return { background: background ?? (turns ? false : null), at }
   },
 
   /**

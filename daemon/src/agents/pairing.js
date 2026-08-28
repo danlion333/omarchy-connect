@@ -19,6 +19,14 @@
  *
  * A transcript that stopped changing before its supposed author started is not
  * that author's, and that single subtraction removes the whole class.
+ *
+ * "Newest" is read off the conversation rather than off the filesystem. The
+ * CLI goes on appending untimestamped bookkeeping to transcripts whose
+ * conversation ended hours ago, and each of those writes moves the mtime, so
+ * ranking by mtime hands a finished conversation the same standing as a live
+ * one and sometimes a better one. The adapter says when the file last had a
+ * turn in it; the mtime is only the fallback for a file too new to have had
+ * one.
  */
 
 /**
@@ -43,19 +51,34 @@ const SLACK_MS = 2000
  * often — is invisible for those few seconds rather than bound to whatever was
  * lying around, and it appears of its own accord once it writes.
  */
-export function pair(processes, transcripts, { background = () => null } = {}) {
+export function pair(processes, transcripts, { recency = () => null } = {}) {
   const order = [...processes].sort((a, b) => {
     const tty = Number(Boolean(b.tty)) - Number(Boolean(a.tty))
     return tty || b.ticks - a.ticks
   })
-  const free = [...transcripts].sort((a, b) => b.mtime - a.mtime)
+  if (!order.length) return []
+
+  const floorFor = (proc) => (proc.startedAt ? proc.startedAt - SLACK_MS : 0)
+  // A conversation's last turn cannot be later than the file's last write, so
+  // a transcript already under every floor is out before anything reads it —
+  // which is what keeps this off the whole of a year's history on a desktop
+  // that has been running an agent since morning.
+  const earliest = Math.min(...order.map(floorFor))
+
+  const free = transcripts
+    .filter((transcript) => transcript.mtime >= earliest)
+    .map((transcript) => {
+      const { background = null, at = 0 } = recency(transcript) || {}
+      return { transcript, background, activeAt: at || transcript.mtime }
+    })
+    .sort((a, b) => b.activeAt - a.activeAt)
   const pairs = []
 
   for (const proc of order) {
-    const floor = proc.startedAt ? proc.startedAt - SLACK_MS : 0
-    const index = free.findIndex((t) => t.mtime >= floor && agrees(proc, background(t)))
+    const floor = floorFor(proc)
+    const index = free.findIndex((c) => c.activeAt >= floor && agrees(proc, c.background))
     if (index < 0) continue
-    pairs.push({ proc, transcript: free[index] })
+    pairs.push({ proc, transcript: free[index].transcript, activeAt: free[index].activeAt })
     free.splice(index, 1)
   }
 

@@ -79,7 +79,8 @@ export type Stats = {
 
 /* ── coding agents ─────────────────────────────────────────────────────── */
 
-export type AgentState = 'idle' | 'working' | 'waiting' | 'gone'
+/** `starting` is a process with no transcript yet — stuck at a first-run prompt, usually. */
+export type AgentState = 'idle' | 'working' | 'waiting' | 'starting' | 'gone'
 
 /**
  * The desktop's own status line for a session, read off its transcript.
@@ -116,6 +117,12 @@ export type AgentJob = {
   state: string
   tokens: number
   updatedAt: number
+  /**
+   * Whether anything is actually running this job right now. The state file
+   * outlives the process, so `state` alone says "working" about jobs that
+   * died hours ago. Absent from a daemon too old to know — treat as live.
+   */
+  live?: boolean
 }
 
 /**
@@ -212,6 +219,8 @@ export type AgentSession = {
   prompt: string | null
   /** `hook` is the agent reporting in; `scan` is us guessing from /proc. */
   via: 'hook' | 'scan'
+  /** Subagents it has out right now — the only visible sign of a fan-out. */
+  subagents?: number
   /** Model, context, permission mode — absent from a daemon too old to send it. */
   vitals?: AgentVitals | null
   /** The background job behind this conversation, when it is one. */

@@ -129,12 +129,85 @@ function spendFrom(utilization) {
 }
 
 /**
+ * The numbers as the CLI's own status line just saw them.
+ *
+ * The cache file above is rewritten when the CLI feels like it — hours can
+ * pass — and a phone deciding whether to start something long was reading
+ * yesterday's percentage. The status-line bridge hands this module the
+ * `rate_limits` block from every status line update, which is as fresh as the
+ * account service's answer ever is on this desktop: it moves with every turn
+ * of every session. Held in memory only; the file stays the CLI's.
+ */
+let overlay = null
+
+/** What each status-line window is called, in the cache file's vocabulary. */
+const OVERLAY_LABELS = { five_hour: 'session', seven_day: 'week' }
+
+/**
+ * Take the `rate_limits` block off a status line update. Returns whether the
+ * numbers moved, so the caller knows to announce them.
+ */
+export function absorb(rateLimits) {
+  if (!rateLimits || typeof rateLimits !== 'object') return false
+  const rows = []
+  for (const [kind, label] of Object.entries(OVERLAY_LABELS)) {
+    const window = rateLimits[kind]
+    const used = percent(window?.used_percentage)
+    if (used === null) continue
+    const resets = Number(window?.resets_at)
+    rows.push({
+      kind,
+      label,
+      percent: used,
+      // The status line speaks unix seconds where the cache file speaks ISO.
+      resetsAt: Number.isFinite(resets) && resets > 0 ? resets * 1000 : null,
+      severity: used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal',
+      active: false,
+    })
+  }
+  if (!rows.length) return false
+  const print = JSON.stringify(rows)
+  const moved = !overlay || JSON.stringify(overlay.rows) !== print
+  overlay = { at: Date.now(), rows }
+  return moved
+}
+
+/**
+ * The cache's answer, with the overlay's fresher numbers written over it.
+ *
+ * The cache still matters — it is the only one that knows about scoped
+ * windows, spend, and whatever an older or newer service adds — so the
+ * overlay corrects the rows it has fresher figures for and leaves the rest.
+ * New objects throughout: the cached value is shared, and a merge that edits
+ * it in place would poison every later read.
+ */
+function merged(base) {
+  if (!overlay || Date.now() - overlay.at > STALE_MS) return base
+  if (!base) return { fetchedAt: overlay.at, stale: false, limits: [...overlay.rows.map((r) => ({ ...r }))], spend: null }
+  if (overlay.at <= base.fetchedAt) return base
+  const rows = base.limits.map((row) => {
+    const fresh = overlay.rows.find((o) => o.label === row.label)
+    return fresh
+      ? { ...row, percent: fresh.percent, resetsAt: fresh.resetsAt ?? row.resetsAt, severity: fresh.severity }
+      : { ...row }
+  })
+  for (const fresh of overlay.rows) {
+    if (!rows.some((row) => row.label === fresh.label)) rows.push({ ...fresh })
+  }
+  return { ...base, fetchedAt: overlay.at, stale: false, limits: rows.sort((a, b) => b.percent - a.percent) }
+}
+
+/**
  * The limits as they stand, or `null` when this desktop has never been told.
  *
  * Cached against the file's mtime: this is asked on every session list, and
  * the file behind it is rewritten by the CLI a few times an hour.
  */
 export function read() {
+  return merged(readCache())
+}
+
+function readCache() {
   let stat
   try {
     stat = fs.statSync(FILE)

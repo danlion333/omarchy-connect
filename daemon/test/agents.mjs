@@ -254,6 +254,14 @@ const control = (op) =>
   }).then((r) => r.json())
 
 const readStatus = () => JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+
+// The suite very often runs on a desktop where real agents are working — this
+// one included — and the daemon under test scans the real `/proc`. Their
+// transcripts live under the real HOME, not the sandbox, so they surface as
+// `pid-` placeholders: honest rows in production, noise in a test that wants
+// to count only the sessions it faked. Filtered here, asserted on directly in
+// the placeholder section below.
+const real = (sessions) => (sessions || []).filter((s) => !String(s.id).includes(':pid-'))
 const readStoredConfig = () => JSON.parse(fs.readFileSync(path.join(sandbox, 'omarchy-connect', 'config.json'), 'utf8'))
 
 /**
@@ -339,11 +347,11 @@ const waitFor = async (events, predicate, ms = 4000) => {
   const inBackground = { pid: 2, tty: false, ticks: 900, startedAt: 2000 }
   const bgFile = { id: 'bg', path: '/bg.jsonl', mtime: 9000 }
   const ttyFile = { id: 'tty', path: '/tty.jsonl', mtime: 5000 }
-  const kind = (t) => t.path === '/bg.jsonl'
+  const kind = (t) => ({ background: t.path === '/bg.jsonl', at: t.mtime })
 
   const crossed = pair([atKeyboard, inBackground], [bgFile, ttyFile])
   check('without it the newest file wins and both are wrong', crossed[0]?.transcript === bgFile)
-  const sorted = pair([atKeyboard, inBackground], [bgFile, ttyFile], { background: kind })
+  const sorted = pair([atKeyboard, inBackground], [bgFile, ttyFile], { recency: kind })
   check(
     'a session at a keyboard does not take a background conversation',
     sorted.find((p) => p.proc === atKeyboard)?.transcript === ttyFile,
@@ -354,18 +362,90 @@ const waitFor = async (events, predicate, ms = 4000) => {
   )
   // A transcript with no turn in it yet cannot say which it is, and refusing
   // it would lose the session rather than place it better.
-  check('a transcript that has not said yet is still a candidate', pair([atKeyboard], [ttyFile], { background: () => null }).length === 1)
+  check('a transcript that has not said yet is still a candidate', pair([atKeyboard], [ttyFile], { recency: () => null }).length === 1)
+
+  // An mtime is not when a conversation last happened. The CLI keeps appending
+  // untimestamped bookkeeping to transcripts nobody is talking in any more,
+  // and each of those writes moves the file's clock — which was enough to rank
+  // a conversation that ended at lunchtime above the one being had now, and to
+  // put the wrong one on the phone under a live agent's name.
+  const finished = { id: 'finished', path: '/finished.jsonl', mtime: 9_000 }
+  const current = { id: 'current', path: '/current.jsonl', mtime: 6_000 }
+  const turns = (t) => ({ background: false, at: t.path === '/finished.jsonl' ? 3_000 : 6_000 })
+  check(
+    'a finished conversation with a freshly-bumped mtime does not outrank a live one',
+    pair([atKeyboard], [finished, current], { recency: turns })[0]?.transcript === current,
+  )
+  check(
+    'and the session is dated by its last turn, not by the last write to its file',
+    pair([atKeyboard], [current], { recency: turns })[0]?.activeAt === 6_000,
+  )
+  // Nothing said means nothing known: a file too new to have a turn in it is
+  // still dated by the only clock there is.
+  check(
+    'a transcript with no turn yet falls back to its mtime',
+    pair([atKeyboard], [current], { recency: () => ({ background: null, at: 0 }) })[0]?.activeAt === 6_000,
+  )
 
   // The adapter reads that off the file, so it has to survive a real one.
   const bgSample = path.join(sandbox, 'bg-sample.jsonl')
   fs.writeFileSync(bgSample, [line({ type: 'mode', mode: 'normal' }), line({ type: 'assistant', entrypoint: 'cli', sessionKind: 'bg', cwd: CWD })].join(''))
-  check('a background transcript says so', claude.background(bgSample) === true)
+  check('a background transcript says so', claude.recency(bgSample).background === true)
   const ttySample = path.join(sandbox, 'tty-sample.jsonl')
   fs.writeFileSync(ttySample, [line({ type: 'ai-title', aiTitle: 'x' }), line({ type: 'assistant', entrypoint: 'cli', cwd: CWD })].join(''))
-  check('an interactive one says nothing, which is its answer', claude.background(ttySample) === false)
+  check('an interactive one says nothing, which is its answer', claude.recency(ttySample).background === false)
   const quiet = path.join(sandbox, 'quiet-sample.jsonl')
   fs.writeFileSync(quiet, line({ type: 'mode', mode: 'normal' }))
-  check('and a transcript with no turn yet stays unknown', claude.background(quiet) === null)
+  check('and a transcript with no turn yet stays unknown', claude.recency(quiet).background === null)
+  // The line the CLI writes when a background turn is over carries the
+  // entrypoint but not the kind, and reading only the newest of them handed a
+  // background conversation to whichever session was at a keyboard.
+  const trailing = path.join(sandbox, 'trailing-sample.jsonl')
+  fs.writeFileSync(
+    trailing,
+    [
+      line({ type: 'assistant', entrypoint: 'cli', sessionKind: 'bg', cwd: CWD }),
+      line({ type: 'system', entrypoint: 'cli', cwd: CWD }),
+    ].join(''),
+  )
+  check('a background transcript still says so after a line that does not', claude.recency(trailing).background === true)
+  // And the clock it reports is the conversation's own.
+  const dated = path.join(sandbox, 'dated-sample.jsonl')
+  fs.writeFileSync(
+    dated,
+    [
+      line({ type: 'assistant', entrypoint: 'cli', cwd: CWD, timestamp: '2026-08-28T11:20:26.000Z' }),
+      line({ type: 'bridge-session' }),
+    ].join(''),
+  )
+  check('and it is dated by its last turn rather than by its last line', claude.recency(dated).at === Date.parse('2026-08-28T11:20:26.000Z'))
+
+  // A background task reporting in arrives as a user turn, but nobody typed
+  // it — a page of XML was landing in the chat as if the person had sent it.
+  const notification = claude.parse(
+    line({
+      type: 'user',
+      timestamp: at,
+      message: { role: 'user', content: '<task-notification>\n<task-id>abc</task-id>\n<result>done</result>\n</task-notification>' },
+    }),
+  )
+  check('a task notification is not a thing the person said', notification.length === 0, JSON.stringify(notification))
+  const mixed = claude.parse(
+    line({
+      type: 'user',
+      timestamp: at,
+      message: { role: 'user', content: 'looks good\n<task-notification><result>x</result></task-notification>' },
+    }),
+  )
+  check('but the words beside one survive', mixed.length === 1 && mixed[0].text === 'looks good', JSON.stringify(mixed))
+  const harness = claude.parse(
+    line({
+      type: 'user',
+      timestamp: at,
+      message: { role: 'user', content: '[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event.' },
+    }),
+  )
+  check('a harness injection that announces itself is believed', harness.length === 0, JSON.stringify(harness))
 }
 
 /* ── the gate ──────────────────────────────────────────────────────────── */
@@ -448,7 +528,7 @@ check(
 )
 
 const empty = await req('agents.list')
-check('no sessions before anything is discovered', empty.sessions.length === 0)
+check('no sessions before anything is discovered', real(empty.sessions).length === 0)
 
 // Deliberately without `ppid`: the hook resolves a pid by walking up from the
 // process that ran it, and this suite is very often run *by* a coding agent —
@@ -460,8 +540,8 @@ check('SessionStart registers a session', registered.ok === true && registered.i
 check('a hook-registered session is announced', Boolean(await waitFor(events, (e) => e.kind === 'session' && e.id === `claude:${SESSION}`)))
 
 const listed = await req('agents.list')
-const session = listed.sessions[0]
-check('agents.list finds it', listed.sessions.length === 1 && session.state === 'idle', `${session?.title} · ${session?.state}`)
+const session = real(listed.sessions)[0]
+check('agents.list finds it', real(listed.sessions).length === 1 && session.state === 'idle', `${session?.title} · ${session?.state}`)
 check('the session names its directory and its road', session.cwd === CWD && session.via === 'hook')
 // Nothing has told this session which terminal it lives in yet, so there is
 // no composer to offer — and saying `null` is what lets the app grey the input
@@ -520,9 +600,32 @@ check('the session says what it is working through', session.tasks?.active === '
 const todo = await req('agents.tasks', { id: session.id })
 check('and the list itself is one call away', todo.tasks?.[0]?.subject === 'Read the router', String(todo.total))
 
+// A job whose process died still has a state file that says "blocked", and it
+// says it for as long as the file sits on disk. The row may stay — it is a
+// result worth reading — but it must not call itself running.
+fs.mkdirSync(path.join(sandbox, '.claude', 'jobs', 'deadjob1'), { recursive: true })
+fs.writeFileSync(
+  path.join(sandbox, '.claude', 'jobs', 'deadjob1', 'state.json'),
+  JSON.stringify({
+    state: 'blocked',
+    detail: 'awaiting a go-ahead that never came',
+    tokens: 1,
+    name: 'Dead job',
+    sessionId: '99999999-8888-7777-6666-555555555555',
+    cwd: CWD,
+    updatedAt: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+  }),
+)
+
 const jobs = await req('agents.jobs')
-check('background agents are listed with what they are doing', jobs.jobs?.[0]?.detail === 'reading the router')
+check('background agents are listed with what they are doing', jobs.jobs?.find((j) => j.id === JOB)?.detail === 'reading the router')
 check('and the ones that are also live sessions say which', jobs.open?.[JOB] === session.id, JSON.stringify(jobs.open))
+check('a job something is running calls itself live', jobs.jobs?.find((j) => j.id === JOB)?.live === true)
+check(
+  'a job whose agent is gone does not',
+  jobs.jobs?.find((j) => j.id === 'deadjob1')?.live === false,
+  JSON.stringify(jobs.jobs?.map((j) => [j.id, j.live])),
+)
 
 // Starting a process that was not there before is not the same decision as
 // reading one somebody already started, so it has its own switch — and reading
@@ -567,7 +670,7 @@ check('a permission prompt means waiting', Boolean(waiting), waiting?.prompt)
 check('the waiting session sorts to the top', (await req('agents.list')).sessions[0].state === 'waiting')
 
 const status = readStatus()
-check('the status file tells the panel', status.agents.waiting === 1 && status.agents.running === 1)
+check('the status file tells the panel', status.agents.waiting === 1 && real(status.agents.sessions).length === 1)
 check('the status file agrees with the phone about who is first', status.agents.sessions[0].state === 'waiting')
 
 // The other sentence `Notification` carries. It fires a minute after the agent
@@ -595,6 +698,90 @@ fs.appendFileSync(
   line({ type: 'assistant', timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: 'Running it now.' }] } }),
 )
 check('transcript activity clears a stale waiting', Boolean(await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')))
+
+/* ── the permission prompt, without the six-second wait ────────────────── */
+
+// `Notification` holds a permission prompt back for an idle threshold before
+// it says a word; `PermissionRequest` fires the moment the prompt exists, and
+// carries the tool. Those seconds are the whole latency budget of a phone
+// whose point is answering exactly this.
+await hook('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'rm -rf node_modules' }, permission_mode: 'default' })
+const permission = await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting' && String(e.prompt || '').includes('rm -rf'))
+check('a permission request means waiting the moment it is asked', Boolean(permission))
+check(
+  'and the prompt says which tool wants what',
+  String(permission?.prompt || '').includes('Bash') && String(permission?.prompt || '').includes('rm -rf node_modules'),
+  permission?.prompt,
+)
+
+// Approved at the keyboard, the tools run and the batch ends — the only hook
+// that says anything between the answer and the end of the turn.
+await hook('PostToolBatch')
+check(
+  'a finished tool batch clears a prompt answered at the keyboard',
+  Boolean(await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')),
+)
+
+// A mode that answers its own prompts draws nothing on screen.
+await hook('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'ls' }, permission_mode: 'bypassPermissions' })
+await settle()
+check(
+  'a self-answering mode never says waiting',
+  (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.state === 'working',
+)
+
+// The payload names its own kind these days, and the name outranks the
+// sentence: a quota reset is news, not a session that needs anybody.
+await hook('Notification', { message: 'Your limit has reset', notification_type: 'quota_auto_resume_fired' })
+await settle()
+check(
+  'an unfamiliar notification type changes nothing',
+  (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.state === 'working',
+)
+
+/* ── the fan-out ───────────────────────────────────────────────────────── */
+
+// Sidechain traffic is hidden from the chat on purpose, so the count of
+// subagents is the only sign a session is more than one agent.
+await hook('SubagentStart', { agent_type: 'general-purpose', agent_id: 'sub-1' })
+await hook('SubagentStart', { agent_type: 'Explore', agent_id: 'sub-2' })
+await settle()
+check(
+  'subagents are counted out',
+  (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.subagents === 2,
+)
+await hook('SubagentStop', { agent_type: 'general-purpose', agent_id: 'sub-1' })
+await hook('SubagentStop', { agent_type: 'Explore', agent_id: 'sub-2' })
+await settle()
+check(
+  'and counted back in',
+  (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.subagents === 0,
+)
+
+/* ── realtime usage off the status line ────────────────────────────────── */
+
+// The cache file said 12% at whatever hour the CLI last felt like writing it.
+// The status line says what the latest API response said, and the fresher
+// figure has to be the one both the phone and the panel read.
+const statuslineAck = await hook('StatusLine', {
+  rate_limits: {
+    five_hour: { used_percentage: 41.4, resets_at: Math.floor(Date.now() / 1000) + 3600 },
+    seven_day: { used_percentage: 81.2, resets_at: Math.floor(Date.now() / 1000) + 86_400 },
+  },
+  context_window: { used_percentage: 37 },
+})
+check('the status line bridge is accepted', statuslineAck.ok === true)
+const freshLimits = (await req('agents.limits')).limits
+check(
+  'its numbers override the cache where they are fresher',
+  freshLimits?.limits?.find((l) => l.label === 'session')?.percent === 41,
+  JSON.stringify(freshLimits?.limits),
+)
+check(
+  'and add the windows the cache never had',
+  freshLimits?.limits?.find((l) => l.label === 'week')?.percent === 81,
+)
+check('numbers straight off an API response are not stale', freshLimits?.stale === false)
 
 /* ── multiple choice ───────────────────────────────────────────────────── */
 
@@ -989,7 +1176,7 @@ await req('agents.close', { id: session.id })
 const before = events.length
 await hook('SessionEnd')
 await settle(400)
-check('SessionEnd ends it', (await req('agents.list')).sessions.length === 0)
+check('SessionEnd ends it', real((await req('agents.list')).sessions).length === 0)
 // A list driven by events has to end up where a fresh `agents.list` would: a
 // session frame after the state change would put the finished session back.
 check(

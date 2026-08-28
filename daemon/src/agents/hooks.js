@@ -43,12 +43,27 @@ export const HOOKS = [
   { event: 'SessionEnd' },
   { event: 'PreToolUse', matcher: 'AskUserQuestion' },
   { event: 'PostToolUse', matcher: 'AskUserQuestion' },
+  // The permission prompt, the moment it is decided rather than six seconds
+  // after it is drawn: `Notification` waits out an idle threshold before it
+  // says anything, and those seconds are the whole latency budget of a phone
+  // that exists to answer exactly this. The hook offers no opinion — exit 0
+  // with no output leaves the prompt exactly as it was — it only tells us.
+  { event: 'PermissionRequest' },
+  // The heartbeat of a turn. One firing per batch of tool calls, which is what
+  // clears a stale `waiting` when the prompt was answered at the keyboard —
+  // no other hook says anything between the answer and the end of the turn,
+  // and the turn can be minutes long.
+  { event: 'PostToolBatch' },
+  // The fan-out. Sidechain traffic is hidden from the chat on purpose, so
+  // these two are the only sign a session is more than one agent.
+  { event: 'SubagentStart' },
+  { event: 'SubagentStop' },
 ]
 
 /** The events, in installation order — what the CLI and the panel report. */
 export const EVENTS = HOOKS.map((hook) => hook.event)
 
-const shellQuote = (value) => (/[\s"'$`\\]/.test(value) ? `'${value.replace(/'/g, `'\\''`)}'` : value)
+export const shellQuote = (value) => (/[\s"'$`\\]/.test(value) ? `'${value.replace(/'/g, `'\\''`)}'` : value)
 
 /** How a hook invokes this CLI again, without depending on `$PATH`. */
 export const command = () => [...execCommand().map(shellQuote), 'agent', 'hook'].join(' ')

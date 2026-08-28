@@ -1301,11 +1301,98 @@ function Composer({
   }
 
   if (!session.writable) {
+    // A background conversation that has stopped can still be answered — not
+    // by typing into a terminal it never had, but by sending it back out with
+    // the reply as its prompt. `--resume` picks the conversation up whole, so
+    // to the person on the phone this is simply the chat continuing; the gate
+    // is the same spawn switch that starting any agent from a phone is behind.
+    const canSpawn = (hello?.capabilities?.agents as { spawn?: boolean } | undefined)?.spawn === true
+    if (session.job && session.job.live === false && canSpawn) {
+      const continueInBackground = () => {
+        const body = text.trim()
+        if (!body) return
+        setText('')
+        void guard(async () => {
+          try {
+            await call('agents.spawn', {
+              resume: session.id.slice(session.agent.length + 1),
+              background: true,
+              prompt: body,
+            })
+          } catch (err) {
+            setText(body)
+            throw err
+          }
+        })
+      }
+      return (
+        <View style={{ ...frame, gap: space.sm }}>
+          {error ? <Body tone={palette.red}>{error}</Body> : null}
+          <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
+            <TextInput
+              value={text}
+              onChangeText={setText}
+              placeholder="continue in the background…"
+              placeholderTextColor={palette.muted}
+              autoCapitalize="sentences"
+              autoCorrect
+              multiline
+              submitBehavior="newline"
+              style={{
+                flex: 1,
+                maxHeight: 120,
+                color: palette.light_foreground,
+                fontFamily: font.regular,
+                fontSize: size.body,
+                backgroundColor: palette.darker_background,
+                borderColor: palette.lighter_background,
+                borderWidth: 1,
+                borderRadius: radius.sm,
+                paddingHorizontal: space.md,
+                paddingVertical: space.md,
+              }}
+            />
+            <Pressable
+              onPress={continueInBackground}
+              disabled={busy || !text.trim()}
+              style={({ pressed }) => ({
+                paddingHorizontal: space.lg,
+                paddingVertical: space.md,
+                justifyContent: 'center',
+                backgroundColor: pressed ? palette.selection : palette.lighter_background,
+                borderRadius: radius.sm,
+                opacity: busy || !text.trim() ? 0.4 : 1,
+              })}
+            >
+              {busy ? (
+                <ActivityIndicator size="small" color={palette.accent} />
+              ) : (
+                <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
+              )}
+            </Pressable>
+          </View>
+          {keyboard ? null : (
+            <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+              this agent finished — your reply resumes it as a new background run
+            </Text>
+          )}
+        </View>
+      )
+    }
     return (
       <View style={{ ...frame, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
         <Feather name="eye" size={14} color={palette.muted} />
         <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
-          Reading only — nothing on that desktop can reach this terminal
+          {/* Two different reasons wear the same silence, and blaming the
+              desktop for the wrong one sends people hunting for a tmux that
+              would not have helped. A background agent has no terminal to be
+              reached: it was started detached, and answering it is not
+              something this desktop can do on your behalf. */}
+          {session.job
+            ? session.job.live === false
+              ? 'Reading only — this background agent finished, and starting one from the phone is off'
+              : 'Reading only — this agent is mid-run in the background, with no terminal to type into'
+            : 'Reading only — nothing on that desktop can reach this terminal'}
         </Text>
       </View>
     )

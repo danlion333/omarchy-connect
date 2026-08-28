@@ -33,6 +33,10 @@ const IDLE_TTL_MS = 24 * 60 * 60 * 1000
 const TIMELINE_TAIL = 8 * 1024
 /** Steps kept from that tail. More than this is a log, not a status. */
 const MAX_STEPS = 12
+/** States a job does not come back from on its own. */
+const TERMINAL_STATES = new Set(['done', 'failed', 'killed', 'cancelled', 'error'])
+/** A live job touches its state file far more often than this. */
+const LIVE_WINDOW_MS = 3 * 60 * 1000
 
 const oneLine = (value, max = 200) => {
   const text = String(value ?? '')
@@ -109,9 +113,20 @@ function readJob(short, { withSteps = false } = {}) {
   }
   if (!state || typeof state !== 'object' || !state.sessionId) return null
 
+  const updatedAt = stamp(state.updatedAt) || mtime
   return {
     id: short,
     sessionId: String(state.sessionId),
+    // Whether anything is actually running this job right now. The state file
+    // outlives the process — it goes on saying "blocked" or "working" for as
+    // long as it sits on disk — and a phone shown a dead job as a running one
+    // asked the person to wait on an agent that was never coming back. The
+    // file offers no pid to check (it is null even mid-run), but a job that is
+    // alive touches its state every few seconds, so a non-terminal state with
+    // a fresh write behind it is the honest definition of live — and a
+    // `blocked` job is live exactly as long as it has just asked, which is the
+    // window in which answering it is worth a notification.
+    live: !TERMINAL_STATES.has(String(state.state)) && Date.now() - updatedAt < LIVE_WINDOW_MS,
     // Which conversation this one grew out of, when it was launched from one.
     //
     // Not decoration: a job that respawns resumes its old conversation rather
@@ -130,7 +145,7 @@ function readJob(short, { withSteps = false } = {}) {
     tokens: Number(state.tokens) || 0,
     cwd: state.cwd ? String(state.cwd) : null,
     createdAt: stamp(state.createdAt),
-    updatedAt: stamp(state.updatedAt) || mtime,
+    updatedAt,
     // A job that reached a terminal state has stopped; the timestamp is when.
     finishedAt: stamp(state.firstTerminalAt) || null,
     steps: withSteps ? steps(dir) : undefined,

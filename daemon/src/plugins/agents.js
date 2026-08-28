@@ -61,6 +61,18 @@ const SCAN_MS = 8000
 const POLL_MS = 2000
 /** A scan-discovered session whose transcript moved this recently is working. */
 const ACTIVE_MS = 20_000
+/**
+ * How old a process with no transcript has to be before it is worth a row.
+ *
+ * A normal launch writes its first line within a couple of seconds, and the
+ * hook announces it sooner than that. What stays past this grace is an agent
+ * standing at a screen it cannot get past on its own — the folder-trust
+ * prompt, most often — which is exactly the kind of stuck the phone exists
+ * for, and it used to be the one kind that was invisible: no transcript, no
+ * hook (an untrusted folder runs none), nothing to pair. It was also *stuck*,
+ * and the person on the sofa was told "nothing running".
+ */
+const STARTING_GRACE_MS = 12_000
 /** How long a finished session stays in the list before it is forgotten. */
 const GONE_TTL_MS = 5 * 60 * 1000
 /**
@@ -176,6 +188,9 @@ const publicSession = (entry) => {
     preview: entry.preview,
     prompt: entry.prompt,
     via: entry.via,
+    // How many subagents it has out. The transcript hides their traffic, so
+    // this number is the only sign of a fan-out the phone ever gets.
+    subagents: entry.subagents || 0,
     // Model, context, permission mode, branch — the desktop's own status line,
     // read off the transcript rather than asked of the session.
     vitals,
@@ -192,6 +207,7 @@ const publicSession = (entry) => {
           name: job.name,
           detail: job.detail,
           state: job.state,
+          live: job.live,
           tokens: job.tokens,
           updatedAt: job.updatedAt,
         }
@@ -298,6 +314,8 @@ function upsert(fields) {
     // blocks go when the phone closes the screen, and the question does not.
     question: null,
     via: fields.via || 'scan',
+    // Subagents out right now, counted off their own lifecycle hooks.
+    subagents: 0,
     goneAt: null,
     // The status line as the phone last saw it, so a scan can tell whether it
     // has anything to say. `undefined` until the first scan looks.
@@ -640,7 +658,8 @@ function scanProcesses() {
 }
 
 /**
- * Whether a transcript was written in the background, remembered per file.
+ * What a transcript says about itself — which kind of session wrote it, and
+ * when it last had a turn in it — remembered per file.
  *
  * The answer is read off the end of the file, and the file only has to be read
  * again once it has changed — which is the same bargain `hooks.installed()`
@@ -651,18 +670,18 @@ function scanProcesses() {
  * agent has been considered against, so it stays the size of the desktop's
  * open sessions rather than of its history.
  */
-const backgrounds = new Map()
+const recencies = new Map()
 
 /** A desktop has nothing like this many live agents; past it, start again. */
-const BACKGROUND_CACHE_MAX = 256
+const RECENCY_CACHE_MAX = 512
 
-const backgroundOf = (adapter) => (transcript) => {
-  if (!adapter.background) return null
-  const cached = backgrounds.get(transcript.path)
+const recencyOf = (adapter) => (transcript) => {
+  if (!adapter.recency) return null
+  const cached = recencies.get(transcript.path)
   if (cached && cached.at === transcript.mtime) return cached.value
-  if (backgrounds.size >= BACKGROUND_CACHE_MAX) backgrounds.clear()
-  const value = adapter.background(transcript.path)
-  backgrounds.set(transcript.path, { at: transcript.mtime, value })
+  if (recencies.size >= RECENCY_CACHE_MAX) recencies.clear()
+  const value = adapter.recency(transcript.path)
+  recencies.set(transcript.path, { at: transcript.mtime, value })
   return value
 }
 
@@ -684,9 +703,16 @@ function scan() {
   const seen = new Set()
   for (const [, group] of byDir) {
     const { adapter, cwd } = group[0]
-    for (const { proc, transcript } of pair(group, adapter.transcripts(cwd), { background: backgroundOf(adapter) })) {
+    const pairs = pair(group, adapter.transcripts(cwd), {
+      recency: recencyOf(adapter),
+    })
+    for (const { proc, transcript, activeAt } of pairs) {
       const id = `${adapter.id}:${transcript.id}`
       seen.add(id)
+      // The placeholder this process may have worn while it had no transcript
+      // — it has one now, and two rows for one agent is one too many.
+      const ghost = sessions.get(`${adapter.id}:pid-${proc.pid}`)
+      if (ghost) forget(ghost)
       const { entry, created } = upsert({
         id,
         agent: adapter.id,
@@ -694,12 +720,17 @@ function scan() {
         cwd,
         pid: proc.pid,
         transcript: transcript.path,
-        lastActivity: transcript.mtime,
+        // When the conversation last moved, not when the file did. The CLI
+        // appends untimestamped bookkeeping to transcripts nobody is talking
+        // in any more, so a session idle since lunchtime was reaching the
+        // phone as forty minutes old — which is exactly the number somebody
+        // reads to decide whether the thing on screen is still theirs.
+        lastActivity: activeAt,
         via: 'scan',
       })
       if (entry.via === 'scan') {
-        setState(entry, Date.now() - transcript.mtime < ACTIVE_MS ? 'working' : 'idle')
-        entry.lastActivity = Math.max(entry.lastActivity, transcript.mtime)
+        setState(entry, Date.now() - activeAt < ACTIVE_MS ? 'working' : 'idle')
+        entry.lastActivity = Math.max(entry.lastActivity, activeAt)
       }
       refreshPreview(entry)
       if (created) {
@@ -711,6 +742,44 @@ function scan() {
         // sit unchanged on the phone from the moment a session was announced
         // until the next hook fired — which for an agent working through
         // something long is the whole of the interesting part.
+        emitSession(entry)
+      }
+    }
+
+    // The processes the pairing could not place. Young ones are agents still
+    // starting up and stay invisible, as ever; old ones are agents stuck at a
+    // screen they wrote nothing about — the trust prompt — and get a row with
+    // no transcript behind it, so the phone can at least see them and, when
+    // the terminal is reachable, press the key they are stuck on.
+    const matched = new Set(pairs.map((p) => p.proc.pid))
+    for (const proc of group) {
+      if (matched.has(proc.pid)) continue
+      if (!proc.startedAt || Date.now() - proc.startedAt < STARTING_GRACE_MS) continue
+      const id = `${adapter.id}:pid-${proc.pid}`
+      // A real session already owns this process — a hook got there first, or
+      // its transcript lives in a directory the process has since left.
+      const real = [...sessions.values()].some((e) => e.id !== id && e.pid === proc.pid && e.state !== 'gone')
+      if (real) {
+        const ghost = sessions.get(id)
+        if (ghost) forget(ghost)
+        continue
+      }
+      seen.add(id)
+      const { entry, created } = upsert({
+        id,
+        agent: adapter.id,
+        adapter,
+        cwd,
+        pid: proc.pid,
+        transcript: null,
+        state: 'starting',
+        startedAt: proc.startedAt,
+        lastActivity: proc.startedAt,
+        via: 'scan',
+      })
+      if (!entry.preview) entry.preview = 'started, but nothing on disk yet — likely stuck at a first-run prompt'
+      if (created) {
+        log.debug(`agent process without a transcript: ${id} in ${cwd}`)
         emitSession(entry)
       }
     }
@@ -745,6 +814,7 @@ function restamp(entry) {
     todo?.active,
     job?.detail,
     job?.state,
+    entry.subagents || 0,
   ].join('\u0000')
   if (entry.stamp === print) return false
   // The first scan of a session that was announced by a hook is not a change:
@@ -861,6 +931,22 @@ async function ensureWritable(entry) {
 
 /* ── discovery: hooks ──────────────────────────────────────────────────── */
 
+/**
+ * The one line of a tool's input worth putting beside "needs your permission".
+ * The command for a shell, the path for an edit — the argument the person at
+ * the prompt would read before pressing 1.
+ */
+function permissionSubject(input) {
+  const raw = input && typeof input === 'object' ? input : {}
+  for (const key of ['command', 'file_path', 'path', 'url', 'pattern', 'description']) {
+    if (typeof raw[key] === 'string' && raw[key].trim()) {
+      const text = raw[key].replace(/\s+/g, ' ').trim()
+      return text.length > 120 ? `${text.slice(0, 119)}…` : text
+    }
+  }
+  return ''
+}
+
 /** From the hook process up to the agent that ran it — at most a few steps. */
 function agentPidFrom(ppid, adapter) {
   for (const pid of ancestors(ppid, 6)) {
@@ -876,6 +962,11 @@ const HOOK_STATE = {
   Stop: 'idle',
   Notification: 'waiting',
   SessionEnd: 'gone',
+  // One firing per batch of tool calls. This is what tells a session apart
+  // from its own past: a `waiting` answered at the keyboard used to sit on the
+  // phone as `waiting` until the whole turn ended, because nothing between the
+  // answer and the `Stop` said a word.
+  PostToolBatch: 'working',
 }
 
 /**
@@ -891,16 +982,35 @@ const HOOK_STATE = {
  */
 const IDLE_NOTIFICATION = /waiting for your input/i
 
+/** The notification types that mean a person could do something right now. */
+const WAITING_NOTIFICATIONS = new Set([
+  'permission_prompt',
+  'agent_needs_input',
+  'elicitation_dialog',
+  'elicitation_url_dialog',
+])
+
 /**
  * What a `Notification` actually means for this session.
  *
- * A question already on the books outranks the message: the idle timer keeps
- * running while a prompt is on screen, so the "waiting for your input" line
- * can arrive on top of a real question, and dropping to `idle` there would
- * take a card the phone can answer off the screen.
+ * The payload names its own kind these days — `notification_type` — and the
+ * name is believed before the sentence: matching the English message was how
+ * an auth success or a quota reset could put a "needs you" badge on an agent
+ * that needed nothing. A question already on the books outranks `idle_prompt`
+ * either way: the idle timer keeps running while a prompt is on screen, so the
+ * "waiting for your input" line can arrive on top of a real question, and
+ * dropping to `idle` there would take a card the phone can answer off the
+ * screen. An unknown type is news, not state — it changes nothing.
  */
-const notificationState = (entry, message) =>
-  IDLE_NOTIFICATION.test(message || '') && !entry.question ? 'idle' : 'waiting'
+function notificationState(entry, payload, message) {
+  const type = String(payload.notification_type || '')
+  if (type) {
+    if (WAITING_NOTIFICATIONS.has(type)) return 'waiting'
+    if (type === 'idle_prompt') return entry.question ? 'waiting' : 'idle'
+    return null
+  }
+  return IDLE_NOTIFICATION.test(message || '') && !entry.question ? 'idle' : 'waiting'
+}
 
 /**
  * A lifecycle event straight from the agent. This is the authoritative road:
@@ -910,6 +1020,15 @@ const notificationState = (entry, message) =>
 export function hook(payload = {}) {
   if (!enabled()) return { ok: false, error: 'agents disabled' }
   const event = String(payload.hook_event_name || payload.event || '')
+
+  // The status-line bridge. Not a lifecycle event: it says what the account
+  // and the session are spending, fresh off the latest API response, and it
+  // fires far too often to be allowed anywhere near the state machine.
+  if (event === 'StatusLine') {
+    if (limits.absorb(payload.rate_limits)) announceLimits()
+    return { ok: true }
+  }
+
   const transcript = String(payload.transcript_path || '')
   if (!transcript) return { ok: false, error: 'transcript_path required' }
 
@@ -939,6 +1058,27 @@ export function hook(payload = {}) {
   if (event === 'PreToolUse') {
     const question = entry.adapter.question?.(payload.tool_name, payload.tool_input)
     if (question) entry.question = { ...question, at: Date.now(), ref: payload.tool_use_id || null }
+  } else if (event === 'PermissionRequest') {
+    // A permission prompt, the moment it exists. `Notification` says the same
+    // thing six seconds later — an idle threshold the CLI waits out before it
+    // speaks — and those seconds were the difference between a phone that
+    // buzzes while you still remember what you asked for and one that is
+    // always a beat behind the desktop. In a mode that answers its own
+    // prompts nothing is on screen and there is nothing to say.
+    if (payload.permission_mode !== 'bypassPermissions') {
+      const tool = String(payload.tool_name || '').trim()
+      const what = permissionSubject(payload.tool_input)
+      const prompt = [tool || 'a tool', 'needs your permission'].join(' ') + (what ? `: ${what}` : '')
+      entry.preview = prompt
+      setState(entry, 'waiting', { prompt })
+    }
+  } else if (event === 'SubagentStart' || event === 'SubagentStop') {
+    // How many pairs of hands the session has out right now. The transcript
+    // hides sidechain traffic on purpose, so without this a session that
+    // fanned five agents out reads as one agent sitting quietly.
+    entry.subagents = Math.max(0, (entry.subagents || 0) + (event === 'SubagentStart' ? 1 : -1))
+    entry.lastActivity = Date.now()
+    if (event === 'SubagentStart' && entry.state !== 'waiting') setState(entry, 'working')
   } else if (event === 'PostToolUse') {
     // Answered — at the keyboard or from the phone, it makes no difference
     // here. This is what keeps the card from being put back on a screen the
@@ -954,7 +1094,7 @@ export function hook(payload = {}) {
   // Both hooks fire for the same stop, and "Which fruit should I pick?" is
   // worth more on a phone than "Claude needs your permission".
   const message = String(payload.message || '').slice(0, 400) || null
-  const next = event === 'Notification' ? notificationState(entry, message) : HOOK_STATE[event]
+  const next = event === 'Notification' ? notificationState(entry, payload, message) : HOOK_STATE[event]
   if (next === 'gone') {
     setState(entry, 'gone')
     entry.goneAt = Date.now()
@@ -1037,7 +1177,7 @@ function unwatch() {
   pollTimer = null
   for (const entry of sessions.values()) closeTail(entry)
   sessions.clear()
-  backgrounds.clear()
+  recencies.clear()
   jobList = []
   // The fingerprints are what stop an event per sweep; they must not also stop
   // the *first* one after the feature comes back on.
@@ -1110,7 +1250,10 @@ export function summary() {
     sessions: list.map(publicSession),
     // The panel and the CLI draw the same status line the phone does.
     limits: enabled() ? limits.read() : null,
-    jobs: enabled() && jobs.available() ? jobs.list().length : 0,
+    // Only the jobs something is actually running: the directory behind this
+    // is a history, and a count that included finished jobs read as agents
+    // still out working.
+    jobs: enabled() && jobs.available() ? jobs.list().filter((job) => job.live).length : 0,
   }
 }
 
@@ -1638,7 +1781,12 @@ export default {
             model: vitals?.model || null,
             branch: vitals?.branch || null,
             context: vitals?.context || null,
-            at: transcript.mtime,
+            // The conversation's own clock. A transcript's mtime moves every
+            // time the CLI writes a line of bookkeeping into it, which it goes
+            // on doing for hours after the last thing anybody said — so a list
+            // ordered by mtime puts finished conversations above the one that
+            // was actually being had.
+            at: vitals?.turnAt || transcript.mtime,
             size: transcript.size,
             // A conversation that is open right now is not one to resume; the
             // phone offers to walk into it instead.

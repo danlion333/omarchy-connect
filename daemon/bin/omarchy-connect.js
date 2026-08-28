@@ -23,6 +23,7 @@ import { INBOX } from '../src/plugins/share.js'
 import { detected as detectedAgents } from '../src/agents/index.js'
 import * as agentHooks from '../src/agents/hooks.js'
 import * as agentTmux from '../src/agents/tmux.js'
+import * as agentStatusline from '../src/agents/statusline.js'
 import * as agentWriter from '../src/agents/writer.js'
 import * as agentLimits from '../src/agents/limits.js'
 
@@ -1270,6 +1271,63 @@ async function cmdAgentHook() {
 }
 
 /**
+ * The bridge between Claude Code's status line and this daemon.
+ *
+ * The CLI hands the configured command JSON on stdin and prints whatever
+ * comes back on stdout, on every update — which makes this the freshest
+ * source of the account's rate limits and the session's context figures that
+ * exists on the desktop. The line printed is for the person at the terminal;
+ * the POST is for the phone. Printing comes first: the CLI is waiting on
+ * stdout, and a daemon that is down must never cost the terminal its line.
+ */
+async function cmdAgentStatusline() {
+  let raw = ''
+  try {
+    process.stdin.setEncoding('utf8')
+    for await (const chunk of process.stdin) {
+      raw += chunk
+      if (raw.length > 128 * 1024) break
+    }
+  } catch {
+    /* no stdin still prints an empty-handed line below */
+  }
+
+  let payload = {}
+  try {
+    payload = JSON.parse(raw || '{}')
+  } catch {
+    payload = {}
+  }
+
+  const pct = (value) => (Number.isFinite(Number(value)) ? `${Math.round(Number(value))}%` : null)
+  const parts = []
+  const model = payload.model?.display_name
+  if (model) parts.push(String(model))
+  const ctx = pct(payload.context_window?.used_percentage)
+  if (ctx) parts.push(`ctx ${ctx}`)
+  const session = pct(payload.rate_limits?.five_hour?.used_percentage)
+  if (session) parts.push(`5h ${session}`)
+  const week = pct(payload.rate_limits?.seven_day?.used_percentage)
+  if (week) parts.push(`wk ${week}`)
+  process.stdout.write(parts.join(' · '))
+
+  await daemonRequest('/api/agent/hook', {
+    method: 'POST',
+    timeout: 1000,
+    body: {
+      hook_event_name: 'StatusLine',
+      agent: 'claude',
+      session_id: payload.session_id || null,
+      transcript_path: payload.transcript_path || null,
+      rate_limits: payload.rate_limits || null,
+      context_window: payload.context_window || null,
+      exceeds_200k_tokens: payload.exceeds_200k_tokens === true,
+    },
+  })
+  process.exit(0)
+}
+
+/**
  * Start an agent in a pane the phone can type into.
  *
  * Everything else about the desktop stays as it was: tmux attaches in this
@@ -1322,6 +1380,7 @@ async function cmdAgent(args) {
   const action = args._[0] || 'status'
 
   if (action === 'hook') return cmdAgentHook()
+  if (action === 'statusline') return cmdAgentStatusline()
   if (action === 'run') return cmdAgentRun(args)
 
   const cfg = loadConfig()
@@ -1405,13 +1464,23 @@ async function cmdAgent(args) {
   if (action === 'install-hooks' || action === 'uninstall-hooks') {
     const install = action === 'install-hooks'
     const command = writeHooks(install)
+    // The status line rides along: it is the only realtime source for what the
+    // account is spending, and installing it apart from the hooks would be a
+    // second command nobody would learn about. One that the user configured
+    // themselves is not touched, and the refusal is said out loud.
+    const statusline = agentStatusline.write(install)
     if (install) {
       log.ok(`hooks installed in ${CLAUDE_SETTINGS.replace(os.homedir(), '~')}`)
       console.log(card('CLAUDE CODE HOOKS', HOOK_EVENTS.map((event) => [event, 'installed'])))
       console.log(dim(`\n  ${command}\n`))
+      if (statusline === null) {
+        log.warn('status line left alone — you have your own configured, so usage stays on the CLI\'s cache')
+      } else {
+        console.log(dim('  status line installed too — it feeds the phone realtime usage\n'))
+      }
       console.log(dim('  already-running agents pick these up when they next start\n'))
     } else {
-      log.ok('hooks removed')
+      log.ok(statusline === null ? 'hooks removed (the status line was not ours to remove)' : 'hooks and status line removed')
     }
     return
   }
@@ -1457,6 +1526,9 @@ async function cmdAgent(args) {
       // installed, so ask the adapters themselves rather than report none.
       ['adapters', ((agents.adapters || []).length ? agents.adapters : detectedAgents()).join(' ') || dim('none detected')],
       ['hooks', hooksInstalled() ? 'installed' : dim('not installed')],
+      // The realtime half of the usage card below: without it the numbers come
+      // from a cache the CLI refreshes when it feels like it.
+      ['status line', agentStatusline.installed() ? 'installed' : dim(agentStatusline.available() ? 'not installed' : 'yours — left alone')],
       ['start from phone', cfg.agents?.spawn === true ? 'on' : 'off'],
       ['sessions', String((agents.sessions || []).length)],
       ['in background', String(agents.jobs || 0)],

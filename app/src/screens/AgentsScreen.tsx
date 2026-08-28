@@ -161,7 +161,15 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
           says what they are doing. */}
       {detached.length ? (
         <Card>
-          <CardHeader icon="moon" title="In the background" subtitle={`${detached.length} with no terminal`} />
+          <CardHeader
+            icon="moon"
+            title="In the background"
+            subtitle={
+              detached.some((job) => job.live !== false)
+                ? `${detached.filter((job) => job.live !== false).length} running · no terminal`
+                : 'nothing running — recent results'
+            }
+          />
           {detached.map((job, i) => (
             <View key={job.id}>
               {i > 0 ? <Divider style={{ marginVertical: space.xs }} /> : null}
@@ -176,7 +184,11 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
           Reading only — that desktop has neither tmux nor wtype, so nothing there can type into a terminal
         </Body>
       ) : null}
-      {caps?.write && sorted.some((s) => !s.writable) ? (
+      {/* Background agents are read-only by their nature rather than for want
+          of a multiplexer, so the line that sends people to `agent run` is
+          only worth showing when some session it would actually help is on
+          screen. */}
+      {caps?.write && sorted.some((s) => !s.writable && !s.job) ? (
         <Body tone={palette.muted} style={{ textAlign: 'center' }}>
           A session with no dot beside it is not in a terminal this desktop can reach — start those with{' '}
           omarchy-connect agent run
@@ -202,12 +214,17 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
           // one you can act on, and "Bash grep -rn router src" is not.
           session.state === 'waiting'
             ? session.prompt || 'waiting for an answer'
-            : (session.state === 'working' && session.tasks?.active) || session.job?.detail || session.preview,
+            : session.state === 'starting'
+              ? session.preview || 'just started — nothing on disk yet'
+              : (session.state === 'working' && session.tasks?.active) || session.job?.detail || session.preview,
           [
             // Once the title is the conversation's own name, the project it is
             // in stops being obvious — so it is said here instead.
             session.project,
             session.tasks?.total ? `${session.tasks.done}/${session.tasks.total} done` : null,
+            // A fan-out is invisible in the transcript, so this is the only
+            // place the phone can say the session is more than one agent.
+            session.subagents ? `${session.subagents} subagent${session.subagents > 1 ? 's' : ''}` : null,
             ago(session.lastActivity),
             session.job ? 'background' : session.via === 'scan' ? 'found by scan' : null,
             // Which road in, because it decides whether the composer is a text
@@ -252,7 +269,17 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
  */
 function JobRow({ job }: { job: AgentJob }) {
   const { palette } = useConnection()
-  const tone = job.state === 'working' ? palette.green : job.state === 'waiting' ? palette.orange : palette.muted
+  // The state file outlives the process, so `working` on a dead job is
+  // history, not status — a daemon that knows says so, and the row goes grey
+  // rather than keep a pulse going for an agent that is not there.
+  const live = job.live !== false
+  const tone = !live
+    ? palette.muted
+    : job.state === 'working'
+      ? palette.green
+      : job.state === 'waiting' || job.state === 'blocked'
+        ? palette.orange
+        : palette.muted
   return (
     <ListRow
       title={job.name}
@@ -261,8 +288,8 @@ function JobRow({ job }: { job: AgentJob }) {
         .join('\n')}
       right={
         <View style={{ alignItems: 'flex-end', gap: 2 }}>
-          <StatusDot tone={tone} pulse={job.state === 'working'} />
-          <Caps tone={tone}>{job.state}</Caps>
+          <StatusDot tone={tone} pulse={live && job.state === 'working'} />
+          <Caps tone={tone}>{live ? job.state : 'ended'}</Caps>
         </View>
       }
     />
