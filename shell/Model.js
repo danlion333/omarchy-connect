@@ -179,30 +179,137 @@ function phoneDetail(entry, now) {
 /* ── Bluetooth hands-free ─────────────────────────────────────────────── */
 
 /**
+ * Which handset this row is about, connected or not.
+ *
+ * `device` is filled only while the link is up, so a row that wants to name
+ * the phone when it is down falls back to the handset the daemon has already
+ * matched — the same one it would page. Pinned comes last because it is an
+ * address somebody typed, and a name beats an address whenever there is one.
+ */
+function handsfreeName(bt) {
+  if (!isObject(bt)) return ""
+  var link = isObject(bt.link) ? bt.link : {}
+  var known = isObject(link.handset) ? link.handset : null
+  if (bt.device) return String(bt.device)
+  if (known) return String(known.name || known.address || "")
+  return link.pinned ? String(link.pinned) : ""
+}
+
+/**
+ * Whether the Bluetooth row has anything to say.
+ *
+ * This row used to appear only while the link was up or failing, on the
+ * grounds that the link is the desktop's business rather than the user's.
+ * That held while a call was the only thing that could raise it. It stopped
+ * holding once the row grew a button: a control that shows up only after it
+ * has been used is not a control, and a handset that is bonded but idle — the
+ * ordinary state under the `ring` policy — was leaving the panel with nothing
+ * on screen at all.
+ *
+ * `paired` is the last state it grew to cover, and the one this row was worst
+ * at: a desktop paired over the LAN with no Bluetooth bond had nothing on
+ * screen until somebody pressed something that failed, and then a sentence
+ * with no button under it. That desktop is exactly the one with something to
+ * do here — it knows whose phone it wants — so the row stands for it too, and
+ * the button under it makes the bond.
+ */
+function handsfreeShown(bt, paired) {
+  if (!isObject(bt) || bt.available !== true) return false
+  var link = isObject(bt.link) ? bt.link : {}
+  if (bt.connected === true || link.raising === true || link.error || isObject(link.bonding)) return true
+  return !!(isObject(link.handset) || link.pinned || paired)
+}
+
+/**
+ * Which way the button points: `bond`, `connect`, `disconnect`, or neither.
+ *
+ * Neither while a page or a pairing window is in flight — pressing then races
+ * the daemon for a state that lands on its own a moment later.
+ *
+ * With no handset matched there is no address to page, and the button used to
+ * disappear for that reason. It was the wrong answer to the right observation:
+ * there is nothing to *connect* to, but there is very much something to do,
+ * and it is the one thing that turns this row from a sentence about a problem
+ * into the fix for it.
+ */
+function handsfreeAction(bt, paired) {
+  if (!handsfreeShown(bt, paired)) return ""
+  var link = isObject(bt.link) ? bt.link : {}
+  if (link.raising === true || link.standingDown === true || isObject(link.bonding)) return ""
+  if (bt.connected === true) return "disconnect"
+  if (handsfreeName(bt)) return "connect"
+  return "bond"
+}
+
+/**
  * The state of the hands-free link, in one line.
  *
  * "unsupported" and "not connected" are different answers and the difference
  * is actionable: the first means this machine's PipeWire is too old to publish
  * org.pipewire.Telephony, the second only means nothing is paired yet.
  *
- * The link is normally nobody's business — it goes up for a call and comes
- * down after it — so it earns a word here only in the states where something
- * is happening or something is wrong: a page under way, and a page that
- * failed.
+ * A matched handset with the link down names the phone *and* says it is off,
+ * because those are the two things the button beside it is about to change,
+ * and because a bond that outlives its link is the whole point of raising one
+ * by hand instead of by pairing.
  */
-function handsfreeText(bt) {
-  if (!bt || bt.available !== true) return "unsupported"
-  var link = bt.link || {}
+function handsfreeText(bt, now) {
+  if (!isObject(bt) || bt.available !== true) return "unsupported"
+  var link = isObject(bt.link) ? bt.link : {}
+  var name = handsfreeName(bt)
+  // A window in flight outranks everything else the row could say: it is the
+  // only state in which something is expected to happen on the phone, and the
+  // panel is where whoever pressed the button is looking for that news.
+  if (isObject(link.bonding)) return bondingText(link.bonding, now)
   if (bt.connected !== true) {
     if (link.raising === true) return "connecting…"
-    if (link.error) return link.error
-    return "not connected"
+    if (link.error) return String(link.error)
+    // "not connected" is an answer about a link. With no bond under it there
+    // is no link to be disconnected from, and the row said so in the tense of
+    // something broken rather than something not made yet.
+    if (!name) return "no handset paired"
+    return name + " · not connected"
   }
-  var name = bt.device || "connected"
+  if (link.standingDown === true) return "disconnecting…"
   // "active" is the transport state that means audio is actually on this
   // machine's speakers rather than the profile merely being up.
   if (bt.audio === "active") return name + " · audio here"
-  return name
+  return name || "connected"
+}
+
+/**
+ * A pairing window, in the tense of the thing being waited for.
+ *
+ * The stages are not equally interesting. `looking` is the one the user has to
+ * act on — the desktop is visible and the phone is where the next move
+ * happens — so it says that rather than naming the stage, and it counts down,
+ * because a window with an end is a wait somebody can decide to sit through.
+ */
+function bondingText(bonding, now) {
+  var who = isObject(bonding.handset) ? bonding.handset.name || bonding.handset.address : ""
+  // A pin means the handset fell back to legacy pairing and its dialog is
+  // waiting for a code right now — nothing else on the row matters until the
+  // person standing at the phone learns what to type.
+  if (bonding.pin) return "type " + bonding.pin + " on the phone"
+  if (bonding.stage === "pairing") return "pairing with " + (who || "the handset") + "…"
+  if (bonding.stage === "connecting") return "paired · connecting…"
+  var left = Math.max(0, Math.round((Number(bonding.until || 0) - (now || Date.now())) / 1000))
+  return "visible for " + left + "s — pick this desktop on the phone"
+}
+
+/**
+ * The glyph in front of the row, carrying the state the words have no width
+ * for. The same trick the bar plays with its three colours: a reader who only
+ * glances gets the answer from the icon, and the words wait for the one who
+ * stops.
+ */
+function handsfreeGlyph(bt) {
+  if (!isObject(bt)) return "󰂯"
+  var link = isObject(bt.link) ? bt.link : {}
+  if (link.raising === true || link.standingDown === true || isObject(link.bonding)) return "󰂳"
+  if (bt.connected === true) return "󰂱"
+  if (link.error) return "󰂲"
+  return "󰂯"
 }
 
 /**
@@ -224,9 +331,11 @@ function iosText(ios) {
  * How long the conversation has been going, as a phone would show it.
  *
  * The desktop that answered the call is the only clock in the room — the
- * handset's own timer is on a screen nobody is holding — so the panel counts,
- * and the bar counts beside it. Empty until somebody picks up: a ringing phone
- * has nothing to count yet.
+ * handset's own timer is on a screen nobody is holding — so the card counts,
+ * and this is the panel's copy of it. The bar deliberately has none: a number
+ * that changes width every second does not belong in a row of fixed-width
+ * icons. Empty until somebody picks up: a ringing phone has nothing to count
+ * yet.
  */
 function callClock(call, now) {
   if (!isObject(call) || call.state !== "active") return ""

@@ -25,13 +25,13 @@ One glyph — the phone's platform, dimmed while the daemon is down, dimmer
 still while nothing is linked, and in the bar's active colour while a pairing
 code is live. It goes urgent the moment the phone rings.
 
-A call that has been picked up is the one thing it says in words: the glyph
-becomes a clock (`󰏶  04:12`) and counts for as long as the conversation lasts,
-whether or not the panel is open. Answering from the desktop leaves the
-handset on the table with its own timer on a screen nobody is looking at, so
-the count belongs somewhere it can be caught out of the corner of an eye. The
-desktop draws the same clock on its notification card; this is the version you
-do not have to look for.
+That is the whole of it, a live call included: the tooltip names who you are
+talking to and the glyph stays a glyph. It used to become a clock (`󰏶  04:12`)
+and tick for the length of the conversation, which put a run of digits that
+changes width every second into a row of fixed-width icons and shoved the
+bar's neighbours along with it once a minute. The count already has a home —
+the notification card is up for exactly as long as the call is, says the same
+number, and is what you were looking at when you answered.
 
 ## Panel
 
@@ -95,10 +95,16 @@ it is drawn.
   Every other row here is gated on having something to say, because a readout
   whose whole content is *no* is not a readout. **Files** (`3 in · 1 out`) and
   **Notified** (`12 mirrored`, plus `2 missed` in the urgent colour once there
-  are any) appear once the counters leave zero. **Bluetooth** appears while the
-  hands-free link is carrying something or has failed at it, and stays folded
-  away the rest of the time — the desktop holds that link open on its own
-  behalf, and *not connected* is its resting state rather than news. **iPhone**
+  are any) appear once the counters leave zero. **Bluetooth** appears as soon
+  as the desktop has matched a handset of its own — the phone by name, and
+  whether the hands-free link to it is up, with the glyph carrying the same
+  answer for a reader who is only glancing. It is the one row here that is a
+  control as well as a readout: the button at its right edge raises the link
+  and drops it again, and neither direction touches the pairing, which is the
+  whole reason dropping it is safe to offer. The button goes away while a page
+  is in flight rather than offering a race, and the row itself stays folded
+  away on a desktop that has matched nothing, where there would be no address
+  to page. **iPhone**
   is the other Bluetooth link, the low-energy one an iPhone mirrors its
   notifications over, and it appears only for a handset that is bonded: the
   name while it is mirroring, *idle* when it is bonded but declining to share.
@@ -211,7 +217,10 @@ and past whichever is not, which is the same rule the eye follows.
 
 `a` answers a ringing call and `d` declines it — or hangs up one already in
 progress. Both do nothing when there is no call, so a mistyped key on an idle
-panel is harmless.
+panel is harmless. `b` raises the hands-free link to the matched handset, or
+drops it if it is already up — and with no handset bonded at all it makes the
+bond instead, which is the state the row used to have nothing but a sentence
+for. It does nothing while a page or a pairing window is already under way.
 
 The agent switch has no letter of its own, deliberately: every letter on this
 panel is one keystroke away from something, and widening what leaves this

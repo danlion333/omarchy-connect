@@ -383,7 +383,31 @@ phone is paired; if the bus name has no owner, PipeWire is older than 1.4.
 None of that surface exists until the profile is connected, which is BlueZ's
 business rather than PipeWire's: `Device1.ConnectProfile` with the phone's
 `0000111f-…` UUID raises the one link this needs and leaves the rest of the
-device — A2DP, AVRCP — where the user put it. `handsfree.autoConnect` in the
+device — A2DP, AVRCP — where the user put it.
+
+*Which* device is decided before any of that. `Device1.UUIDs` is a cache of the
+last SDP read and is empty of classic profiles for a handset bonded over low
+energy alone, so it is read as evidence rather than used as a filter — a bonded
+device that looks like a phone by `Icon` or by the major field of its class of
+device is a candidate whether or not `111f` is in the cache, and only
+`ConnectProfile` can tell a cold cache from a handset that genuinely cannot do
+this. Among the candidates, a pinned address wins, then the handset whose name
+matches the phone paired over the LAN, then the old heuristic — one unambiguous
+phone-shaped device. The name is the join because it is the only identifier
+both halves publish: Android answers `BluetoothAdapter.getAddress()` with
+`02:00:00:00:00:00` for ordinary apps, so the phone cannot report where it
+lives. `link.matched` in the summary says which of the three answers was used.
+
+A raise in flight owns the link for as long as it is in flight. The gateway
+appearing is what tells `attempt` it succeeded, and the refresh carrying that
+news reaches the stand-down check one statement before the owner is recorded —
+so without that rule the desktop reads its own half-finished page as a link
+BlueZ reconnected on its own, and puts it back down three seconds later.
+
+`ConnectProfile` failing with `br-connection-key-missing` means the bond exists
+without a classic link key — the state an LE-only pairing leaves behind, and
+one nothing on the desktop can repair, because the key has to be minted by a
+pairing rather than recovered. `handsfree.autoConnect` in the
 config decides when that happens. Under `ring`, the default, the link is raised
 when a call is reported and dropped fifteen seconds after the last one clears,
 and a link found idle that this daemon did not raise — BlueZ reconnects a
@@ -394,6 +418,79 @@ later is treated as a phone walking back into the room rather than the same
 argument. Under `presence` the link follows the app onto the
 network instead; under `off` nothing is raised or dropped unasked. A link
 raised by hand through `op: "connect"` is never dropped by policy.
+
+##### Making the bond
+
+All of the above assumes a bond exists. `op: "bond"` is how one gets made
+without leaving for a Bluetooth settings screen, and it opens both directions
+at once because either end can be the one that moves:
+
+```
+Adapter1.Pairable      = true    the desktop will accept a bond
+Adapter1.Discoverable  = true    the desktop can be found and picked
+bluetoothctl --agent NoInputNoOutput
+                                 something to answer BlueZ's pairing questions,
+                                 and — in the same process — the scan
+Device1.Pair                     the desktop asking, when it sees the phone first
+Device1.Trusted        = true    so the handset may reconnect unattended
+```
+
+Both adapter timeouts are handed to BlueZ (`DiscoverableTimeout`,
+`PairableTimeout`) rather than kept on a timer in the daemon: a process killed
+outright must not leave the machine offering itself to the street.
+
+The agent is `bluetoothctl` rather than a D-Bus object of this daemon's own,
+which is the same trade `ancs.js` makes — one dependency, and the agent lives
+exactly as long as the window does. `NoInputNoOutput` is the honest capability
+for a daemon with no dialog to show, and it is what makes both ends settle on
+Just Works: the prompt appears on the handset, and nothing has to be read back
+here — no code on either side, which is the pairing this window is built for.
+
+Built for, not guaranteed. BlueZ routes every pairing question to the default
+agent whatever capability it declared, and a handset that failed to learn the
+desktop speaks Secure Simple Pairing falls back to *legacy* PIN pairing — seen
+in the wild on a radio that hung and reset itself between the feature exchange
+and the pairing, which left the phone asking its user for a code "usually 0000
+or 1234". So the agent reads bluetoothctl's prompts and answers them instead
+of leaving them hanging: a PIN request gets `0000` and the code is surfaced as
+`link.bonding.pin` so every screen can say "type 0000 on the phone", and the
+yes/no family — confirm this passkey, accept this pairing, authorize this
+service — gets yes, because a question arriving inside a window the user
+opened on purpose is the consent.
+
+The scan runs inside that same process for a reason worth writing down:
+`SetDiscoveryFilter` is remembered per D-Bus client and forgotten when the
+client goes, and every `busctl` invocation is a client that lives for
+milliseconds — so a filter set that way is gone before the scan it shapes ever
+starts. The filter is `Transport=bredr`, because hands-free is a classic
+profile and a bond made over low energy is the one kind that cannot carry it.
+
+The desktop only ever *asks* a handset whose name matches the phone paired over
+the LAN, and only over a `public` address — a `random` one is the low-energy
+half of the same phone under a rotating identifier. With no LAN pairing to join
+against, it waits to be chosen rather than choosing: a discoverable window is
+one anybody in range can walk through, and a desktop that pairs itself to a
+stranger's handset because it was the only one scanning is worse than one that
+waits.
+
+`Trusted` is set on success and is a separate fact from the bond. The bond says
+the two ends know each other; trust says this desktop will let that handset
+connect a profile without asking anybody first — and without it, a phone
+reconnecting on its own after a call raises a prompt nobody is standing at the
+desktop to answer. Every Bluetooth settings panel sets it at pairing time.
+
+`link.bonding` in the summary carries the window while it is open — `until`,
+a `stage` of `opening`, `looking`, `pairing` or `connecting`, and a `pin` that
+is null until the legacy fallback engages — so the panel and `call status` can
+say what is being waited for rather than freezing for a minute. `op: "bond"`
+with `value: "stop"` shuts it early.
+
+On success the link is raised once, to prove the bond carries the profile
+while both ends are warm, and then put back down on purpose (`parked: true` in
+the answer): the workflow the bond exists for is paired, disconnected, and
+raised for the length of a call — a ring brings the link up by itself, and the
+call ending takes it back down. A call that began inside the window is the one
+thing that keeps the link up.
 
 `ringtone` in the config is what a ringing phone sounds like on the desktop:
 the freedesktop sound theme's `phone-incoming-call` by default, played on a
@@ -702,7 +799,7 @@ machine with.
 | `POST /api/offer` | `{ path }` | Offers a desktop file to connected phones. |
 | `POST /api/unpair` | `{ id }` | Forgets a phone **and** hangs up its socket. |
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
-| `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
+| `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |

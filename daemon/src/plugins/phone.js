@@ -7,7 +7,7 @@ import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
 import { talkTime } from '../lib/talktime.js'
 import { ancs } from '../lib/ancs.js'
-import { loadConfig, saveConfig } from '../lib/config.js'
+import { loadConfig, pairedDevice, saveConfig } from '../lib/config.js'
 
 /**
  * The phone's own telephony, mirrored onto the desktop.
@@ -814,7 +814,7 @@ async function handsets() {
  */
 export async function requestCall({ op, id = null, number = null, value = null } = {}) {
   const action = String(op || '').toLowerCase()
-  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'auto', 'handset', 'ringtone', 'timer']
+  const VERBS = ['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect', 'bond', 'auto', 'handset', 'ringtone', 'timer']
   if (!VERBS.includes(action)) throw new Error(`unknown call action: ${op}`)
 
   /**
@@ -904,6 +904,38 @@ export async function requestCall({ op, id = null, number = null, value = null }
       talkTime.start({ key: live.call || live.id, who: caller(live), at: activeSince || Date.now() })
     }
     return { ok: true, timer: talkTime.summary() }
+  }
+
+  /**
+   * The bond under the link, rather than the link itself.
+   *
+   * `connect` needs a handset this desktop is already bonded to; this is what
+   * to do when there is not one. It opens a window in which the desktop is
+   * visible and looking, and comes back when a bond is made or the window
+   * shuts — which is a slow answer by design, because the thing it is waiting
+   * for is somebody picking their phone up.
+   *
+   * `bond stop` shuts the window early, for a user who changed their mind
+   * rather than one who finished.
+   */
+  if (action === 'bond') {
+    if (String(value || '').toLowerCase() === 'stop') {
+      const stopped = handsfree.stopBonding()
+      return { ok: true, via: 'bluetooth', stopped, bluetooth: handsfree.summary() }
+    }
+    const res = await handsfree.bond()
+    if (!res.ok) throw new Error(res.error || 'nothing paired')
+    return {
+      ok: true,
+      via: 'bluetooth',
+      already: Boolean(res.already),
+      connected: Boolean(res.connected),
+      /** The link was raised to prove the bond, then put back down on purpose. */
+      parked: Boolean(res.parked),
+      handset: res.handset || null,
+      bluetooth: handsfree.summary(),
+      handsets: await handsets(),
+    }
   }
 
   // The link itself, rather than anything travelling over it. `connect` waits
@@ -1152,6 +1184,22 @@ export default {
      * raised for a silent handset would be put down mid-conversation.
      */
     handsfree.busy = () => Boolean(liveCall())
+
+    /**
+     * Which handset the Bluetooth half should be reaching for.
+     *
+     * The two halves of this project pair separately — one over the LAN with a
+     * QR code, one in Bluetooth settings — and nothing used to join them, so
+     * the Bluetooth half looked at a list of bonded devices and could only ask
+     * "is there exactly one that could be a phone?". On a laptop that has ever
+     * been in a car, that question has no answer.
+     *
+     * It does not have to be asked. By the time any of this matters the
+     * desktop has already been told which phone is *its* phone, by the phone
+     * itself, during the pairing everybody does first — so the name goes to
+     * `pick`, and the ambiguity stops being one.
+     */
+    handsfree.expect = () => pairedDevice()?.name ?? null
 
     handsfree.configure(loadConfig().handsfree)
     ringtone.configure(loadConfig().ringtone)

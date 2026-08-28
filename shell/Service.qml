@@ -228,6 +228,44 @@ Item {
     invoke(Model.command(root.status, ["call", "hangup"]), "Hanging up…")
   }
 
+  /**
+   * Raise or drop the hands-free link by hand.
+   *
+   * Neither of these touches the pairing: `call connect` pages the profile on
+   * a handset this machine is already bonded to, and `call disconnect` drops
+   * the profile and leaves the bond standing, so the phone is still in the
+   * list and still comes up on the next ring. Worth waiting on for the same
+   * reason answering is — a page that BlueZ refuses has a reason, and the
+   * reason is more use on the panel than in the journal.
+   */
+  function connectHandsfree() {
+    invoke(Model.command(root.status, ["call", "connect"]), "Connecting over Bluetooth…")
+  }
+
+  function disconnectHandsfree() {
+    invoke(Model.command(root.status, ["call", "disconnect"]), "Disconnecting — the pairing stays…")
+  }
+
+  /**
+   * Make the bond the other two assume.
+   *
+   * The long one. The desktop is visible for a minute and the next move is on
+   * the phone, so the status line says what is being waited for rather than
+   * naming the command — and the panel's Bluetooth row counts the window down
+   * underneath it, from the daemon's own state rather than from a guess here.
+   */
+  function bondHandsfree() {
+    invoke(Model.command(root.status, ["call", "bond"]), "Pairing — pick this desktop on the phone…")
+  }
+
+  /** What the one button on the Bluetooth row does, whichever way it points. */
+  function toggleHandsfree() {
+    var action = Model.handsfreeAction(root.bluetooth, root.paired)
+    if (action === "connect") connectHandsfree()
+    else if (action === "disconnect") disconnectHandsfree()
+    else if (action === "bond") bondHandsfree()
+  }
+
   Process {
     id: action
     running: false

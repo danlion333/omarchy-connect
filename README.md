@@ -83,6 +83,7 @@ omarchy-connect send <file> | --pick        offer a file to connected phones
 omarchy-connect status [--json]             show live daemon status
 omarchy-connect sms <number> <message…>     send an SMS through the paired phone
 omarchy-connect call <status|answer|reject|…>  answer or place a call
+omarchy-connect call bond [stop]            pair a handset over Bluetooth from here
 omarchy-connect call auto <presence|ring|off>  when to hold the Bluetooth link open
 omarchy-connect call ringtone <on|off|FILE>  what a ringing phone sounds like here
 omarchy-connect call timer <on|off>         count the conversation on screen
@@ -391,6 +392,13 @@ omarchy-connect call connect         # …and the hand crank, either way
 omarchy-connect call disconnect
 ```
 
+The hand crank is on the panel too, under *Details*: the **Bluetooth** row
+names the matched handset and says whether the link to it is up, and the button
+beside it raises or drops it. Dropping it leaves the bond alone — the phone
+stays in the machine's Bluetooth list and comes back up on the next ring — so
+the only thing the button ever changes is whether the profile is currently
+carrying anything.
+
 `presence` is the trade in the other direction: the profile is up for as long
 as the app is on the network, so a ringing call is answerable instantly and
 never spends its first second on a page — at the cost of the phone wearing the
@@ -419,9 +427,44 @@ Handsets that send their own ringing tone down the audio link once it opens
 take over from ours the moment they do: two ringtones at once is worse than
 either, and theirs is the one in step with the call.
 
-With more than one handset paired the desktop declines to guess, says so, and
-lists what it found; `omarchy-connect call handset <address>` settles it, and
-`handset auto` hands the choice back.
+### Which handset
+
+The two halves of this pair separately — one over the LAN with a QR code, one
+in Bluetooth settings — and for a while nothing joined them up. The Bluetooth
+half looked at everything the machine was bonded to and asked "is there exactly
+one thing here that could be a phone?", which on a laptop that has ever been in
+a car is a question with no answer: a car kit, two sets of earbuds, a phone,
+and the desktop declines to guess.
+
+It does not have to ask. By the time any of this matters the desktop has
+already been told which phone is *its* phone, by the phone itself, during the
+pairing everybody does first. So the handset the LAN knows about is the handset
+Bluetooth reaches for, and the ambiguity stops being one.
+
+The join is made on the name, because that is the only identifier both sides
+publish. It would be nicer to use the address, and the phone cannot give it:
+Android has answered `BluetoothAdapter.getAddress()` with the constant
+`02:00:00:00:00:00` for every ordinary app since Android 6, and the permission
+that lifts that is signature-only. The name is a better key than it sounds —
+the app reports the phone's device name and BlueZ's alias is that same device
+name, so on an untouched handset they are not merely similar but identical.
+Punctuation and case are ignored, and one being longer than the other is fine,
+so `OnePlus_9_Pro` still matches `OnePlus 9 Pro 5G`.
+
+Where it will not stretch is a handset renamed past recognition in one place
+and not the other, or two bonds under the same name. Guessing wrong is worse
+than not guessing — connecting to the car instead of the phone is a failure you
+have to diagnose, where a refusal is one you can read — so the desktop says
+what it could not decide and `omarchy-connect call handset <address>` settles
+it. `handset auto` hands the choice back.
+
+`call status` says which of the three answers it is using, because "this is the
+phone you paired" and "this was the only thing on the list" are different
+promises and only one of them survives buying a pair of earbuds:
+
+```
+HANDSET     OnePlus 9 Pro 5G · your paired phone
+```
 
 ### The clock
 
@@ -438,8 +481,11 @@ was urgent, this is not), and when the call is over it leaves the total behind
 it for a few seconds: *lasted 4m 12s* — the number you reach for a minute later
 and would otherwise have to go into the phone to find.
 
-The bar counts too, beside the icon, whether or not the panel is open. It is
-the one thing the bar ever says in words.
+The bar stays one glyph through all of it. It says *who* you are talking to in
+its tooltip and leaves the counting to the card — a clock beside the bar icon
+grew and shrank a digit at a time and pushed everything to its left along with
+it, for a number that was already on screen a few centimetres away. The panel's
+call card counts as well, for as long as it is open.
 
 ```bash
 omarchy-connect call timer off   # leave the screen alone during a call

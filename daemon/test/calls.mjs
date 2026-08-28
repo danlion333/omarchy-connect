@@ -18,6 +18,7 @@ import { quietBluetooth } from './sandbox.mjs'
 
 import { connectPhone } from './phone.mjs'
 import { handsfree, Handsfree } from '../src/lib/handsfree.js'
+import { matchesName, phoneish, pick } from '../src/lib/bluez.js'
 import { TalkTime, clock, spoken } from '../src/lib/talktime.js'
 
 const PORT = Number(process.env.PORT || 8797)
@@ -399,6 +400,42 @@ function stubbed(policy = 'presence') {
   link.stop()
 }
 
+/**
+ * The desktop's own half-finished page is not a stray.
+ *
+ * `attempt` cannot write down that it owns the link until it knows the raise
+ * worked, and it only knows that once PipeWire publishes the gateway — but the
+ * refresh that sees the gateway appear is the same one that reaches
+ * `standDown`, one statement before the owner is recorded. Read literally,
+ * that is a link nobody claims, which under `ring` is exactly the shape of a
+ * handset BlueZ reconnected on its own: three seconds later the desktop put
+ * down the link it had just asked for. Up at :01, gone at :04, on every raise
+ * — including the one a ringing phone depends on.
+ */
+{
+  const link = stubbed('ring')
+  link.state = { available: true, gateway: null, calls: [] }
+  // A raise in flight, which is the whole of what `attempt` has to show for
+  // itself at the moment the gateway turns up.
+  link.link.raising = new Promise(() => {})
+  link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
+  check('a raise still in flight is not read as somebody else\'s link', link.linger === null, String(link.linger))
+
+  // And once it lands, the ordinary rules resume: this one is the daemon's, so
+  // it stays until a policy with an opinion says otherwise.
+  link.link.raising = null
+  link.link.raisedBy = 'manual'
+  link.standDown()
+  check('a link raised by hand outlives the policy', link.linger === null)
+
+  // Where a genuine stray under the same policy still goes down.
+  link.link.raisedBy = null
+  link.standDown()
+  check('while a link nobody claims still does not', link.linger !== null)
+  clearTimeout(link.linger)
+  link.stop()
+}
+
 {
   /**
    * A handset that carries the audio and never says a call exists.
@@ -485,6 +522,152 @@ function stubbed(policy = 'presence') {
   check('but an argument that stopped is not held against it', link.linger !== null)
   clearTimeout(link.linger)
   link.stop()
+}
+
+/* ── which handset, out of everything the machine is bonded to ──────────── */
+
+/**
+ * The two halves of this project pair separately — one over the LAN with a QR
+ * code, one in Bluetooth settings — and the Bluetooth half used to have no way
+ * of knowing which bonded device the LAN half was talking about. On a laptop
+ * that has ever been in a car, "is there exactly one thing that could be a
+ * phone?" has no answer.
+ *
+ * The join is made on the name, because it is the only identifier both sides
+ * publish: Android has handed every ordinary app the constant
+ * `02:00:00:00:00:00` for its own Bluetooth address since Android 6, so the
+ * phone cannot simply say where it lives.
+ */
+{
+  const dev = (name, address, icon, hfp = true) => ({ name, address, icon, hfp, path: `/org/bluez/${address}` })
+  const fleet = (phone) => [
+    dev('BT-Car', 'E2:E3:4E:DC:EF:99', 'audio-card'),
+    dev('OnePlus Buds Z', 'E4:41:22:2F:6E:3A', 'audio-headset'),
+    dev(phone, 'D0:49:7C:20:F9:74', 'phone'),
+    dev('Оксанин Pixel', 'AA:BB:CC:DD:EE:FF', 'phone'),
+  ]
+  const chosen = (list, expect, address = null) => pick(list, address, expect)?.name ?? null
+
+  check(
+    'with two phones bonded and nothing to join against, the desktop refuses to guess',
+    chosen(fleet('OnePlus 9 Pro 5G'), null) === null,
+    chosen(fleet('OnePlus 9 Pro 5G'), null),
+  )
+  check(
+    'the phone paired over the LAN is the one it reaches for',
+    chosen(fleet('OnePlus 9 Pro 5G'), 'OnePlus 9 Pro 5G') === 'OnePlus 9 Pro 5G',
+    chosen(fleet('OnePlus 9 Pro 5G'), 'OnePlus 9 Pro 5G'),
+  )
+  check(
+    'and the other phone when that is the one paired',
+    chosen(fleet('OnePlus 9 Pro 5G'), 'Оксанин Pixel') === 'Оксанин Pixel',
+  )
+  // The two names are written by different pieces of software, so they agree
+  // on the letters rather than on the punctuation.
+  check('punctuation between them does not count', chosen(fleet('OnePlus_9_Pro_5G'), 'OnePlus 9 Pro 5G') !== null)
+  check('nor does one being longer than the other', chosen(fleet('OnePlus 9 Pro'), 'OnePlus 9 Pro 5G') !== null)
+
+  // Guessing wrong is worse than not guessing: a handset renamed past
+  // recognition gets an honest refusal and a command to run, not a car kit.
+  check('a handset renamed past recognition is not guessed at', chosen(fleet("Dan's OnePlus"), 'OnePlus 9 Pro 5G') === null)
+  check(
+    'a short alias cannot claim a long name',
+    matchesName(dev('G7', 'AD:26:B3:10:A5:92', 'audio-card'), 'OnePlus 9 Pro 5G') === false,
+  )
+  check(
+    'two bonds with the same name are still a question',
+    chosen([dev('Pixel', '11:11:11:11:11:11', 'phone'), dev('Pixel', '22:22:22:22:22:22', 'phone')], 'Pixel') === null,
+  )
+  // Somebody who typed an address is not to be second-guessed by inference.
+  check(
+    'an explicit pin outranks the name it disagrees with',
+    chosen(fleet('OnePlus 9 Pro 5G'), 'OnePlus 9 Pro 5G', 'E2:E3:4E:DC:EF:99') === 'BT-Car',
+  )
+  // One phone and nothing else is the case that predates all of this, and it
+  // has to keep working on a desktop that has never paired anything over WiFi.
+  check(
+    'a lone handset is still found with no LAN pairing at all',
+    chosen([dev('OnePlus 9 Pro 5G', 'D0:49:7C:20:F9:74', 'phone')], null) === 'OnePlus 9 Pro 5G',
+  )
+
+  // And the whole of it through the client, which is what actually records
+  // *how* the handset was arrived at — a guess and a match are not the same
+  // promise, and only one of them survives buying a pair of earbuds.
+  const link = new Handsfree()
+  link.handsets = { at: Date.now(), list: fleet('OnePlus 9 Pro 5G'), read: true }
+  link.expect = () => 'OnePlus 9 Pro 5G'
+  const matched = await link.handset()
+  check('the client joins the link to the paired phone', matched?.address === 'D0:49:7C:20:F9:74', matched?.address)
+  check('and says so rather than implying a guess', link.link.matched === 'phone', link.link.matched)
+  check('the name BlueZ knows comes with it', link.link.handset?.name === 'OnePlus 9 Pro 5G')
+
+  link.link.address = 'E2:E3:4E:DC:EF:99'
+  await link.handset()
+  check('a pin is reported as a pin', link.link.matched === 'pinned', link.link.matched)
+
+  // A handset that leaves the bonded list is a handset somebody unpaired, and
+  // every screen drawing its name would go on naming a phone this desktop has
+  // no bond with.
+  link.link.address = null
+  link.handsets = { at: Date.now(), list: [], read: true }
+  await link.handset()
+  check('an unpaired handset stops being named', link.link.handset === null, link.link.handset)
+  // Unless BlueZ was simply not there to answer, which is not the same news.
+  link.handsets = { at: Date.now(), list: fleet('OnePlus 9 Pro 5G'), read: true }
+  await link.handset()
+  link.handsets = { at: Date.now(), list: [], read: false }
+  await link.handset()
+  check('but an unreachable BlueZ does not erase what we knew', link.link.handset?.name === 'OnePlus 9 Pro 5G')
+}
+
+/* ── making the bond ────────────────────────────────────────────────────── */
+
+/**
+ * Pairing, up to the point where it would touch the radio.
+ *
+ * The window itself is not exercised here and cannot be: `busctl` is the real
+ * one in this suite, so a test that opened a pairing window would make the
+ * machine running it discoverable to the street for a minute and offer a bond
+ * to whatever answered. What *can* be checked without a handset in the room is
+ * everything that decides whether the window opens at all — which is where the
+ * mistakes live anyway.
+ */
+{
+  const dev = (over) => ({ name: 'thing', address: '11:22:33:44:55:66', hfp: false, icon: null, major: null, ...over })
+
+  check('a handset advertising the profile is one', phoneish(dev({ hfp: true })))
+  check('so is one BlueZ draws as a phone', phoneish(dev({ icon: 'phone' })))
+  // The class of device is what survives a handset BlueZ has no icon rule for.
+  check('so is one whose class of device says phone', phoneish(dev({ major: 2 })))
+  check('a headset is not', phoneish(dev({ icon: 'audio-headset' })) === false)
+  check('and neither is a mouse with nothing to say for itself', phoneish(dev({})) === false)
+
+  /**
+   * A bond that already exists is the whole point of the exercise: there is
+   * nothing to make, and what the caller wanted was the link. Opening a
+   * discoverable window in that state would be a minute of exposure for
+   * something that was already done.
+   */
+  const link = new Handsfree()
+  link.handset = async () => ({ address: 'D0:49:7C:20:F9:74', name: 'OnePlus 9 Pro 5G', path: '/org/bluez/dev' })
+  const already = await link.bond()
+  check('a desktop that is already bonded makes no window', already.ok && already.already === true, JSON.stringify(already))
+  check('and it says which handset that was', already.handset?.name === 'OnePlus 9 Pro 5G', already.handset?.name)
+  check('the window is not left behind on the way out', link.bonding === null, link.bonding)
+  check('nothing to shut is not a failure', link.stopBonding() === false)
+
+  // The PIN travels: set only when the legacy fallback engaged, and carried
+  // through the summary so a screen can tell the person what to type.
+  link.bonding = { until: Date.now() + 30_000, stage: 'looking', handset: null, pin: '0000', error: null }
+  const window = link.summary().link.bonding
+  check('the summary carries the fallback pin', window?.pin === '0000', JSON.stringify(window))
+  link.bonding = null
+
+  // The verb exists and answers, which is the half of the road a `stop` can
+  // walk without a radio: it shuts a window rather than opening one.
+  const shut = await post('/api/call', { op: 'bond', value: 'stop' })
+  check('`bond stop` is a verb the daemon knows', shut.status === 200 && shut.data.ok === true, JSON.stringify(shut.data))
+  check('and it reports there was nothing open', shut.data.stopped === false, JSON.stringify(shut.data))
 }
 
 /* ── the app road ───────────────────────────────────────────────────────── */

@@ -53,13 +53,13 @@ Panel {
   readonly property var phone: bridge.primary
   readonly property bool paired: bridge.paired
 
-  // The conversation this desktop is in, if it is in one. A call answered here
-  // leaves the handset on the table with its own timer on a screen nobody is
-  // looking at, so the bar keeps the count in the corner of the eye — the one
-  // thing it ever says in words rather than in one glyph.
+  // The conversation this desktop is in, if it is in one. The bar says so in
+  // its tooltip and nowhere else: the count belongs on the notification card,
+  // which is already on screen for the length of the call and does not cost
+  // the bar a widening, shifting run of digits every second. One glyph is what
+  // this widget is, in every state it has.
   readonly property var call: bridge.liveCall
   readonly property bool talking: !!call && call.state === "active"
-  readonly property string barClock: talking ? Model.callClock(call, root.now) : ""
 
   // The bar icon carries three states and nothing else: linked, running but
   // alone, and down. Pairing borrows the bar's active color, because a code
@@ -107,10 +107,18 @@ Panel {
   // moved nothing has no use for two zeroes.
   readonly property bool showTransfers: (bridge.counters.filesIn || 0) > 0 || (bridge.counters.filesOut || 0) > 0
   readonly property bool showNotified: (bridge.counters.notifications || 0) > 0 || (bridge.phone.missed || 0) > 0
-  // The hands-free link is the desktop's business, not the user's, right up
-  // until it is carrying something or has failed at it.
-  readonly property bool showHandsfree: !!bridge.bluetooth && (bridge.bluetooth.connected === true
-    || (!!bridge.bluetooth.link && (bridge.bluetooth.link.raising === true || !!bridge.bluetooth.link.error)))
+  // The hands-free link stands in *Details* from the moment the desktop knows
+  // which handset is its own — not, as it used to, only once the link is
+  // carrying something or has failed at it. Under the `ring` policy the link
+  // is down almost all of the time, and that was the one state the panel had
+  // nothing at all to say about.
+  // A desktop paired over the LAN with no bond under it is the one that most
+  // needs this row, so `paired` goes in: without it the row waits for a
+  // failure before it appears, which is the wrong end of the problem.
+  readonly property bool showHandsfree: Model.handsfreeShown(bridge.bluetooth, root.paired)
+  // "", "bond", "connect" or "disconnect" — empty while a page or a pairing
+  // window is in flight, so the button goes away rather than offering a race.
+  readonly property string handsfreeAction: Model.handsfreeAction(bridge.bluetooth, root.paired)
   // Bonded-but-idle stays, because that one *is* fixable by re-pairing.
   readonly property bool showIos: !!bridge.ios && (bridge.ios.subscribed === true
     || bridge.ios.paired === true || !!bridge.ios.pairing)
@@ -288,9 +296,7 @@ Panel {
   Timer {
     interval: 1000
     repeat: true
-    // And while a call is up, whether or not anybody has the panel open: the
-    // clock in the bar is the whole point of counting.
-    running: root.opened || root.talking
+    running: root.opened
     triggeredOnStart: true
     onTriggered: root.now = Date.now()
   }
@@ -313,16 +319,14 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: root.barClock !== ""
-      ? "󰏶  " + root.barClock
-      : Model.deviceGlyph(root.phone ? root.phone.platform : "")
+    text: Model.deviceGlyph(root.phone ? root.phone.platform : "")
     foreground: bridge.ringing ? root.urgent : root.barIconColor
     active: root.pairing
     tooltipText: {
       if (!bridge.loaded) return "Omarchy Connect is not set up"
       if (!bridge.running) return "Omarchy Connect is stopped"
       if (bridge.ringing) return Model.callWho(root.call) + " is calling"
-      if (root.talking) return "On call with " + Model.callWho(root.call) + " · " + root.barClock
+      if (root.talking) return "On call with " + Model.callWho(root.call)
       if (root.pairing) return "Waiting for a phone to pair"
       if (root.linked) return root.phone.name + " is connected"
       return root.paired ? root.phone.name + " is offline" : "No phone paired yet"
@@ -396,6 +400,10 @@ Panel {
           if (bridge.ringing) bridge.rejectCall()
           else bridge.hangUp()
         }
+        // `b` for the Bluetooth link, under the same rule: with no handset
+        // matched, or a page already in flight, it does nothing rather than
+        // guess which way the user meant it to go.
+        else if (key === "b" && root.handsfreeAction !== "") bridge.toggleHandsfree()
       }
 
       Flickable {
@@ -928,11 +936,50 @@ Panel {
               color: (bridge.phone.missed || 0) > 0 ? root.urgent : root.foreground
             }
 
-            InfoLabel { glyph: "󰂯"; text: "Bluetooth"; visible: root.showHandsfree }
-            DetailValue {
+            // The one row here that is a control as well as a readout. Dropping
+            // the link leaves the bond standing, which is exactly why it is
+            // worth a button: connect for the call, disconnect afterwards, and
+            // the phone is still paired either way.
+            InfoLabel {
+              glyph: Model.handsfreeGlyph(bridge.bluetooth)
+              text: "Bluetooth"
               visible: root.showHandsfree
-              text: Model.handsfreeText(bridge.bluetooth)
-              color: bridge.bluetooth && bridge.bluetooth.connected === true ? root.foreground : root.dim
+            }
+            RowLayout {
+              visible: root.showHandsfree
+              Layout.fillWidth: true
+              spacing: Style.space(6)
+
+              DetailValue {
+                text: Model.handsfreeText(bridge.bluetooth, root.now)
+                color: bridge.bluetooth && bridge.bluetooth.connected === true ? root.foreground : root.dim
+              }
+
+              // Sized down from the default action button: this one sits in a
+              // table of eleven-pixel rows, and a full-height button would
+              // make the row it is in the tallest thing behind the expander.
+              PanelActionButton {
+                visible: root.handsfreeAction !== ""
+                Layout.alignment: Qt.AlignVCenter
+                iconText: root.handsfreeAction === "disconnect"
+                  ? "󰂲"
+                  : root.handsfreeAction === "bond" ? "󰐲" : "󰂱"
+                // Three buttons in one, and the third is not a louder version
+                // of the second: `bond` makes the pairing the other two
+                // assume, and it makes this machine visible for a minute to
+                // do it. Saying so is the difference between a button somebody
+                // presses on purpose and one they press to see what happens.
+                tooltipText: root.handsfreeAction === "disconnect"
+                  ? "Disconnect — the pairing stays"
+                  : root.handsfreeAction === "bond"
+                    ? "Pair a handset — this desktop becomes visible for a minute"
+                    : "Connect over Bluetooth"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.iconSmall
+                size: Style.space(18)
+                onClicked: bridge.toggleHandsfree()
+              }
             }
 
             InfoLabel { glyph: "󰀷"; text: "iPhone"; visible: root.showIos }

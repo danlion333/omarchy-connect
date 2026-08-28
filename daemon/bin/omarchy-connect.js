@@ -512,6 +512,18 @@ async function cmdCall(args) {
   const number = rest.join('').trim() || null
   const value = rest.join(' ').trim() || null
 
+  /** A pairing window in flight, in the tense somebody watching it reads in. */
+  const bondingLine = (window) => {
+    const left = Math.max(0, Math.round((window.until - Date.now()) / 1000))
+    const who = window.handset?.name || window.handset?.address || null
+    // The phone asked for a code: legacy pairing, and the agent has already
+    // answered BlueZ with this pin — the person just has to type the same one.
+    if (window.pin) return `the phone is asking for a code — type ${window.pin}`
+    if (window.stage === 'pairing') return `asking ${who || 'the handset'} to pair…`
+    if (window.stage === 'connecting') return `paired with ${who || 'the handset'} — raising the link…`
+    return `visible for ${left}s — open Bluetooth on the phone and pick this desktop`
+  }
+
   /** What a ringing phone will sound like, if anything. */
   const ringtoneLine = (tone) => {
     if (!tone) return dim('—')
@@ -540,6 +552,26 @@ async function cmdCall(args) {
     return dim(policy)
   }
 
+  /**
+   * The handset row: which one, and on whose authority.
+   *
+   * The gateway's name while the link is up, and the one the desktop would
+   * page while it is down — the row is about the handset, not about whether
+   * the profile happens to be connected right now. The suffix is there because
+   * "the desktop picked this because it was the only thing on the list" and
+   * "this is the phone you paired with" are very different promises, and only
+   * one of them survives buying a pair of earbuds.
+   */
+  const handsetLine = (bt) => {
+    const link = bt.link || {}
+    const name = bt.device || link.handset?.name || link.handset?.address || link.pinned
+    if (!name) return dim('—')
+    if (link.matched === 'pinned') return `${name} ${dim('· pinned')}`
+    if (link.matched === 'phone') return `${name} ${dim('· your paired phone')}`
+    if (link.matched === 'guess') return `${name} ${dim('· the only one paired')}`
+    return name
+  }
+
   if (action === 'status') {
     const snapshot = await liveStatus()
     const bt = snapshot.phone?.bluetooth || {}
@@ -551,7 +583,10 @@ async function cmdCall(args) {
       card('CALL CONTROL', [
         ['bluetooth', bt.available === false ? 'unsupported' : bt.connected ? 'connected' : 'not connected'],
         ['link', linkLine(bt.link, bt.connected)],
-        ['handset', bt.device || bt.link?.pinned || dim('—')],
+        // The gateway's name while the link is up, and the one the desktop
+        // would page while it is down — the row is about the handset, not
+        // about whether the profile happens to be connected right now.
+        ['handset', handsetLine(bt)],
         ['audio', bt.connected ? bt.audio || 'idle' : dim('—')],
         ['ringtone', ringtoneLine(snapshot.phone?.ringtone)],
         ['timer', timerLine(snapshot.phone?.timer)],
@@ -571,13 +606,22 @@ async function cmdCall(args) {
     } else if (!bt.connected) {
       // The honest order: what went wrong last time if anything did, then the
       // one thing that has to be true before any of this can work at all.
+      const window = bt.link?.bonding
       console.log(
         dim(
-          bt.link?.error
-            ? `\n  ${bt.link.error}\n`
-            : bt.link?.policy === 'off'
-              ? '\n  the link is yours to raise — `omarchy-connect call connect`\n'
-              : '\n  pair the phone in Bluetooth settings to answer with audio on this machine\n',
+          window
+            ? `\n  ${bondingLine(window)}\n`
+            : // Nothing bonded is the one error with a command behind it, and
+              // saying the error without the command is how the panel row that
+              // started all this managed to be a dead end.
+              !bt.link?.handset
+              ? `\n  ${bt.link?.error || 'no handset is paired over Bluetooth'}\n` +
+                '  pair one from here — `omarchy-connect call bond`\n'
+              : bt.link?.error
+                ? `\n  ${bt.link.error}\n`
+                : bt.link?.policy === 'off'
+                  ? '\n  the link is yours to raise — `omarchy-connect call connect`\n'
+                  : '\n  the bond is made; the link comes up on the next ring\n',
         ),
       )
     }
@@ -668,9 +712,70 @@ async function cmdCall(args) {
     return
   }
 
+  /**
+   * Make the bond this desktop has none of.
+   *
+   * `connect` is the hand crank for a link; this is the hand crank for the
+   * bond underneath it, and the difference matters to somebody reading an
+   * error: a desktop that has never been bonded to the phone has nothing to
+   * connect *to*, and no amount of pressing connect will change that.
+   *
+   * Slow on purpose. The window is a minute long because what it is waiting
+   * for is a person picking their phone up, and cutting that short to keep a
+   * terminal responsive would fail at the only thing it is for.
+   */
+  if (action === 'bond') {
+    const stopping = value === 'stop'
+    if (!stopping) {
+      console.log(
+        dim('\n  this desktop is visible for a minute — open Bluetooth on the phone and pick it,\n' +
+          '  or leave that screen open and the desktop will ask\n'),
+      )
+    }
+    const res = await daemonRequest('/api/call', {
+      method: 'POST',
+      body: { op: 'bond', value: stopping ? 'stop' : null },
+      // Longer than the window itself: the answer worth having is the one
+      // that comes back after the window shuts, not a timeout on top of it.
+      timeout: stopping ? 10_000 : 120_000,
+    })
+    if (!res.status) {
+      log.error(
+        res.timeout
+          ? 'the daemon did not answer — check `omarchy-connect status`'
+          : 'daemon is not running — start it with `omarchy-connect start`',
+      )
+      process.exit(1)
+    }
+    if (!res.ok) {
+      log.error(res.data?.error || 'nothing paired')
+      process.exit(1)
+    }
+    if (stopping) {
+      log.ok(res.data?.stopped ? 'the pairing window is shut' : 'no pairing window was open')
+      return
+    }
+    const handset = res.data?.handset
+    const name = handset?.name || handset?.address || 'the handset'
+    if (res.data?.already) log.ok(`${name} was already paired`)
+    else log.ok(`paired with ${name}`)
+    console.log(
+      dim(
+        res.data?.parked
+          ? '\n  the link was raised, verified and put back down — it comes up by itself\n' +
+            '  when the phone rings, and drops again after the call\n'
+          : res.data?.connected
+            ? '\n  the hands-free link is up — calls can be answered on this machine\n'
+            : '\n  the bond is made; the link comes up on the next ring — or now, with\n' +
+              '  `omarchy-connect call connect`\n',
+      ),
+    )
+    return
+  }
+
   if (!['answer', 'reject', 'hangup', 'dial', 'tones', 'audio', 'connect', 'disconnect'].includes(action)) {
     log.error(
-      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS|ringtone on|off|test|FILE|timer on|off>',
+      'usage: omarchy-connect call <status|answer|reject|hangup|audio|connect|disconnect|bond|dial NUMBER|tones DIGITS|auto POLICY|handset ADDRESS|ringtone on|off|test|FILE|timer on|off>',
     )
     process.exit(1)
   }
@@ -1379,6 +1484,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('status')} [--json]             show live daemon status
   ${bold('sms')} <number> <message…>     send an SMS through the paired phone
   ${bold('call')} <status|answer|reject|…>  answer or place a call
+  ${bold('call')} bond [stop]                pair a handset over Bluetooth from here
   ${bold('call')} auto <presence|ring|off>  when to hold the Bluetooth link open
   ${bold('call')} ringtone <on|off|FILE>     what a ringing phone sounds like here
   ${bold('call')} timer <on|off>             count the conversation on screen
