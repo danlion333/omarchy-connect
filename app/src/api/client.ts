@@ -81,10 +81,94 @@ export type Stats = {
 
 export type AgentState = 'idle' | 'working' | 'waiting' | 'gone'
 
+/**
+ * The desktop's own status line for a session, read off its transcript.
+ *
+ * None of it is asked of the agent: the model is on its last turn, the
+ * permission mode on the last mode line, the branch on every entry, and the
+ * title is the one the CLI generated for the conversation once it had read
+ * enough of it to name. Every field is optional because a transcript that has
+ * not got there yet is a meter that is not drawn, not a session that is
+ * missing.
+ */
+export type AgentVitals = {
+  model: string | null
+  effort: string | null
+  mode: string | null
+  branch: string | null
+  version: string | null
+  title: string | null
+  cwd: string | null
+  turnAt: number | null
+  /** What the conversation is holding, against what it can hold. */
+  context: { tokens: number; window: number; percent: number } | null
+}
+
+/**
+ * A background agent: a session with no terminal, and so nothing on the
+ * desktop showing it. `detail` is the sentence it wrote about what it is
+ * doing, which is the only running commentary such a session has.
+ */
+export type AgentJob = {
+  id: string
+  name: string
+  detail: string
+  state: string
+  tokens: number
+  updatedAt: number
+}
+
+/** One usage window: how much of it is spent, and when it turns over. */
+export type AgentLimit = {
+  kind: string
+  label: string
+  percent: number
+  resetsAt: number | null
+  severity: string
+  /** The window the desktop says it is actually spending against now. */
+  active: boolean
+}
+
+export type AgentLimits = {
+  fetchedAt: number
+  /** Whether the CLI's cache is old enough that the numbers are history. */
+  stale: boolean
+  limits: AgentLimit[]
+  spend: { used: number | null; limit: number | null; currency: string; percent: number | null } | null
+}
+
+/** A skill, a project command, or one of the CLI's own — one list on a phone. */
+export type AgentSkill = {
+  kind: 'skill' | 'command' | 'builtin'
+  name: string
+  description: string
+  scope: 'user' | 'project' | 'plugin' | 'builtin'
+  args?: string
+}
+
+/** A conversation on disk, running or not — what `--resume` picks from. */
+export type AgentHistoryEntry = {
+  id: string
+  agent: string
+  sessionId: string
+  cwd: string | null
+  title: string
+  model: string | null
+  branch: string | null
+  context: { tokens: number; window: number; percent: number } | null
+  at: number
+  size: number
+  live: boolean
+  liveId: string | null
+  background: boolean
+}
+
 export type AgentSession = {
   id: string
   agent: string
   title: string
+  /** The project the conversation is in, once the title stops saying so. */
+  project?: string
   cwd: string | null
   state: AgentState
   /**
@@ -102,6 +186,10 @@ export type AgentSession = {
   prompt: string | null
   /** `hook` is the agent reporting in; `scan` is us guessing from /proc. */
   via: 'hook' | 'scan'
+  /** Model, context, permission mode — absent from a daemon too old to send it. */
+  vitals?: AgentVitals | null
+  /** The background job behind this conversation, when it is one. */
+  job?: AgentJob | null
 }
 
 /** The best road a desktop has into a terminal, whatever a session is on. */
@@ -119,6 +207,16 @@ export type AgentCapabilities = {
   /** …and picking an answer off a numbered list rather than typing a digit. */
   answer?: boolean
   spawn?: boolean
+  /** Whether the desktop can list its skills and slash commands. */
+  skills?: boolean
+  /** …run one by name, with the name checked against that list. */
+  commands?: boolean
+  /** …list the conversations on disk, running or not. */
+  history?: boolean
+  /** …and the background agents it has going. */
+  jobs?: boolean
+  /** The plan's headroom as of `hello`; kept current by `ev:agent`. */
+  limits?: AgentLimits | null
 }
 
 /**
@@ -165,6 +263,9 @@ export type AgentEvent =
   // its panel, or the CLI. `hello` answered this question once at connect
   // time; this is how the answer changes without reconnecting.
   | { kind: 'control'; enabled: boolean; adapters: string[]; write?: AgentWrite }
+  // The plan's headroom moved. Sent only when a percentage actually changes,
+  // so this is rare enough to be worth pushing rather than polling.
+  | { kind: 'limits'; limits: AgentLimits | null }
 
 type Listener = (data: any) => void
 

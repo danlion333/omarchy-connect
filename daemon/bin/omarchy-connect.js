@@ -24,6 +24,7 @@ import { detected as detectedAgents } from '../src/agents/index.js'
 import * as agentHooks from '../src/agents/hooks.js'
 import * as agentTmux from '../src/agents/tmux.js'
 import * as agentWriter from '../src/agents/writer.js'
+import * as agentLimits from '../src/agents/limits.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const pkg = JSON.parse(fs.readFileSync(path.join(here, '..', 'package.json'), 'utf8'))
@@ -1205,6 +1206,22 @@ function cmdConfig(args) {
 
 /* ── coding agents ───────────────────────────────────────────────────── */
 
+/**
+ * When a usage window turns over, short enough to sit in a card.
+ *
+ * A limit that resets in forty minutes and one that resets on Tuesday are
+ * different news, and the full date says so far less clearly than the gap
+ * does — so today is an hour and anything else is a weekday.
+ */
+function resetWord(at) {
+  const date = new Date(at)
+  const hours = (at - Date.now()) / 3_600_000
+  if (hours < 0) return 'now'
+  const time = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (hours < 12 && date.getDate() === new Date().getDate()) return time
+  return `${date.toLocaleDateString([], { weekday: 'short' })} ${time}`
+}
+
 // The hooks themselves — where they live, what they say, how they are written
 // — belong beside the adapter they serve: the panel reports whether they are
 // installed, and the daemon publishes that in the status file.
@@ -1351,6 +1368,40 @@ async function cmdAgent(args) {
     return
   }
 
+  if (action === 'spawn') {
+    const word = String(args._[1] || '').toLowerCase()
+    if (word !== 'on' && word !== 'off') {
+      // Its own switch rather than a corner of `enable`, because it is its own
+      // sentence: reading an agent and answering the one already open are
+      // things somebody at this desktop started. This starts a process that
+      // was not there before.
+      console.log(
+        card('STARTING AGENTS FROM A PHONE', [
+          ['state', cfg.agents?.spawn === true ? 'on' : 'off'],
+          ['needs', agentTmux.available() ? 'tmux — present' : 'tmux — not installed'],
+        ]),
+      )
+      console.log(
+        dim(
+          '\n  omarchy-connect agent spawn on    let the phone start a new agent,\n' +
+            '                                    or pick up a finished conversation\n\n' +
+            '  a new agent runs in a detached tmux session the phone can type\n' +
+            '  into from the first second, or — with `--bg` behind it — with no\n' +
+            '  terminal at all, which is the one worth starting on your way out\n' +
+            '  the door.\n',
+        ),
+      )
+      return
+    }
+    const on = word === 'on'
+    saveConfig({ ...cfg, agents: { ...(cfg.agents || {}), spawn: on } })
+    log.ok(`starting agents from a phone: ${on ? 'on' : 'off'}`)
+    if (on && !cfg.agents?.enabled) log.warn('agent control itself is still off — `omarchy-connect agent enable`')
+    if (on && !agentTmux.available()) log.warn('without tmux only background agents can be started')
+    if (live?.running) console.log(dim('\n  the running daemon picks this up on its next request\n'))
+    return
+  }
+
   if (action === 'install-hooks' || action === 'uninstall-hooks') {
     const install = action === 'install-hooks'
     const command = writeHooks(install)
@@ -1392,7 +1443,7 @@ async function cmdAgent(args) {
   }
 
   if (action !== 'status') {
-    log.error('usage: omarchy-connect agent <status|enable|disable|list|run|install-hooks|uninstall-hooks>')
+    log.error('usage: omarchy-connect agent <status|enable|disable|spawn|list|run|install-hooks|uninstall-hooks>')
     process.exit(1)
   }
 
@@ -1406,10 +1457,31 @@ async function cmdAgent(args) {
       // installed, so ask the adapters themselves rather than report none.
       ['adapters', ((agents.adapters || []).length ? agents.adapters : detectedAgents()).join(' ') || dim('none detected')],
       ['hooks', hooksInstalled() ? 'installed' : dim('not installed')],
+      ['start from phone', cfg.agents?.spawn === true ? 'on' : 'off'],
       ['sessions', String((agents.sessions || []).length)],
+      ['in background', String(agents.jobs || 0)],
       ['waiting on you', String(agents.waiting || 0)],
     ]),
   )
+
+  // What the plan has left, read from the CLI's own cache. The phone draws the
+  // same two rows in its status line, and a desktop that says something
+  // different from the phone in your hand is a desktop nobody trusts.
+  const usage = agents.limits || agentLimits.read()
+  if (usage?.limits?.length) {
+    console.log(
+      card(
+        'USAGE',
+        // No dim inside the value: the card measures a row by its length, and
+        // an escape sequence counts as characters that are never drawn.
+        usage.limits.map((limit) => [
+          limit.label + (limit.active ? ' ←' : ''),
+          `${limit.percent}%${limit.resetsAt ? `   resets ${resetWord(limit.resetsAt)}` : ''}`,
+        ]),
+      ),
+    )
+    if (usage.stale) console.log(dim('\n  from the CLI\'s cache — start a session to refresh it\n'))
+  }
   if (!agents.enabled) {
     console.log(
       dim(
@@ -1490,7 +1562,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} timer <on|off>             count the conversation on screen
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
-  ${bold('agent')} <status|enable|run|…>   read and answer this desktop's coding agents
+  ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('wake')}                        whether a phone could wake this desktop

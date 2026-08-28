@@ -214,12 +214,12 @@ const TAIL_BYTES = 8 * 1024
  * end and nothing else. The first line of that window is very likely half a
  * line and is dropped rather than parsed.
  */
-function* tailEntries(file) {
+function* tailEntries(file, bytes = TAIL_BYTES) {
   let fd
   let text
   try {
     const stat = fs.statSync(file)
-    const start = stat.size > TAIL_BYTES ? stat.size - TAIL_BYTES : 0
+    const start = stat.size > bytes ? stat.size - bytes : 0
     fd = fs.openSync(file, 'r')
     const buf = Buffer.allocUnsafe(stat.size - start)
     const read = fs.readSync(fd, buf, 0, buf.length, start)
@@ -280,6 +280,170 @@ const COMMANDS = new Set([
   'upgrade',
 ])
 
+
+/* ── what a session is spending ────────────────────────────────────────── */
+
+/**
+ * Enough of the end of a transcript to hold a whole assistant turn.
+ *
+ * `TAIL_BYTES` is sized for "find the last line"; the usage figures live on
+ * the assistant entry, and an assistant entry carrying a long answer and a
+ * tool call is comfortably past eight kilobytes. This window is what the
+ * status line is read from, and it is read at most once per write.
+ */
+const VITALS_BYTES = 256 * 1024
+
+/**
+ * How much a model can hold, which is not a property of the model alone.
+ *
+ * Opus and Sonnet are 200k by default and a million with the long-context
+ * variant switched on, and the transcript records neither — `message.model` is
+ * `claude-opus-5` either way. Two things do know: the settings file, where the
+ * variant is spelled `opus[1m]`, and arithmetic, because a session already
+ * holding 400k tokens is self-evidently not on a 200k window.
+ *
+ * Being wrong in the safe direction matters here: a meter that says 90% when
+ * the truth is 18% is a person compacting a conversation that did not need it.
+ */
+const SMALL_WINDOW = 200_000
+const LARGE_WINDOW = 1_000_000
+
+const SETTINGS = [
+  path.join(HOME, '.claude', 'settings.json'),
+  path.join(HOME, '.claude', 'settings.local.json'),
+]
+
+const settingsCache = { at: '', long: false }
+
+/** Does this desktop's configured model ask for the long window? */
+function longContextConfigured(cwd) {
+  const files = [
+    ...SETTINGS,
+    ...(cwd ? [path.join(cwd, '.claude', 'settings.json'), path.join(cwd, '.claude', 'settings.local.json')] : []),
+  ]
+  const stamp = files
+    .map((file) => {
+      try {
+        return String(fs.statSync(file).mtimeMs)
+      } catch {
+        return '-'
+      }
+    })
+    .join('|')
+  if (settingsCache.at === stamp) return settingsCache.long
+  let long = false
+  for (const file of files) {
+    try {
+      const model = JSON.parse(fs.readFileSync(file, 'utf8'))?.model
+      if (typeof model === 'string' && /\[1m\]/i.test(model)) long = true
+    } catch {
+      // No settings file, or one being rewritten. Neither is an answer.
+    }
+  }
+  settingsCache.at = stamp
+  settingsCache.long = long
+  return long
+}
+
+/**
+ * Everything on one `usage` record that counts against the window.
+ *
+ * Cache reads are the bulk of it and are the easiest to leave out by accident:
+ * a meter built on `input_tokens` alone reads two tokens where the truth is
+ * two hundred thousand, because almost the whole conversation arrives from the
+ * cache on every turn.
+ */
+const contextOf = (usage) =>
+  (Number(usage?.input_tokens) || 0) +
+  (Number(usage?.cache_creation_input_tokens) || 0) +
+  (Number(usage?.cache_read_input_tokens) || 0) +
+  (Number(usage?.output_tokens) || 0)
+
+const vitalsCache = new Map()
+const VITALS_CACHE_MAX = 64
+
+/**
+ * The status line for one session: what it is running as, and how full it is.
+ *
+ * Every field is read off the transcript's own tail rather than asked of
+ * anything — the model on the last assistant turn, the permission mode on the
+ * last `mode` line, the branch and the CLI version that every entry carries,
+ * and the title the CLI generated for the conversation once it had one. That
+ * is the whole reason this can exist: a phone showing a desktop session's
+ * status line needs no cooperation from the session at all.
+ */
+export function vitals(file, cwd = null) {
+  let stat
+  try {
+    stat = fs.statSync(file)
+  } catch {
+    return null
+  }
+  const hit = vitalsCache.get(file)
+  if (hit && hit.at === stat.mtimeMs) return hit.value
+
+  let model = null
+  let effort = null
+  let tokens = 0
+  let mode = null
+  let branch = null
+  let version = null
+  let title = null
+  let turnAt = 0
+  let cwd_ = null
+
+  for (const entry of tailEntries(file, VITALS_BYTES)) {
+    if (entry.type === 'assistant' && entry.message?.usage) {
+      // The largest turn in the window is the honest figure: a short
+      // continuation reports only its own few tokens, and the meter would
+      // read empty for a conversation that is nearly full.
+      const used = contextOf(entry.message.usage)
+      if (used > tokens) tokens = used
+      if (!model) {
+        model = String(entry.message.model || '') || null
+        turnAt = Date.parse(entry.timestamp || '') || turnAt
+      }
+    }
+    if (!mode && entry.type === 'mode' && entry.mode) mode = String(entry.mode)
+    // The name the CLI gave the conversation. A session started with `--name`
+    // says so in `agent-name`; one the CLI titled itself says it in
+    // `ai-title`, and the explicit name wins because somebody chose it.
+    if (entry.type === 'agent-name' && entry.agentName) title = oneLine(entry.agentName, 80)
+    if (!title && entry.type === 'ai-title' && entry.aiTitle) title = oneLine(entry.aiTitle, 80)
+    // Read like the branch rather than like the model: the newest turn is not
+    // guaranteed to carry it, and the last one that did is still the answer.
+    if (!effort && entry.effort) effort = String(entry.effort)
+    if (!branch && entry.gitBranch) branch = String(entry.gitBranch)
+    if (!version && entry.version) version = String(entry.version)
+    // Where the conversation was had. A transcript's own directory name is a
+    // slug with every separator flattened to a dash, so it cannot be turned
+    // back into a path; the entries carry the real one.
+    if (!cwd_ && entry.cwd) cwd_ = String(entry.cwd)
+  }
+
+  const window = tokens > SMALL_WINDOW || longContextConfigured(cwd) ? LARGE_WINDOW : SMALL_WINDOW
+  const value = {
+    model,
+    effort,
+    mode,
+    branch,
+    version,
+    // A conversation with nothing in it has a title all the same: the CLI
+    // seeds a new session with the last one this project had, and generates
+    // its own only once there is something to name. Handing that on would put
+    // yesterday's sentence over an empty session, so the title waits for a
+    // turn — and until then the directory's name is the honest label.
+    title: tokens ? title : null,
+    cwd: cwd_ || cwd || null,
+    turnAt: turnAt || null,
+    context: tokens ? { tokens, window, percent: Math.min(100, Math.round((tokens / window) * 100)) } : null,
+  }
+
+  if (vitalsCache.size >= VITALS_CACHE_MAX) vitalsCache.clear()
+  vitalsCache.set(file, { at: stat.mtimeMs, value })
+  return value
+}
+
 export default {
   id: 'claude',
   label: 'Claude Code',
@@ -326,6 +490,51 @@ export default {
     return path.join(PROJECTS_DIR, slugFor(cwd))
   },
 
+  /**
+   * Every transcript this desktop has, newest first, whatever directory it was
+   * had in.
+   *
+   * What the phone's "recent conversations" list is built from. A project
+   * directory's name is a slug — every separator flattened to a dash — so it
+   * cannot be turned back into a path, which is why the working directory is
+   * read off the file itself rather than off the name of the folder holding
+   * it. Bounded by count because this is a history nothing prunes: a desktop
+   * that has run agents all year has thousands of these.
+   */
+  recent(limit = 40) {
+    let dirs = []
+    try {
+      dirs = fs.readdirSync(PROJECTS_DIR, { withFileTypes: true }).filter((d) => d.isDirectory())
+    } catch {
+      return []
+    }
+    const found = []
+    for (const dir of dirs) {
+      const full = path.join(PROJECTS_DIR, dir.name)
+      let names = []
+      try {
+        names = fs.readdirSync(full).filter((name) => name.endsWith('.jsonl'))
+      } catch {
+        continue
+      }
+      for (const name of names) {
+        try {
+          const file = path.join(full, name)
+          const stat = fs.statSync(file)
+          // A file with nothing in it at all is not a conversation. Anything
+          // past that is judged on what is *in* it rather than on how big it
+          // is — a byte count is a guess, and `agents.history` already reads
+          // each of these to fill in its row.
+          if (!stat.size) continue
+          found.push({ path: file, id: name.slice(0, -'.jsonl'.length), mtime: stat.mtimeMs, size: stat.size })
+        } catch {
+          // Vanished mid-walk.
+        }
+      }
+    }
+    return found.sort((a, b) => b.mtime - a.mtime).slice(0, Math.max(1, limit))
+  },
+
   /** Every transcript for a working directory, newest first. */
   transcripts(cwd) {
     let names = []
@@ -361,6 +570,15 @@ export default {
    */
   question(tool, input) {
     return String(tool || '') === QUESTION_TOOL ? questionBlock(input) : null
+  },
+
+  /**
+   * The status line for a session, read off its transcript. Optional on an
+   * adapter: an agent that records none of this is a session with no meter
+   * beside it, rather than one this daemon refuses to list.
+   */
+  vitals(file, cwd) {
+    return vitals(file, cwd)
   },
 
   /** The native session id a transcript path stands for. */

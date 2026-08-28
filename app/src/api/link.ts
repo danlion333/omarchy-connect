@@ -3,6 +3,7 @@ import { AppState, Platform } from 'react-native'
 import {
   ConnectClient,
   type AgentEvent,
+  type AgentLimits,
   type AgentSession,
   type AgentWrite,
   type ConnectionStatus,
@@ -74,6 +75,15 @@ export type LinkState = {
   palette: Palette
   stats: Stats | null
   agents: AgentSession[]
+  /**
+   * How much of the plan is left.
+   *
+   * Kept beside the sessions rather than inside them because it is a property
+   * of the account and not of any one conversation — and because it is the
+   * number that decides whether to start something long, which is a decision
+   * made on the list screen before any session is opened.
+   */
+  agentLimits: AgentLimits | null
   clipboard: ClipboardEvent | null
   files: FileEvent[]
   latencyMs: number | null
@@ -96,6 +106,7 @@ const INITIAL: LinkState = {
   palette: FALLBACK_PALETTE,
   stats: null,
   agents: [],
+  agentLimits: null,
   clipboard: null,
   files: [],
   latencyMs: null,
@@ -237,6 +248,7 @@ class Link {
         // place — otherwise the screen would keep telling the user to run a
         // command they have already run.
         if (data.kind === 'control') return this.agentsSwitched(data.enabled, data.adapters, data.write ?? null)
+        if (data.kind === 'limits') return this.patch({ agentLimits: data.limits })
         this.setAgents(reduceAgents(this.state.agents, data))
       }),
       client.on('ev:clipboard', (data: ClipboardEvent) => {
@@ -282,7 +294,10 @@ class Link {
       this.patch({ hello: { ...hello, capabilities } as Hello })
     }
     if (enabled) void this.refreshAgents()
-    else this.setAgents([])
+    else {
+      this.setAgents([])
+      this.patch({ agentLimits: null })
+    }
   }
 
   private attachGlobalListeners() {
@@ -504,8 +519,12 @@ class Link {
     const client = this.client
     if (!client || client.status !== 'connected') return
     try {
-      const res = await client.call<{ sessions: AgentSession[] }>('agents.list', {})
+      const res = await client.call<{ sessions: AgentSession[]; limits?: AgentLimits | null }>('agents.list', {})
       this.setAgents(res.sessions || [])
+      // The list carries the limits with it, so the status line is filled by
+      // the same round trip that fills the screen under it rather than by a
+      // second call the app would have to remember to make.
+      if (res.limits !== undefined) this.patch({ agentLimits: res.limits })
     } catch {
       // Disabled on the desktop, or an older daemon: an empty list is the
       // honest answer, and the screen says why.

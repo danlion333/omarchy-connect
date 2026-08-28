@@ -22,6 +22,8 @@ import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession } from '../api
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import { Body, Button, Caps, Chip } from '../ui/kit'
+import { StatusLine } from '../ui/agentkit'
+import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
 import { ago } from '../lib/format'
 import { alpha, font, radius, size, space } from '../theme'
@@ -48,6 +50,16 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   // and never written to the transcript, so the numbered options this phone is
   // about to answer exist nowhere else.
   const [raw, setRaw] = useState<string | null>(null)
+  /**
+   * The skills sheet, and the draft it writes into.
+   *
+   * The draft is held here rather than in the composer because two things now
+   * write to it: the person typing, and a command picked off the sheet that
+   * needs an argument. A composer that owned its own text could be filled only
+   * by the keyboard.
+   */
+  const [skills, setSkills] = useState(false)
+  const [draft, setDraft] = useState('')
   const scroller = useRef<ScrollView | null>(null)
   const atBottom = useRef(true)
   const keyboard = useKeyboardOpen()
@@ -199,6 +211,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         onBack={onBack}
         raw={raw !== null}
         onToggleRaw={session.writable === 'tmux' ? () => setRaw((was) => (was === null ? '' : null)) : undefined}
+        onStatus={() => setSkills(true)}
       />
 
       {raw !== null ? <RawScreen session={session} /> : null}
@@ -264,7 +277,20 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         ) : null}
       </ScrollView>
 
-      <Composer session={session} keyboard={keyboard} />
+      <Composer
+        session={session}
+        keyboard={keyboard}
+        text={draft}
+        onChangeText={setDraft}
+        onSkills={() => setSkills(true)}
+      />
+
+      {/* Over everything, including the composer: choosing a command is the
+          whole interaction while it is open, and half a chat behind it is
+          just somewhere to tap by accident. */}
+      {skills ? (
+        <AgentSkillsSheet session={session} onCompose={setDraft} onClose={() => setSkills(false)} />
+      ) : null}
     </KeyboardAvoidingView>
   )
 }
@@ -289,53 +315,86 @@ function useKeyboardOpen(): boolean {
   return open
 }
 
+/**
+ * Who this is, what it is running as, and how it is doing.
+ *
+ * Two rows rather than one because they answer different questions and only
+ * one of them changes. The top row is identity — whose conversation, in what
+ * directory, and whether it is moving. The bottom is the desktop's own status
+ * line: model, context meter, permission mode, branch. On the desktop that
+ * line is glanced at; here it is what tells you whether to send the agent off
+ * on something long or compact it first, which is a decision you can only make
+ * before you type.
+ *
+ * The status line is a button because the thing you do about a full context is
+ * a slash command, and the sheet holding those is one tap from where the
+ * number that prompted it is drawn.
+ */
 function Header({
   session,
   tone,
   onBack,
   raw,
   onToggleRaw,
+  onStatus,
 }: {
   session: AgentSession
   tone: string
   onBack: () => void
   raw: boolean
   onToggleRaw?: () => void
+  onStatus?: () => void
 }) {
   const { palette } = useConnection()
   const insets = useSafeAreaInsets()
+  const vitals = session.vitals ?? null
+
   return (
     <View
       style={{
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: space.md,
         paddingTop: insets.top + space.sm,
-        paddingBottom: space.md,
+        paddingBottom: space.sm,
         paddingHorizontal: space.lg,
         backgroundColor: palette.dark_background,
         borderBottomWidth: StyleSheet.hairlineWidth * 2,
         borderBottomColor: palette.lighter_background,
+        gap: space.sm,
       }}
     >
-      <Pressable onPress={onBack} hitSlop={12}>
-        <Feather name="chevron-left" size={22} color={palette.foreground} />
-      </Pressable>
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.value }} numberOfLines={1}>
-          {session.title}
-        </Text>
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
-          {session.agent} · {session.cwd || '—'}
-        </Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+        <Pressable onPress={onBack} hitSlop={12}>
+          <Feather name="chevron-left" size={22} color={palette.foreground} />
+        </Pressable>
+        <View style={{ flex: 1 }}>
+          <Text
+            style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.value }}
+            numberOfLines={1}
+          >
+            {session.title}
+          </Text>
+          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
+            {session.job ? `background · ${session.job.detail || session.job.state}` : `${session.agent} · ${session.cwd || '—'}`}
+          </Text>
+        </View>
+        {onToggleRaw ? (
+          <Pressable onPress={onToggleRaw} hitSlop={10}>
+            <Feather name="terminal" size={16} color={raw ? palette.accent : palette.muted} />
+          </Pressable>
+        ) : null}
+        <Pulse tone={tone} on={session.state === 'working'} />
+        <Caps tone={tone}>{session.state}</Caps>
       </View>
-      {onToggleRaw ? (
-        <Pressable onPress={onToggleRaw} hitSlop={10}>
-          <Feather name="terminal" size={16} color={raw ? palette.accent : palette.muted} />
+
+      {vitals ? (
+        <Pressable
+          onPress={onStatus}
+          disabled={!onStatus}
+          hitSlop={6}
+          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+        >
+          <StatusLine vitals={vitals} />
         </Pressable>
       ) : null}
-      <Pulse tone={tone} on={session.state === 'working'} />
-      <Caps tone={tone}>{session.state}</Caps>
     </View>
   )
 }
@@ -1009,10 +1068,22 @@ const QUICK: { key: string; label: string }[] = [
  * carries text and nothing else, so the path *is* how an image is passed, not
  * a workaround for not being able to pass one.
  */
-function Composer({ session, keyboard }: { session: AgentSession; keyboard: boolean }) {
+function Composer({
+  session,
+  keyboard,
+  text,
+  onChangeText,
+  onSkills,
+}: {
+  session: AgentSession
+  keyboard: boolean
+  text: string
+  onChangeText: (value: string) => void
+  onSkills: () => void
+}) {
   const { call, client, hello, palette } = useConnection()
   const insets = useSafeAreaInsets()
-  const [text, setText] = useState('')
+  const setText = onChangeText
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [acknowledged, setAcknowledged] = useState(false)
@@ -1023,6 +1094,8 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
   const canAttach = (hello?.capabilities?.agents as { attach?: boolean } | undefined)?.attach === true
   const ready = shots.filter((shot) => shot.path)
   const settling = shots.some((shot) => !shot.path && !shot.error)
+  const canCommand = (hello?.capabilities?.agents as { commands?: boolean } | undefined)?.commands === true
+  const crowded = canCommand && (session.vitals?.context?.percent ?? 0) >= 66
 
   const guard = useCallback(
     async (what: () => Promise<unknown>) => {
@@ -1182,10 +1255,44 @@ function Composer({ session, keyboard }: { session: AgentSession; keyboard: bool
           />
         ))}
         <View style={{ flex: 1 }} />
+        {/* Compacting is the one command that earns a permanent button, and
+            only once it is the thing you would want. A conversation past two
+            thirds of its window is about to start losing the beginning of
+            itself, and on a phone that is news you would otherwise never
+            get — nothing else on this screen is going to mention it. */}
+        {crowded ? (
+          <Chip
+            label="compact"
+            tone={palette.orange}
+            active
+            onPress={() => void guard(() => call('agents.command', { id: session.id, name: 'compact' }))}
+          />
+        ) : null}
         <Chip label="stop" tone={palette.red} onPress={() => press('C-c')} />
       </View>
 
       <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'flex-end' }}>
+        {/* Everything the agent answers to by name. The reason it sits beside
+            the field rather than in a menu somewhere: a slash command is the
+            one part of a coding agent already shaped for a device with no
+            keyboard, and it should cost one tap to reach. */}
+        {canCommand ? (
+          <Pressable
+            onPress={onSkills}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              paddingHorizontal: space.md,
+              paddingVertical: space.md,
+              justifyContent: 'center',
+              backgroundColor: pressed ? palette.selection : palette.darker_background,
+              borderColor: palette.lighter_background,
+              borderWidth: 1,
+              borderRadius: radius.sm,
+            })}
+          >
+            <Feather name="command" size={16} color={palette.muted} />
+          </Pressable>
+        ) : null}
         {canAttach ? (
           <Pressable
             onPress={() => setSources((was) => !was)}

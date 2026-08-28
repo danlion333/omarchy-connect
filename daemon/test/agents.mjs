@@ -43,8 +43,14 @@ fs.writeFileSync(
     line({
       type: 'assistant',
       timestamp: at,
+      gitBranch: 'master',
+      version: '2.1.241',
       message: {
         role: 'assistant',
+        model: 'claude-opus-5',
+        // The status line is read off this: everything that occupies the
+        // window, which is nearly all cache.
+        usage: { input_tokens: 2, cache_creation_input_tokens: 600, cache_read_input_tokens: 99_398, output_tokens: 0 },
         content: [
           { type: 'text', text: 'Looking at the router first.' },
           { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'grep -rn "router" src' } },
@@ -64,6 +70,42 @@ fs.writeFileSync(
       message: { role: 'assistant', content: [{ type: 'text', text: 'SIDECHAIN LEAK' }] },
     }),
   ].join(''),
+)
+
+// The rest of the desktop's status line lives in files the CLI keeps for its
+// own purposes, so the fake HOME gets those too: a skill, the account
+// service's cached answer, and a background agent mid-thought.
+fs.mkdirSync(path.join(sandbox, '.claude', 'skills', 'example-skill'), { recursive: true })
+fs.writeFileSync(
+  path.join(sandbox, '.claude', 'skills', 'example-skill', 'SKILL.md'),
+  '---\nname: example-skill\ndescription: something this desktop knows how to do\n---\n',
+)
+fs.writeFileSync(
+  path.join(sandbox, '.claude.json'),
+  JSON.stringify({
+    cachedUsageUtilization: {
+      fetchedAtMs: Date.now(),
+      utilization: {
+        limits: [
+          { kind: 'session', group: 'session', percent: 12, severity: 'normal', resets_at: new Date(Date.now() + 3_600_000).toISOString(), is_active: true },
+        ],
+      },
+    },
+  }),
+)
+const JOB = 'job12345'
+fs.mkdirSync(path.join(sandbox, '.claude', 'jobs', JOB), { recursive: true })
+fs.writeFileSync(
+  path.join(sandbox, '.claude', 'jobs', JOB, 'state.json'),
+  JSON.stringify({
+    state: 'working',
+    detail: 'reading the router',
+    tokens: 4096,
+    name: 'Health endpoint',
+    sessionId: SESSION,
+    cwd: CWD,
+    updatedAt: new Date().toISOString(),
+  }),
 )
 
 const results = []
@@ -423,6 +465,57 @@ check('a session in no terminal we can reach is read-only', session.writable ===
 // calls is the normal shape of an agent at work, so it describes the last block
 // whatever kind it is rather than quoting only prose.
 check('the list says what the agent is doing', session.preview === 'src/app.js:12', session.preview)
+
+/* ── the status line ───────────────────────────────────────────────────── */
+
+// None of this is asked of the agent: every figure is read off a file the CLI
+// keeps for itself, which is why a phone can show a desktop session's status
+// line with no cooperation from that session.
+check('the session carries the model it is running as', session.vitals?.model === 'claude-opus-5', String(session.vitals?.model))
+check(
+  'and how full its context is, counting the cache',
+  session.vitals?.context?.tokens === 100_000,
+  String(session.vitals?.context?.tokens),
+)
+check('and the permission mode it is in', session.vitals?.mode === 'normal', String(session.vitals?.mode))
+check('and the branch it is on', session.vitals?.branch === 'master', String(session.vitals?.branch))
+check('the project is still said, now that the title may not say it', session.project === 'example', String(session.project))
+check('a background agent is matched to the conversation it writes', session.job?.detail === 'reading the router', String(session.job?.detail))
+
+check('the list carries what the plan has left', listed.limits?.limits?.[0]?.percent === 12, String(listed.limits?.limits?.[0]?.percent))
+const limitsAnswer = await req('agents.limits')
+check('and it can be asked for on its own', limitsAnswer.limits?.limits?.[0]?.kind === 'session')
+
+/* ── skills and commands ───────────────────────────────────────────────── */
+
+const offered = await req('agents.skills', { id: session.id })
+check('the desktop lists the skills it has', offered.skills.some((s) => s.name === 'example-skill'))
+check('and the built-ins worth a thumb', offered.builtins.some((b) => b.name === 'compact'))
+check('the list is for the session\'s own directory', offered.cwd === CWD, String(offered.cwd))
+
+// The name becomes a line of text in front of an agent that runs what it is
+// told, so it is checked against the list we just published rather than
+// forwarded hopefully.
+const badCommand = await req('agents.command', { id: session.id, name: 'rm -rf /' }).catch((err) => err)
+check('a name nobody published is refused', String(badCommand?.message || '').includes('does not have a command'), String(badCommand?.message))
+
+/* ── conversations, running or not ─────────────────────────────────────── */
+
+const history = await req('agents.history')
+check('the conversations on disk are listed', history.sessions.some((e) => e.sessionId === SESSION), String(history.sessions.length))
+const mine = history.sessions.find((e) => e.sessionId === SESSION)
+check('an open one says so, and says which session it is', mine?.live === true && mine?.liveId === session.id)
+check('the working directory is read off the file, not off the slug', mine?.cwd === CWD, String(mine?.cwd))
+
+const jobs = await req('agents.jobs')
+check('background agents are listed with what they are doing', jobs.jobs?.[0]?.detail === 'reading the router')
+check('and the ones that are also live sessions say which', jobs.open?.[JOB] === session.id, JSON.stringify(jobs.open))
+
+// Starting a process that was not there before is not the same decision as
+// reading one somebody already started, so it has its own switch — and reading
+// being on must not be enough.
+const refused = await req('agents.spawn', { cwd: CWD }).catch((err) => err)
+check('starting an agent is refused while its own switch is off', String(refused?.message || '').includes('agent spawn on'), String(refused?.message))
 
 const opened = await req('agents.open', { id: session.id, limit: 100 })
 const kinds = opened.blocks.map((b) => `${b.role}:${b.kind}`)

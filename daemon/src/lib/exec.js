@@ -55,9 +55,16 @@ export function wlCopy(text) {
   })
 }
 
-/** Fire and forget — for things like screen lock that outlive the request. */
-export function spawnDetached(bin, args = []) {
-  const child = spawn(bin, args, { detached: true, stdio: 'ignore' })
+/**
+ * Fire and forget — for things like screen lock that outlive the request.
+ *
+ * `opts` is passed through so a caller can say where the thing should run:
+ * starting a coding agent in a directory is the whole point of the call, and a
+ * child that inherits the daemon's own working directory would start it in the
+ * wrong project.
+ */
+export function spawnDetached(bin, args = [], opts = {}) {
+  const child = spawn(bin, args, { detached: true, stdio: 'ignore', ...opts })
   child.unref()
   return child
 }

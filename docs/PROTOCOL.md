@@ -568,6 +568,13 @@ see **Security model**, because writing to an agent is a shell.
 | `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
 | `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
 | `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. tmux only. |
+| `agents.limits` | — | `{ limits }` — how much of the plan is left, or `null`. |
+| `agents.skills` | `{ id \| cwd }` | `{ cwd, skills, commands, builtins }` — everything the agent answers to by name. |
+| `agents.command` | `{ id, name, args, submit }` | `{ ok, command, via }` — runs one, with `name` checked against that list. |
+| `agents.history` | `{ cwd, limit }` | `{ sessions, spawn }` — the conversations on disk, running or not. |
+| `agents.jobs` | `{ all }` | `{ jobs, open }` — background agents, and which of them are also live sessions. |
+| `agents.job` | `{ id }` | `{ job }` — one of them, with the last few things it said about itself. |
+| `agents.spawn` | `{ cwd, resume, prompt, background, name }` | `{ ok, cwd, resumed, via }` — starts one. Behind its own switch. |
 
 A session is what the phone lists and opens:
 
@@ -575,7 +582,8 @@ A session is what the phone lists and opens:
 {
   "id": "claude:2fe60a4a-…",       // adapter id + native session id
   "agent": "claude",
-  "title": "omarchy-connect",       // basename of cwd
+  "title": "Bluetooth pairing hangs",  // the CLI's own name for the conversation
+  "project": "omarchy-connect",     // basename of cwd, since the title no longer is
   "cwd": "/home/dan/Projects/omarchy-connect",
   "state": "idle" | "working" | "waiting" | "gone",
   "writable": "tmux",               // "tmux" | "wtype" | null — how it can be answered
@@ -585,9 +593,137 @@ A session is what the phone lists and opens:
   "lastActivity": 1756100420000,
   "preview": "…the last line the agent said…",
   "prompt": "Claude needs your permission to use Bash",   // when waiting
-  "via": "hook" | "scan"
+  "via": "hook" | "scan",
+  "vitals": { … },                  // the desktop's own status line, below
+  "job": { … } | null               // the background job behind it, when it is one
 }
 ```
+
+#### The status line
+
+`vitals` is what Claude Code draws under its own prompt, read off the
+transcript rather than asked of the session — which is the whole reason it can
+exist at all: the phone shows a desktop session's status line with no
+cooperation from that session.
+
+```jsonc
+{
+  "model": "claude-opus-5",
+  "effort": "high",
+  "mode": "normal",                 // the permission mode; "plan", "bypassPermissions", …
+  "branch": "master",
+  "version": "2.1.241",
+  "title": "Bluetooth pairing hangs",
+  "cwd": "/home/dan/Projects/omarchy-connect",
+  "turnAt": 1756100420000,
+  "context": { "tokens": 149388, "window": 1000000, "percent": 15 }
+}
+```
+
+`context` counts everything on the last `usage` record that occupies the
+window — input, output, and both halves of the cache. A meter built on
+`input_tokens` alone reads *two* where the truth is two hundred thousand,
+because almost the whole conversation arrives from the cache on every turn.
+The window is 200k unless the configured model asks for the long one
+(`opus[1m]` in `settings.json`) or the session is demonstrably past 200k
+already; being wrong in the safe direction matters, since a meter reading 90%
+when the truth is 18% is somebody compacting a conversation that did not need
+it.
+
+`title` waits for the conversation to have a turn in it. Claude Code seeds a
+brand-new session with the last title the project had and generates its own
+only once there is something to name, so handing that on unguarded would put
+yesterday's sentence over an empty session.
+
+#### Limits
+
+`agents.limits` — and `capabilities.agents.limits`, and the `limits` on
+`agents.list` — are read from `cachedUsageUtilization` in `~/.claude.json`,
+which is where the CLI parks the answer it already asked the account service
+for. Nothing here talks to a network or holds a credential.
+
+```jsonc
+{
+  "fetchedAt": 1756100000000,
+  "stale": false,                   // older than six hours: history, not status
+  "limits": [
+    { "kind": "weekly_all", "label": "week", "percent": 73,
+      "resetsAt": 1756400000000, "severity": "normal", "active": true }
+  ],
+  "spend": null                     // extra usage, when the account has it switched on
+}
+```
+
+A change is pushed as an `agent` event (`kind: "limits"`) rather than polled,
+and only when a percentage actually moves — the file behind it is rewritten far
+more often than the numbers in it change.
+
+#### Skills and commands
+
+`agents.skills` reads the same directories the CLI reads: `~/.claude/skills`
+and `<cwd>/.claude/skills` for skills, `commands/` beside each for slash
+commands, plus a curated list of the CLI's own built-ins. A project entry
+shadows a user one of the same name, exactly as the CLI resolves it.
+
+```jsonc
+{ "kind": "skill", "name": "adb-phone", "description": "Drive a real Android phone…",
+  "scope": "project", "args": "[focus]" }
+```
+
+`agents.command` exists beside `agents.send`, which could carry the same
+string, for one reason: the name is checked against the list the desktop just
+published before it becomes a line of text in front of an agent. What the phone
+offers and what the desktop will type are then the same set, and a stale app
+cannot invent a command by asking for one. Arguments are not checked and cannot
+be — an argument to a skill is prose, and it is the same prose `agents.send`
+already carries.
+
+A row with an `args` hint is one the phone puts in the composer rather than
+running: the interesting half is the part the list cannot know.
+
+#### History, background agents, and starting one
+
+`agents.history` lists the transcripts on disk, running or not — the set
+`--resume` picks from. A project directory's name is a slug with every
+separator flattened to a dash and cannot be turned back into a path, so the
+working directory is read off the file itself.
+
+```jsonc
+{ "id": "claude:9be93f58-…", "sessionId": "9be93f58-…",
+  "cwd": "/home/dan/Projects/omarchy-connect", "title": "Bluetooth pairing hangs",
+  "model": "claude-fable-5", "branch": "master",
+  "context": { "tokens": 154975, "window": 1000000, "percent": 15 },
+  "at": 1756100420000, "size": 9731643,
+  "live": false, "liveId": null, "background": false }
+```
+
+`agents.jobs` reads `~/.claude/jobs/<short>/state.json`, which is where the CLI
+keeps its bookkeeping for a `--bg` session. A background agent has no terminal,
+so nothing on the desktop is drawing it — no pane, no window, no bar — and
+`detail` is the sentence it wrote about what it is doing, which is the only
+running commentary such a session has anywhere.
+
+`agents.spawn` is behind **its own switch**, `agents.spawn` in the config,
+turned on with `omarchy-connect agent spawn on`. Reading an agent and answering
+the one already open are things somebody at the desktop started; this starts a
+process that was not there before, which is a different sentence to say yes to.
+It goes down one of two roads:
+
+- **`tmux new-session -d`** — a terminal that exists but that nobody is looking
+  at, which is exactly the shape the writer wants: answerable from the phone
+  immediately, and there to attach to when you sit down. This is the default
+  and it needs tmux.
+- **`claude --bg`** — detached outright. No terminal, no pane, nothing that can
+  ever be typed into. What it gets instead is a job the CLI tracks, which is
+  what makes an agent worth starting from a phone you are about to put in your
+  pocket.
+
+`cwd` is resolved and checked; `resume` is checked against the transcripts on
+disk rather than against a pattern, because "it looks like a uuid" is a weaker
+promise than "it is one of the files we listed". There is deliberately no
+allow-list of directories — a phone that may type into an agent may already
+`cd` anywhere, and pretending otherwise would be a fence with no field behind
+it.
 
 `state` is the field the whole feature hangs on. `waiting` — the agent asked a
 question or hit a permission prompt — is the one that earns a badge, because
@@ -675,6 +811,7 @@ The three `agent` event frames:
                                          "prompt": "Allow Bash?", "preview": "…", "lastActivity": 1756100420000 } }
 { "t": "ev", "event": "agent", "data": { "kind": "blocks",  "id": "claude:2fe…", "blocks": [ … ], "cursor": 148 } }
 { "t": "ev", "event": "agent", "data": { "kind": "control", "enabled": true, "adapters": ["claude"], "write": "tmux" } }
+{ "t": "ev", "event": "agent", "data": { "kind": "limits",  "limits": { "limits": [ … ], "stale": false } } }
 ```
 
 A `blocks` frame carries everything one drain of the transcript produced, so a
@@ -930,6 +1067,10 @@ deleted. The desktop raises a notification on arrival.
   arbitrary code execution**: the agent runs what it is told, so a phone that
   can type into a Claude Code session has, in effect, a shell. Together they
   are the widest exposure in the project, wider than the clipboard, so
+  `agents.spawn` is a **second** switch, off even when reading is on:
+  starting a process that was not there before is not the same decision as
+  reading one somebody already started. `omarchy-connect agent spawn on`.
+
   `agents.enabled` defaults to **false** and is turned on by
   `omarchy-connect agent enable` — or the switch on the desktop panel, which
   names both halves before it grants either. Both roads are the desktop's: the

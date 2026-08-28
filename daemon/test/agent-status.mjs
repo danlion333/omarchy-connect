@@ -1,0 +1,247 @@
+// The status line: what a session is running as, what the plan has left, what
+// the desktop can be told to do by name, and what is working with no terminal.
+//
+// None of it is asked of an agent — every figure is read off a file the CLI
+// keeps for its own purposes — so the whole of this test is a fake `HOME` with
+// those files in it, and the assertion is that we read them the way the CLI
+// wrote them.
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
+const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-status-'))
+// Before any import: these modules resolve `os.homedir()` once, at load.
+process.env.HOME = sandbox
+
+const results = []
+const check = (name, ok, detail = '') => {
+  results.push({ name, ok, detail })
+  console.log(`${ok ? '  ok  ' : ' FAIL '} ${name}${detail ? ` — ${detail}` : ''}`)
+}
+
+const write = (file, text) => {
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(file, text)
+}
+
+const CWD = path.join(sandbox, 'Projects', 'example')
+const SLUG = CWD.replace(/[^a-zA-Z0-9]/g, '-')
+const projects = path.join(sandbox, '.claude', 'projects', SLUG)
+const line = (obj) => JSON.stringify(obj) + '\n'
+
+/* ── the fixtures ──────────────────────────────────────────────────────── */
+
+// A skill the whole machine has, and a project one that shadows a user one of
+// the same name — which is how the CLI itself resolves them.
+write(
+  path.join(sandbox, '.claude', 'skills', 'diagnose-crash', 'SKILL.md'),
+  '---\nname: diagnose-crash\ndescription: >\n  Work out why a program dumped core.\n  Reads the backtrace.\n---\n\nbody\n',
+)
+write(path.join(sandbox, '.claude', 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: the machine one\n---\n')
+write(path.join(CWD, '.claude', 'skills', 'review', 'SKILL.md'), '---\nname: review\ndescription: the project one\n---\n')
+write(
+  path.join(CWD, '.claude', 'commands', 'git', 'sync.md'),
+  '---\ndescription: rebase and push\nargument-hint: [branch]\n---\n\nrun it\n',
+)
+
+// The account service's answer, parked where the CLI parks it.
+write(
+  path.join(sandbox, '.claude.json'),
+  JSON.stringify({
+    cachedUsageUtilization: {
+      fetchedAtMs: Date.now(),
+      utilization: {
+        five_hour: { utilization: 8, resets_at: new Date(Date.now() + 3_600_000).toISOString() },
+        limits: [
+          { kind: 'session', group: 'session', percent: 8, severity: 'normal', resets_at: new Date(Date.now() + 3_600_000).toISOString(), is_active: false },
+          { kind: 'weekly_all', group: 'weekly', percent: 73, severity: 'normal', resets_at: new Date(Date.now() + 86_400_000).toISOString(), is_active: true },
+          { kind: 'weekly_scoped', group: 'weekly', percent: 70, severity: 'normal', resets_at: null, scope: { model: { display_name: 'Fable' } }, is_active: false },
+          // A bucket nobody has a name for must not reach a phone as a row
+          // nobody can read.
+          { kind: 'juniper_tide', group: 'juniper', percent: 99, severity: 'critical', resets_at: null, is_active: false },
+        ],
+        spend: { enabled: false, used: { amount_minor: 252, exponent: 2, currency: 'USD' } },
+      },
+    },
+  }),
+)
+
+// A background agent, mid-thought.
+const JOB = 'abc12345'
+const BG_SESSION = 'bbbbbbbb-2222-3333-4444-555555555555'
+const RESUMED = 'cccccccc-2222-3333-4444-555555555555'
+write(
+  path.join(sandbox, '.claude', 'jobs', JOB, 'state.json'),
+  JSON.stringify({
+    state: 'working',
+    detail: 'reading the router',
+    tokens: 200116,
+    name: 'Health endpoint',
+    intent: 'add a health endpoint',
+    sessionId: BG_SESSION,
+    resumeSessionId: RESUMED,
+    cwd: CWD,
+    createdAt: new Date(Date.now() - 600_000).toISOString(),
+    updatedAt: new Date().toISOString(),
+  }),
+)
+write(
+  path.join(sandbox, '.claude', 'jobs', JOB, 'timeline.jsonl'),
+  [
+    line({ at: new Date(Date.now() - 500_000).toISOString(), state: 'working', detail: 'starting' }),
+    // The same sentence twice is one step; a job checks in more often than it
+    // changes its mind.
+    line({ at: new Date(Date.now() - 400_000).toISOString(), state: 'working', detail: 'reading the router' }),
+    line({ at: new Date(Date.now() - 300_000).toISOString(), state: 'working', detail: 'reading the router' }),
+  ].join(''),
+)
+// A stale job is history, not status.
+write(
+  path.join(sandbox, '.claude', 'jobs', 'old00000', 'state.json'),
+  JSON.stringify({ state: 'done', sessionId: 'dddddddd-2222-3333-4444-555555555555', updatedAt: new Date(Date.now() - 3 * 86_400_000).toISOString() }),
+)
+
+const at = '2026-08-25T19:24:33.475Z'
+const usage = (cacheRead) => ({
+  input_tokens: 2,
+  cache_creation_input_tokens: 600,
+  cache_read_input_tokens: cacheRead,
+  output_tokens: 1800,
+})
+
+// A conversation with turns in it: model, mode, branch, and a title the CLI
+// wrote for it.
+const SESSION = '11111111-2222-3333-4444-555555555555'
+write(
+  path.join(projects, `${SESSION}.jsonl`),
+  [
+    line({ type: 'mode', mode: 'plan' }),
+    line({ type: 'ai-title', aiTitle: 'Health endpoint for the router' }),
+    line({ type: 'user', timestamp: at, cwd: CWD, gitBranch: 'master', version: '2.1.241', message: { role: 'user', content: 'add one' } }),
+    // A short continuation after a long turn: the meter must read the long one.
+    line({ type: 'assistant', timestamp: at, cwd: CWD, gitBranch: 'master', version: '2.1.241', effort: 'high', message: { role: 'assistant', model: 'claude-opus-5', usage: usage(149_000), content: [{ type: 'text', text: 'done' }] } }),
+    line({ type: 'assistant', timestamp: at, cwd: CWD, gitBranch: 'master', version: '2.1.241', message: { role: 'assistant', model: 'claude-opus-5', usage: usage(10), content: [{ type: 'text', text: 'and again' }] } }),
+  ].join(''),
+)
+
+// A brand-new session: the CLI seeds it with the last title this project had,
+// and it has said nothing at all yet.
+const FRESH = '22222222-2222-3333-4444-555555555555'
+write(
+  path.join(projects, `${FRESH}.jsonl`),
+  [line({ type: 'ai-title', aiTitle: 'Health endpoint for the router' }), line({ type: 'agent-name', agentName: 'Health endpoint for the router' })].join(''),
+)
+
+// A conversation past the small window, which is the only thing that says it
+// was not on one.
+const HUGE = '33333333-2222-3333-4444-555555555555'
+write(
+  path.join(projects, `${HUGE}.jsonl`),
+  [
+    line({ type: 'user', timestamp: at, cwd: CWD, message: { role: 'user', content: 'go' } }),
+    line({ type: 'assistant', timestamp: at, cwd: CWD, message: { role: 'assistant', model: 'claude-opus-5', usage: usage(420_000), content: [{ type: 'text', text: 'ok' }] } }),
+  ].join(''),
+)
+
+/* ── skills ────────────────────────────────────────────────────────────── */
+
+const skills = await import('../src/agents/skills.js')
+const listed = skills.list(CWD)
+
+check('a skill is read off its own front matter', listed.skills.some((s) => s.name === 'diagnose-crash'))
+check(
+  'a folded description arrives as one line',
+  listed.skills.find((s) => s.name === 'diagnose-crash')?.description === 'Work out why a program dumped core. Reads the backtrace.',
+  listed.skills.find((s) => s.name === 'diagnose-crash')?.description,
+)
+const review = listed.skills.filter((s) => s.name === 'review')
+check('a project skill shadows the user one it shares a name with', review.length === 1 && review[0].scope === 'project', review[0]?.description)
+check('a nested command keeps the namespace the CLI spells it with', listed.commands.some((c) => c.name === 'git:sync'))
+check('an argument hint travels with it', listed.commands.find((c) => c.name === 'git:sync')?.args === '[branch]')
+check('the built-ins are offered too', listed.builtins.some((b) => b.name === 'compact'))
+check('a name we published is known', skills.known(CWD, 'diagnose-crash') && skills.known(CWD, 'compact'))
+check('one we did not is refused', !skills.known(CWD, 'rm -rf /') && !skills.known(CWD, '../../etc/passwd'))
+check('a marketplace on disk is not an installed plugin', !listed.skills.some((s) => s.scope === 'plugin'))
+
+/* ── limits ────────────────────────────────────────────────────────────── */
+
+const limits = await import('../src/agents/limits.js')
+const usageNow = limits.read()
+
+check('the tightest window comes first', usageNow?.limits?.[0]?.percent === 73, String(usageNow?.limits?.[0]?.percent))
+check('a scoped weekly says which model it is about', usageNow?.limits?.some((l) => l.label === 'week · Fable'))
+check('the one being spent against is marked', usageNow?.limits?.find((l) => l.kind === 'weekly_all')?.active === true)
+check('a bucket with no name for it is not shown', !usageNow?.limits?.some((l) => l.kind === 'juniper_tide'))
+check('extra usage that is switched off is not a row', usageNow?.spend === null)
+check('a fresh answer is not stale', usageNow?.stale === false)
+check('the worst window is the one a badge would use', limits.worst()?.percent === 73)
+
+/* ── background agents ─────────────────────────────────────────────────── */
+
+const jobs = await import('../src/agents/jobs.js')
+const running = jobs.list()
+
+check('a background agent is listed', running.length === 1 && running[0].id === JOB, String(running.length))
+check('with the sentence it wrote about itself', running[0]?.detail === 'reading the router')
+check('and what it was sent off to do', running[0]?.intent === 'add a health endpoint')
+check('a job nobody has touched in days is history', !running.some((j) => j.id === 'old00000'))
+
+const one = jobs.detail(JOB)
+check('its timeline collapses a sentence it repeated', one?.steps?.length === 2, JSON.stringify(one?.steps?.map((s) => s.detail)))
+check('a job id is not a path', jobs.detail('../../etc') === null)
+
+const bySession = jobs.bySession()
+check('a job is found by the session it started as', bySession.get(BG_SESSION)?.id === JOB)
+check('and by the one it resumed, which is the file it writes', bySession.get(RESUMED)?.id === JOB)
+
+/* ── vitals ────────────────────────────────────────────────────────────── */
+
+const claude = (await import('../src/agents/claude.js')).default
+const vitals = claude.vitals(path.join(projects, `${SESSION}.jsonl`), CWD)
+
+check('the model is the one on the last turn', vitals?.model === 'claude-opus-5', String(vitals?.model))
+check('the effort with it', vitals?.effort === 'high')
+check('the permission mode comes off the mode line', vitals?.mode === 'plan')
+check('the branch and the CLI version travel on every entry', vitals?.branch === 'master' && vitals?.version === '2.1.241')
+check('the CLI\'s own title for the conversation is used', vitals?.title === 'Health endpoint for the router')
+check(
+  'the context counts the cache, which is nearly all of it',
+  vitals?.context?.tokens === 149_000 + 600 + 2 + 1800,
+  String(vitals?.context?.tokens),
+)
+check('a short continuation does not read as an empty conversation', (vitals?.context?.percent ?? 0) >= 70, `${vitals?.context?.percent}%`)
+check('a 200k window is assumed until something says otherwise', vitals?.context?.window === 200_000, String(vitals?.context?.window))
+
+const fresh = claude.vitals(path.join(projects, `${FRESH}.jsonl`), CWD)
+check('a session with no turn in it does not wear the last one\'s title', fresh?.title === null, String(fresh?.title))
+
+const huge = claude.vitals(path.join(projects, `${HUGE}.jsonl`), CWD)
+check('a conversation past 200k is self-evidently not on a 200k window', huge?.context?.window === 1_000_000, String(huge?.context?.window))
+
+// The settings file is the other thing that knows, and it knows sooner.
+write(path.join(sandbox, '.claude', 'settings.json'), JSON.stringify({ model: 'opus[1m]' }))
+const long = claude.vitals(path.join(projects, `${HUGE}.jsonl`) + '', CWD)
+check('and a configured long window is believed before the arithmetic', long?.context?.window === 1_000_000)
+
+/* ── the conversations on disk ─────────────────────────────────────────── */
+
+const recent = claude.recent(10)
+check('every conversation this desktop has had is found', recent.length === 3, String(recent.length))
+check('newest first', recent[0].mtime >= recent[recent.length - 1].mtime)
+check(
+  'a session that started and said nothing has nothing to resume',
+  claude.vitals(path.join(projects, `${FRESH}.jsonl`), CWD)?.context === null,
+)
+check(
+  'the working directory is read off the file, not off the slug',
+  claude.vitals(recent[0].path)?.cwd === CWD,
+  String(claude.vitals(recent[0].path)?.cwd),
+)
+
+/* ── done ──────────────────────────────────────────────────────────────── */
+
+fs.rmSync(sandbox, { recursive: true, force: true })
+
+const failed = results.filter((r) => !r.ok)
+console.log(`\n${results.length - failed.length}/${results.length} passed`)
+if (failed.length) process.exit(1)

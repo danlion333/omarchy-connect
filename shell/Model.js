@@ -409,8 +409,34 @@ function agents(status) {
     write: typeof value.write === "string" ? value.write : null,
     running: num(value.running, 0),
     waiting: num(value.waiting, 0),
+    // Agents with no terminal at all. Nothing else on this desktop draws
+    // them — no pane, no window — so a count here is the only sign from the
+    // bar that the machine is working on something.
+    jobs: num(value.jobs, 0),
+    // How much of the plan is left, as the daemon read it out of the CLI's
+    // own cache. A daemon too old to publish it has none, which reads the
+    // same as an account with no limits to report.
+    limits: isObject(value.limits) && Array.isArray(value.limits.limits) ? value.limits.limits : [],
     sessions: Array.isArray(value.sessions) ? value.sessions : []
   }
+}
+
+/**
+ * The tightest usage window, when it is tight enough to be worth a word.
+ *
+ * Below three quarters this is noise on a bar — the number moves all day and
+ * nothing follows from it. Past three quarters it is the reason a long run is
+ * about to stop, which is exactly what a status line is for.
+ */
+function agentsPressure(value) {
+  var worst = null
+  for (var i = 0; i < value.limits.length; i += 1) {
+    var limit = value.limits[i]
+    if (!isObject(limit)) continue
+    if (worst === null || num(limit.percent, 0) > num(worst.percent, 0)) worst = limit
+  }
+  if (worst === null || num(worst.percent, 0) < 75) return ""
+  return String(worst.label || "usage") + " " + num(worst.percent, 0) + "%"
 }
 
 /** The one line under the header: what agent control is doing right now. */
@@ -427,8 +453,12 @@ function agentsText(value, running) {
     var how = answerable === 0 ? "reading only" : answerable === value.running ? "answerable" : answerable + " answerable"
     return (value.running === 1 ? "one session · " : value.running + " sessions · ") + how
   }
+  if (value.jobs > 0) {
+    return value.jobs === 1 ? "one agent working in the background" : value.jobs + " agents working in the background"
+  }
   if (value.adapters.length === 0) return "on · no coding agent is installed here"
-  return "on · nothing running"
+  var pressure = agentsPressure(value)
+  return pressure !== "" ? "on · nothing running · " + pressure : "on · nothing running"
 }
 
 /** What a session is called: its own title, or the directory it works in. */
@@ -457,6 +487,11 @@ function agentDetail(session, now) {
   // than a hook naming it. The agent's own name is not here at all; one line
   // under a header that says CODING AGENTS does not need to repeat it.
   var parts = [session.state === "working" ? "working" : "idle", since(session.lastActivity, now)]
+  // Only once it is news. A conversation past two thirds of its window is
+  // about to start losing its own beginning, and that is worth a word on a
+  // line that otherwise says how long ago something moved.
+  var context = isObject(session.vitals) && isObject(session.vitals.context) ? num(session.vitals.context.percent, 0) : 0
+  if (context >= 66) parts.push(context + "% full")
   if (session.via === "scan") parts.push("scanned")
   return mark + parts.join(" · ")
 }

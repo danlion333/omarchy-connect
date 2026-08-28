@@ -1,12 +1,18 @@
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 import { loadConfig, updateConfig } from '../lib/config.js'
+import { has, run, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { ADAPTERS, detected } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
 import * as writer from '../agents/writer.js'
 import * as drops from '../agents/drops.js'
+import * as skills from '../agents/skills.js'
+import * as limits from '../agents/limits.js'
+import * as jobs from '../agents/jobs.js'
+import * as tmux from '../agents/tmux.js'
 import { pair } from '../agents/pairing.js'
 import { alive, ancestors, commOf, hasTty, procFile, startedAt, startTicks } from '../agents/proc.js'
 
@@ -98,21 +104,84 @@ const requireEnabled = () => {
 
 /* ── the session as the phone sees it ──────────────────────────────────── */
 
-const publicSession = (entry) => ({
-  id: entry.id,
-  agent: entry.agent,
-  title: entry.title,
-  cwd: entry.cwd,
-  state: entry.state,
-  writable: entry.writable,
-  pane: entry.pane,
-  pid: entry.pid,
-  startedAt: entry.startedAt,
-  lastActivity: entry.lastActivity,
-  preview: entry.preview,
-  prompt: entry.prompt,
-  via: entry.via,
-})
+/**
+ * Which background agents this desktop is running, remembered between scans.
+ *
+ * Refreshed by the sweep rather than by whoever is drawing a row: reading it
+ * is a directory walk and a handful of small files, and every session frame
+ * that leaves the daemon wants the answer. A map that is eight seconds stale
+ * is the right trade for one that is rebuilt forty times a second.
+ */
+let jobMap = new Map()
+
+const refreshJobs = () => {
+  try {
+    jobMap = jobs.bySession()
+  } catch {
+    // A jobs directory being written under us is not worth a log line; the
+    // sessions simply lose their job badge until the next sweep.
+  }
+}
+
+/** The native session id inside `claude:1234-…`, which is what a job knows it by. */
+const nativeIdOf = (entry) => entry.id.slice(entry.agent.length + 1)
+
+/**
+ * The status line for a session, if its adapter keeps one.
+ *
+ * Guarded rather than trusted: this reads and parses somebody else's file
+ * format on a path that every session frame goes through, and a malformed
+ * transcript must cost a meter rather than the list it was on.
+ */
+function vitalsOf(entry) {
+  try {
+    return entry.adapter.vitals?.(entry.transcript, entry.cwd) ?? null
+  } catch {
+    return null
+  }
+}
+
+const publicSession = (entry) => {
+  const vitals = vitalsOf(entry)
+  const job = jobMap.get(nativeIdOf(entry)) || null
+  return {
+    id: entry.id,
+    agent: entry.agent,
+    // The CLI writes a title for its own conversations once it has read enough
+    // of one to name it, and "Телефон не під'єднується до Bluetooth" beats the
+    // directory's basename on a list where every row is the same project.
+    title: vitals?.title || entry.title,
+    // Kept beside it because the title is now a sentence: which project a
+    // session is in stops being obvious the moment it stops being the title.
+    project: entry.title,
+    cwd: entry.cwd,
+    state: entry.state,
+    writable: entry.writable,
+    pane: entry.pane,
+    pid: entry.pid,
+    startedAt: entry.startedAt,
+    lastActivity: entry.lastActivity,
+    preview: entry.preview,
+    prompt: entry.prompt,
+    via: entry.via,
+    // Model, context, permission mode, branch — the desktop's own status line,
+    // read off the transcript rather than asked of the session.
+    vitals,
+    // The background agent behind this conversation, when there is one. This
+    // is the only place a `--bg` session says what it thinks it is doing:
+    // nothing is on screen for it anywhere on the desktop.
+    job: job
+      ? {
+          id: job.id,
+          name: job.name,
+          detail: job.detail,
+          state: job.state,
+          tokens: job.tokens,
+          updatedAt: job.updatedAt,
+        }
+      : null,
+  }
+}
 
 const publicBlock = ({ full, ...block }) => ({ ...block, expandable: Boolean(full) })
 
@@ -672,6 +741,8 @@ function reap(seen = null) {
  * enough to be read in a log, and the reap runs either way.
  */
 function sweep() {
+  refreshJobs()
+  announceLimits()
   let seen = null
   try {
     seen = scan()
@@ -969,7 +1040,128 @@ export function summary() {
     running: list.length,
     waiting: list.filter((e) => e.state === 'waiting').length,
     sessions: list.map(publicSession),
+    // The panel and the CLI draw the same status line the phone does.
+    limits: enabled() ? limits.read() : null,
+    jobs: enabled() && jobs.available() ? jobs.list().length : 0,
   }
+}
+
+/* ── starting one ──────────────────────────────────────────────────────── */
+
+/** A prompt sent along with a new agent — the same ceiling as any other send. */
+const MAX_PROMPT = MAX_SEND
+/** `claude --bg` returns as soon as the job is registered, but not instantly. */
+const SPAWN_TIMEOUT_MS = 30_000
+
+const requireSpawn = () => {
+  if (!spawnAllowed()) {
+    throw new Error('starting agents from a phone is off — run `omarchy-connect agent spawn on` on the desktop')
+  }
+}
+
+/**
+ * A working directory that exists.
+ *
+ * The phone names one and the daemon starts a shell in it, so it is resolved
+ * and checked rather than passed through. There is deliberately no allow-list
+ * of directories: a phone that may type into an agent may already `cd`
+ * anywhere, and pretending otherwise would be a fence with no field behind it.
+ */
+function checkedDir(cwd) {
+  const dir = path.resolve(String(cwd || os.homedir()))
+  let stat
+  try {
+    stat = fs.statSync(dir)
+  } catch {
+    throw new Error('no such directory on that desktop')
+  }
+  if (!stat.isDirectory()) throw new Error('that is a file, not a directory')
+  return dir
+}
+
+/**
+ * A conversation this desktop actually has, in the directory it was had in.
+ *
+ * Checked against the transcripts on disk rather than against a pattern: the
+ * id becomes an argument to a command, and "it looks like a uuid" is a weaker
+ * promise than "it is one of the files we listed".
+ */
+function checkedResume(adapter, cwd, id) {
+  const wanted = String(id || '').trim()
+  if (!wanted) return null
+  const found = adapter.transcripts(cwd).find((t) => t.id === wanted)
+  if (!found) throw new Error('that desktop has no such conversation in this directory')
+  return wanted
+}
+
+/**
+ * Start an agent, and say which road it went down.
+ *
+ * Two roads, and they are not variations on each other:
+ *
+ *   - **In a pane.** `tmux new-session -d` puts the agent in a terminal that
+ *     exists but that nobody is looking at, which is exactly the shape the
+ *     writer wants: the phone can type into it from the first second, and
+ *     whoever is at the desktop can attach to it later. This is the default,
+ *     and it needs tmux — without a multiplexer there is no terminal for a
+ *     new agent to be born into that a phone could ever reach.
+ *   - **In the background.** `claude --bg` detaches outright: no terminal, no
+ *     pane, no way to type into it ever. What it gets instead is a job the CLI
+ *     tracks, which is what makes an agent worth starting from a phone you are
+ *     about to put in your pocket — you describe the work once and read the
+ *     answer later.
+ */
+async function startAgent({ adapter, cwd, resume = null, prompt = '', background = false, name = null }) {
+  const bin = adapter.binaries[0]
+  if (!has(bin)) throw new Error(`${bin} is not on this desktop's PATH`)
+
+  const args = []
+  if (resume) args.push('--resume', resume)
+  // The CLI's own name for the session, which is what its `/resume` picker and
+  // the terminal title show. Worth setting: a session started from a phone is
+  // one nobody will recognise on the desktop otherwise.
+  if (name) args.push('--name', String(name).slice(0, 60))
+
+  if (background) {
+    if (!prompt) throw new Error('a background agent needs something to work on')
+    const res = await run(bin, [...args, '--bg', prompt], { cwd, timeout: SPAWN_TIMEOUT_MS })
+    if (!res.ok) throw new Error(res.stderr || `${bin} --bg failed`)
+    return { via: 'background', output: res.stdout.slice(0, 400) }
+  }
+
+  if (!tmux.available()) {
+    throw new Error('this desktop has no tmux, so a new agent would open in a terminal nothing can reach')
+  }
+  const session = await tmux.freeSessionName()
+  // `--` twice over: once so tmux hands the rest to the agent verbatim, and
+  // the prompt last so a prompt beginning with a dash is still a prompt.
+  const command = [...args, ...(prompt ? ['--', prompt] : [])]
+  const res = await run('tmux', ['new-session', '-d', '-s', session, '-c', cwd, '--', bin, ...command], {
+    timeout: SPAWN_TIMEOUT_MS,
+  })
+  if (!res.ok) throw new Error(res.stderr || 'tmux could not start that session')
+  return { via: 'tmux', session }
+}
+
+/* ── what the desktop is spending ──────────────────────────────────────── */
+
+/**
+ * The plan's remaining headroom, and a nudge when it moves.
+ *
+ * `hello` carries the first answer and the phone would otherwise hold it until
+ * it reconnected — which is hours, and the number this is about changes every
+ * few minutes. The fingerprint is what stops that from being a message a
+ * second: the file behind it is rewritten far more often than the percentages
+ * in it actually change.
+ */
+let limitsPrint = ''
+
+function announceLimits() {
+  const value = limits.read()
+  const print = value ? value.limits.map((l) => `${l.kind}:${l.percent}`).join(',') : ''
+  if (print === limitsPrint) return
+  limitsPrint = print
+  emit({ kind: 'limits', limits: value })
 }
 
 /* ── plugin ────────────────────────────────────────────────────────────── */
@@ -992,6 +1184,14 @@ export default {
       attach: true,
       answer: true,
       spawn: spawnAllowed(),
+      // The rest of the desktop's own status line, each published rather than
+      // assumed for the same reason: an app that is a version ahead of the
+      // daemon must draw what the daemon has, not what the app knows about.
+      skills: true,
+      history: true,
+      commands: true,
+      jobs: jobs.available(),
+      limits: enabled() ? limits.read() : null,
     }
   },
 
@@ -1026,6 +1226,11 @@ export default {
         attach: true,
         answer: true,
         spawn: spawnAllowed(),
+        skills: true,
+        history: true,
+        commands: true,
+        jobs: jobs.available(),
+        limits: limits.read(),
       }
     },
 
@@ -1217,6 +1422,214 @@ export default {
       const entry = liveSession(id)
       await resurvey([entry])
       return { id: entry.id, pane: entry.pane, screen: await writer.screen(entry, lines) }
+    },
+
+    /* ── the status line ───────────────────────────────────────────────── */
+
+    /**
+     * How much of the plan is left, and when the window turns over.
+     *
+     * Read from the cache the CLI keeps for its own status line, so a desktop
+     * whose CLI has not run today answers with a date attached rather than
+     * with a guess. `null` is a real answer: an account on no plan at all, or
+     * a desktop that has never been told.
+     */
+    'agents.limits'() {
+      requireEnabled()
+      return { limits: limits.read() }
+    },
+
+    /* ── skills and commands ───────────────────────────────────────────── */
+
+    /**
+     * Everything this desktop's agent answers to by name.
+     *
+     * The point of putting this on a phone is that a slash command's name is
+     * short and what it does is long: nobody types `/security-review` with a
+     * thumb, and nobody remembers which of thirty skills is the one that
+     * drives the phone over adb. Read off the same directories the CLI reads,
+     * for the session's own working directory, so a project's own skills are
+     * in the list when that project's session is the one open.
+     */
+    'agents.skills'({ id = null, cwd = null } = {}) {
+      requireEnabled()
+      const entry = id ? sessions.get(String(id)) : null
+      const where = entry?.cwd || (cwd ? String(cwd) : null)
+      return { cwd: where, ...skills.list(where) }
+    },
+
+    /**
+     * Run one of them.
+     *
+     * `send` could carry the same string, and the reason this exists beside it
+     * is the check: the name is matched against the list this desktop just
+     * published before it becomes a line of text in front of an agent. What
+     * the phone offers and what the desktop will type are then the same set,
+     * and a stale app cannot invent a command by asking for one.
+     *
+     * The arguments are not checked, and cannot be — an argument to a skill is
+     * prose. They are the same prose `agents.send` already carries.
+     */
+    async 'agents.command'({ id, name, args = '', submit = true } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      const wanted = String(name || '').trim()
+      if (!skills.known(entry.cwd, wanted)) throw new Error('that desktop does not have a command by that name')
+      const rest = String(args ?? '').trim()
+      const body = `/${wanted}${rest ? ` ${rest}` : ''}`
+      if (body.length > MAX_SEND) throw new Error('that is too much text to type at once')
+      await ensureWritable(entry)
+
+      const result = await writer.serialise(entry, () => writer.send(entry, body, { submit: submit !== false }))
+      if (entry.state !== 'working') setState(entry, 'working')
+      return { ok: true, command: body, ...result }
+    },
+
+    /* ── conversations that are not running ────────────────────────────── */
+
+    /**
+     * The conversations this desktop has had, whether or not one is open.
+     *
+     * The live list answers "what is running"; this answers "what did I have
+     * open yesterday", which is the question behind every `--resume`. Both
+     * halves are on disk already: the transcript is the conversation, and its
+     * tail carries the working directory, the model and the title the CLI gave
+     * it — so a picker that would otherwise need the CLI's interactive
+     * `/resume` screen can be drawn from files instead.
+     */
+    'agents.history'({ cwd = null, limit = 25 } = {}) {
+      requireEnabled()
+      const count = Math.min(Math.max(Number(limit) || 25, 1), 60)
+      const where = cwd ? String(cwd) : null
+      const out = []
+      for (const adapter of ADAPTERS) {
+        if (!adapter.detect()) continue
+        const found = where ? adapter.transcripts(where) : adapter.recent?.(count * 2) || []
+        for (const transcript of found) {
+          const id = `${adapter.id}:${transcript.id}`
+          const live = sessions.get(id)
+          let vitals = null
+          try {
+            vitals = adapter.vitals?.(transcript.path, where) ?? null
+          } catch {
+            vitals = null
+          }
+          // A conversation that never had a turn in it is a session that
+          // started and said nothing — the CLI leaves the file behind, and
+          // resuming one restores nothing. It is not offered.
+          if (!vitals?.context && !live) continue
+          const job = jobMap.get(transcript.id) || null
+          out.push({
+            id,
+            agent: adapter.id,
+            sessionId: transcript.id,
+            cwd: vitals?.cwd || where,
+            title: vitals?.title || (vitals?.cwd ? path.basename(vitals.cwd) : transcript.id.slice(0, 8)),
+            model: vitals?.model || null,
+            branch: vitals?.branch || null,
+            context: vitals?.context || null,
+            at: transcript.mtime,
+            size: transcript.size,
+            // A conversation that is open right now is not one to resume; the
+            // phone offers to walk into it instead.
+            live: Boolean(live && live.state !== 'gone'),
+            liveId: live && live.state !== 'gone' ? live.id : null,
+            background: Boolean(job),
+          })
+        }
+      }
+      return { sessions: out.sort((a, b) => b.at - a.at).slice(0, count), spawn: spawnAllowed() }
+    },
+
+    /* ── background agents ─────────────────────────────────────────────── */
+
+    /**
+     * The agents running with nobody in front of them.
+     *
+     * A `--bg` session has no terminal, so nothing on the desktop is showing
+     * it — no pane, no window, no bar. The CLI writes what it is doing into a
+     * job directory, and that sentence is the whole value here: "exploring
+     * project state for commit + merge flow" is worth more on a phone than any
+     * amount of transcript.
+     */
+    'agents.jobs'({ all = false } = {}) {
+      requireEnabled()
+      const running = jobs.list({ all: all === true })
+      return {
+        jobs: running,
+        // Which of them the phone can walk into: a job whose transcript this
+        // daemon has a live session for is readable like any other.
+        open: Object.fromEntries(
+          running
+            .map((job) => {
+              const id = [...sessions.keys()].find(
+                (key) => key.endsWith(`:${job.sessionId}`) || (job.resumedFrom && key.endsWith(`:${job.resumedFrom}`)),
+              )
+              return id && sessions.get(id)?.state !== 'gone' ? [job.id, id] : null
+            })
+            .filter(Boolean),
+        ),
+      }
+    },
+
+    /** One job, with the last few sentences it wrote about itself. */
+    'agents.job'({ id } = {}) {
+      requireEnabled()
+      const job = jobs.detail(id)
+      if (!job) throw new Error('no such background agent')
+      return { job }
+    },
+
+    /* ── starting one ──────────────────────────────────────────────────── */
+
+    /**
+     * Start an agent from the phone — a fresh one, or one picked up again.
+     *
+     * Behind its own switch rather than the reading one. Reading an agent and
+     * answering the one already open are things the person at the desktop
+     * started; this starts a process that was not there before, and that is a
+     * different sentence to say yes to.
+     */
+    async 'agents.spawn'({ cwd = null, resume = null, prompt = '', background = false, name = null } = {}) {
+      requireEnabled()
+      requireSpawn()
+      const adapter = ADAPTERS.find((a) => a.detect())
+      if (!adapter) throw new Error('this desktop has no coding agent installed')
+
+      const body = String(prompt ?? '').trim()
+      if (body.length > MAX_PROMPT) throw new Error('that is too much to send an agent off with')
+      // Resuming names a conversation, and a conversation names its directory
+      // — so the phone does not have to know one to ask for the other.
+      let where = cwd ? checkedDir(cwd) : null
+      if (resume && !where) {
+        const found = adapter.recent?.(200)?.find((t) => t.id === String(resume)) || null
+        const from = found ? adapter.vitals?.(found.path)?.cwd : null
+        if (!from) throw new Error('that desktop has no such conversation')
+        where = checkedDir(from)
+      }
+      where = where || checkedDir(null)
+      const session = resume ? checkedResume(adapter, where, resume) : null
+
+      const result = await startAgent({
+        adapter,
+        cwd: where,
+        resume: session,
+        prompt: body,
+        background: background === true,
+        name,
+      })
+      log.info(`agent started from a phone: ${result.via} in ${where}${session ? ` (resuming ${session})` : ''}`)
+      // The scan is on an eight-second timer and the phone is waiting for a
+      // row to appear; a sweep now is what makes the new session turn up in
+      // the list this call's caller is about to refresh.
+      refreshJobs()
+      try {
+        scan()
+      } catch (err) {
+        log.debug('post-spawn scan failed:', err.message)
+      }
+      void resurvey()
+      return { ok: true, cwd: where, resumed: session, ...result }
     },
   },
 }
