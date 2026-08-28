@@ -582,8 +582,12 @@ The three `agent` event frames:
 
 A `blocks` frame carries everything one drain of the transcript produced, so a
 turn that ran six tools arrives as one frame rather than twelve. `reset: true`
-means the transcript was rewritten under the daemon and the reader should
-replace what it has rather than append.
+means the frame is the list rather than an addition to it, and the reader should
+replace what it has rather than append — either the transcript was rewritten
+under the daemon, or a block already sent has moved. A question carried ahead of
+the transcript by a hook moves exactly once: down behind the words of the turn
+it was held back with, when that turn lands. It keeps its `seq` through the
+move, so an `agents.answer` already in flight still names it.
 
 A `control` frame is the desktop turning reading on or off under a live link —
 the switch on its panel, or the CLI. `capabilities.agents.enabled` was answered

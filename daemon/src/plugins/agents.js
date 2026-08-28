@@ -217,6 +217,10 @@ function upsert(fields) {
     /* internals — never leave the daemon */
     previewAt: 0,
     blocks: [],
+    // Set when the transcript catches up with a hook's question and the card
+    // has to move down past the words that came with it — the phone appends,
+    // so a reordered list is only true once it is sent again whole.
+    reordered: false,
     seq: 0,
     offset: 0,
     loaded: false,
@@ -269,7 +273,25 @@ function ingest(entry, text, { backfill = false } = {}) {
     for (const block of entry.adapter.parse(line)) {
       // The transcript catching up with a question a hook already carried:
       // the same tool call arriving a second time, and one card is enough.
-      if (block.kind === 'question' && block.ref && hasQuestion(entry, block.ref)) continue
+      //
+      // The card does have to move, though. What the agent said on its way to
+      // asking is in the same withheld turn as the question, so it lands here
+      // a moment ago — after a card the hook put on screen minutes earlier,
+      // which reads as an answer arriving before its question. Sliding the
+      // card down to where the transcript keeps it puts the words back in
+      // front of it. Its `seq` travels with it rather than being reissued: the
+      // phone answers a question by seq, and a card that renumbers under a
+      // thumb is a phone answering the wrong one.
+      if (block.kind === 'question' && block.ref) {
+        const held = entry.blocks.findIndex((b) => b.kind === 'question' && b.ref === block.ref)
+        if (held >= 0) {
+          if (held !== entry.blocks.length - 1) {
+            entry.blocks.push(entry.blocks.splice(held, 1)[0])
+            entry.reordered = true
+          }
+          continue
+        }
+      }
       // Whatever this answered, it is answered — including a question the
       // hook road is still holding on to.
       if (block.kind === 'result' && block.ref) clearQuestion(entry, block.ref)
@@ -335,7 +357,13 @@ const hasQuestion = (entry, ref) => entry.blocks.some((b) => b.kind === 'questio
  * block it becomes is indistinguishable from one the transcript would have
  * produced, which is the point: the phone draws one card, `agents.answer`
  * validates against one shape, and when the transcript does catch up its copy
- * is dropped as the duplicate it is.
+ * is dropped as the duplicate it is — the card that is already on screen slides
+ * down to stand where that copy would have, behind the words held back with it.
+ *
+ * Those words are the one thing this road cannot carry. The withheld turn is
+ * usually the agent explaining what it is about to ask about, and until it is
+ * answered that explanation is nowhere but the terminal — no hook payload has
+ * it, and `tool_input` is only the question itself.
  */
 function syncQuestion(entry) {
   const question = entry.question
@@ -419,6 +447,7 @@ function drain(entry) {
   if (result.reset) {
     entry.offset = 0
     entry.blocks = []
+    entry.reordered = false
     entry.loaded = false
     load(entry)
     if (entry.opens > 0 && entry.blocks.length) {
@@ -429,7 +458,14 @@ function drain(entry) {
   entry.offset = result.offset
   if (!result.text) return
   const fresh = ingest(entry, result.text)
-  if (fresh.length && entry.opens > 0) {
+  // A move is not something an appending phone can be told about a block at a
+  // time, so a batch that reordered anything is sent as the whole list.
+  const moved = entry.reordered
+  entry.reordered = false
+  if (entry.opens === 0) return
+  if (moved) {
+    emit({ kind: 'blocks', id: entry.id, reset: true, blocks: entry.blocks.map(publicBlock), cursor: entry.seq })
+  } else if (fresh.length) {
     emit({ kind: 'blocks', id: entry.id, blocks: fresh.map(publicBlock), cursor: entry.seq })
   }
 }
@@ -460,6 +496,7 @@ function release(entry) {
   if (entry.opens > 0) return
   closeTail(entry)
   entry.blocks = []
+  entry.reordered = false
   entry.loaded = false
   entry.offset = 0
   entry.seq = 0
