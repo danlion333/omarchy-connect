@@ -360,7 +360,13 @@ const contextOf = (usage) =>
   (Number(usage?.output_tokens) || 0)
 
 const vitalsCache = new Map()
-const VITALS_CACHE_MAX = 64
+/**
+ * Entries are a handful of fields each, and the phone's history screen alone
+ * asks about twenty-five transcripts at a time — a cache that a single screen
+ * can evict is a screen that re-reads a quarter of a megabyte per row every
+ * time it is opened.
+ */
+const VITALS_CACHE_MAX = 512
 
 /**
  * The status line for one session: what it is running as, and how full it is.

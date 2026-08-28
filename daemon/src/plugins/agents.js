@@ -1607,8 +1607,14 @@ export default {
       const out = []
       for (const adapter of ADAPTERS) {
         if (!adapter.detect()) continue
+        // Twice what is wanted, because some of them will turn out to be
+        // sessions that started and said nothing. Listing them is a `readdir`
+        // and a `stat`; *reading* them is not, so the loop below stops as soon
+        // as it has enough rather than reading the lot.
         const found = where ? adapter.transcripts(where) : adapter.recent?.(count * 2) || []
+        let taken = 0
         for (const transcript of found) {
+          if (taken >= count) break
           const id = `${adapter.id}:${transcript.id}`
           const live = sessions.get(id)
           let vitals = null
@@ -1622,6 +1628,7 @@ export default {
           // resuming one restores nothing. It is not offered.
           if (!vitals?.context && !live) continue
           const job = jobMap.get(transcript.id) || null
+          taken += 1
           out.push({
             id,
             agent: adapter.id,
