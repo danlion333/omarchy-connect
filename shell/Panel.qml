@@ -92,6 +92,10 @@ Panel {
       // The battery glyph tracks the level and grows a bolt while it charges,
       // so the shape of it says the number before the number is read.
       if (phone.battery) parts.push({ glyph: Model.batteryGlyph(phone.battery), text: Model.batteryText(phone.battery) })
+      // Which road it came in on, and only when that is not the ordinary one
+      // — every other line here earns its place by being surprising.
+      var road = Model.linkText(phone)
+      if (road !== "") parts.push({ glyph: "󰖟", text: road })
       return parts
     }
     if (!paired) return [{ glyph: "󰥍", text: "No phone paired" }]
@@ -122,6 +126,9 @@ Panel {
   // Bonded-but-idle stays, because that one *is* fixable by re-pairing.
   readonly property bool showIos: !!bridge.ios && (bridge.ios.subscribed === true
     || bridge.ios.paired === true || !!bridge.ios.pairing)
+  // The same rule as the switch below it: a desktop that has never been put
+  // on a tunnel has nothing to report and gets no row.
+  readonly property bool showRemote: bridge.remoteAvailable
 
   /* ── actions ───────────────────────────────────────────────────────── */
 
@@ -161,6 +168,15 @@ Panel {
     agentConfirmOpen = true
   }
 
+  // No confirmation behind this one. Letting a phone read the agents on this
+  // desktop is handing it a shell; letting it reach the desktop from a
+  // different room is not a decision of that size, and the telephony it would
+  // otherwise carry is switched off on that link anyway.
+  function requestRemote(on) {
+    if (on) bridge.enableRemote()
+    else bridge.disableRemote()
+  }
+
   function runAction(key) {
     if (key === "pair") bridge.pair()
     else if (key === "unpair") bridge.unpair(bridge.device)
@@ -177,6 +193,7 @@ Panel {
     var list = ["header", "actions", "details", "settings"]
     if (settingsOpen) {
       if (bridge.agentsAvailable) list.push("agents")
+      if (bridge.remoteAvailable) list.push("remote")
       list.push("autostart")
     }
     return list
@@ -215,6 +232,7 @@ Panel {
     // Enter on the agent switch opens the question rather than answering it,
     // which is why the cursor is allowed here at all.
     else if (focusSection === "agents") requestAgents(!bridge.agentsEnabled)
+    else if (focusSection === "remote") requestRemote(!bridge.remoteEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
   }
 
@@ -998,6 +1016,14 @@ Panel {
               copyable: !!bridge.address
               tooltipText: "Copy the address"
             }
+            InfoLabel { glyph: "󰖟"; text: "Remote"; visible: root.showRemote }
+            DetailValue {
+              visible: root.showRemote
+              text: Model.remoteText(bridge.remote)
+              color: bridge.remoteEnabled && bridge.remote.address ? root.foreground : root.dim
+              copyable: !!bridge.remote.address
+              tooltipText: "Copy the remote address"
+            }
             InfoLabel { glyph: "󰈷"; text: "Fingerprint" }
             DetailValue {
               text: bridge.status ? String(bridge.status.fingerprint) : "--"
@@ -1043,6 +1069,23 @@ Panel {
               accent: bridge.agentsWaiting > 0 ? root.urgent : root.foreground
               fontFamily: root.fontFamily
               onClicked: root.requestAgents(!bridge.agentsEnabled)
+            }
+
+            // Hidden on a desktop with no tunnel to offer, for the same
+            // reason: there is nothing here to switch on until the machine
+            // has been put on one.
+            Toggle {
+              visible: bridge.remoteAvailable
+              width: parent.width
+              label: bridge.remoteEnabled ? "The phone can reach this desktop from anywhere" : "Let the phone reach this desktop from anywhere"
+              description: (bridge.remoteEnabled ? "󰖟  " : "󰖠  ") + Model.remoteText(bridge.remote)
+              checked: bridge.remoteEnabled
+              hasCursor: root.cursorActive && root.focusSection === "remote"
+              onHovered: function (on) { if (on) root.setCursor("remote") }
+              foreground: root.foreground
+              accent: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestRemote(!bridge.remoteEnabled)
             }
 
             // Reading works without hooks; knowing that an agent is *stuck*

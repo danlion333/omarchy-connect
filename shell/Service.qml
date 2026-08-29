@@ -85,6 +85,15 @@ Item {
   // and the switch has to be reachable to be turned back off.
   readonly property bool agentsAvailable: agents.enabled || agents.adapters.length > 0
 
+  // Whether the phone may reach this desktop from off its own network, and
+  // what it would come in over. Switchable from here for the same reason the
+  // agent switch is: the daemon applies it live, so the link survives it.
+  readonly property var remote: (status && status.remote) ? status.remote : ({ enabled: false, kind: null, address: null, dnsName: null, keyExpiresAt: null })
+  readonly property bool remoteEnabled: remote.enabled === true
+  // A tunnel that is up, or a switch that is on and has to be reachable to be
+  // turned back off. A desktop with neither has nothing to say about this.
+  readonly property bool remoteAvailable: remoteEnabled || !!remote.address
+
   // Whether the daemon is serving https + wss. The panel only reports it —
   // switching TLS on is `omarchy-connect tls enable`, which needs a restart.
   readonly property bool tls: !!status && !!status.tls && status.tls.enabled === true
@@ -383,6 +392,14 @@ Item {
 
   function disableAgents() {
     invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent control off…")
+  }
+
+  function enableRemote() {
+    invoke(Model.command(root.status, ["remote", "on"]), "Letting the phone in from off this network…")
+  }
+
+  function disableRemote() {
+    invoke(Model.command(root.status, ["remote", "off"]), "Back to this network only…")
   }
 
   /**

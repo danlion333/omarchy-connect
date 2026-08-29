@@ -397,6 +397,28 @@ function callDetail(call, bt, now) {
  * A daemon old enough not to publish this at all is the same case as a desktop
  * with the feature off: nothing to show, and a switch that says so.
  */
+/**
+ * How this desktop is reachable from off its own network, in one line.
+ *
+ * The address alone would be a puzzle — 100.101.102.103 means nothing to
+ * anybody who has not just set up a tailnet — so the kind that handed it over
+ * goes in front of it.
+ */
+function remoteText(remote) {
+  if (!isObject(remote)) return "off"
+  if (remote.enabled !== true) return "off"
+  if (!remote.address) return "on, no tunnel up"
+  var kind = remote.kind ? String(remote.kind) : "overlay"
+  return kind + " \u00b7 " + String(remote.address)
+}
+
+/** How a connected phone got here. Empty when it came in the ordinary way. */
+function linkText(device) {
+  if (!isObject(device)) return ""
+  if (device.via !== "remote") return ""
+  return device.link ? "via " + String(device.link) : "from away"
+}
+
 function agents(status) {
   var value = isObject(status) && isObject(status.agents) ? status.agents : {}
   return {
