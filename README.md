@@ -1,8 +1,10 @@
 # Omarchy Connect
 
 Your phone, wired into your Omarchy desktop. Live system stats, remote control,
-clipboard sync and file transfer — all over your own LAN, with no account, no
-cloud, and no traffic leaving the subnet.
+clipboard sync and file transfer — all over your own LAN, with no account and
+no cloud. Out of the box nothing leaves the subnet; if you want the desktop
+from further away than that, it will use a tunnel you already run, and only
+after you have said so.
 
 The control channel is encrypted end to end, and the phone pins the desktop's
 identity key when it pairs, so it will only ever talk to the machine you
@@ -40,6 +42,7 @@ the desktop and the app repaints in the same palette.
 | **Phone notifications** | One ongoing line saying whether this phone can currently see its desktop — the KDE Connect habit — with a reconnect button on it while it cannot. Then four things it will tell you about: an agent waiting on a question (with a reply box on the notification), an agent that finished something long, a file the desktop sent (with **Save** straight to the gallery), and whatever the desktop last copied (silent, with **Copy**). Each has its own switch. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
+| **From anywhere** | Off by default. Switched on, the desktop tells the phone the address its tunnel gave it — Tailscale, Headscale, WireGuard, ZeroTier, NetBird, whatever is already there — and the phone keeps that beside the home address and dials whichever one it can reach. No tunnel of ours, no relay, no account: the desktop reports what your own overlay handed it. Calls and messages stay at home — every telephony surface is switched off on a remote link, because hands-free is a radio link to a handset in this room and mirroring a text to a desktop the phone cannot see is carrying private mail somewhere nobody will read it. |
 | **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
 
 ## Install the daemon
@@ -772,6 +775,52 @@ sudo ufw allow from 192.168.1.0/24 to any port 8765 proto tcp comment 'omarchy-c
 pairing code. Testing through Expo Go needs the Metro port open too
 (`8081`); that one is worth removing again afterwards with `sudo ufw delete
 allow …`.
+
+With remote access on, that rule is not enough on its own — a phone arriving
+through a tunnel is not on your subnet. `omarchy-connect remote` prints a
+second one, scoped to the tunnel's interface rather than to an address range,
+so it stays right when the overlay's addressing changes.
+
+### Reaching it from anywhere
+
+Off by default, and it stays off until you say otherwise:
+
+```bash
+omarchy-connect remote on
+```
+
+There is nothing else to set up, and nothing to sign up for. Bring up whatever
+overlay you already use — `tailscale up` is the short road, but WireGuard,
+Headscale, ZeroTier and NetBird all work the same way — and the desktop notices
+the address it was given and hands it to the phone on its next connection. The
+phone keeps it beside the home address and dials whichever one the network it
+is on can carry: at home the local wire, away from it the tunnel, and nothing
+at all while neither is up.
+
+Nothing about identity changes. The phone still pins the desktop's key at
+pairing and refuses to talk to anything else, whatever address it answers on;
+that is why an address from a tunnel needs no special trust. Pairing from away
+works too — `omarchy-connect pair` prints the remote address beside the QR, and
+the app's Manual pane has never cared what an address looks like.
+
+`omarchy-connect remote` says what is there:
+
+```bash
+omarchy-connect remote            # state, address, MagicDNS name, firewall, key expiry
+omarchy-connect remote off        # back to this network only
+```
+
+It warns when a Tailscale node key is within two weeks of expiring, because
+that is a failure with no symptom on the phone: the address simply stops
+answering.
+
+**Calls and messages do not travel.** On a remote link the desktop reports
+every telephony capability as absent, refuses every `phone.*` request, and
+never sends the phone channel down the socket — so the ring screen, the call
+controls and the hands-free panel are simply not there. A phone at the far end
+of a tunnel also does not count as present, so `handsfree.autoConnect =
+presence` will not raise a Bluetooth profile on a handset five hundred
+kilometres away.
 
 ### Wake on LAN
 
