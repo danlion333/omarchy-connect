@@ -41,16 +41,27 @@ function ufwAllows(port) {
  * Reports whether a local firewall is likely to be swallowing connections to
  * `port`, and how to let them through. `subnet` scopes the suggested rule to
  * the network the daemon is actually reachable on.
+ *
+ * `overlayInterface` names a tunnel the desktop is also reachable through, and
+ * earns a second rule. It has to be a separate one: the first is scoped to a
+ * subnet, and a tunnel's peers are not on it — a phone dialling in over the
+ * tailnet is a stranger to `from 192.168.1.0/24` no matter how the daemon
+ * feels about it. Scoping by interface rather than by address range is also
+ * what keeps the rule honest when the tunnel's own addressing changes.
  */
-export function check(port, ip) {
-  if (!ufwActive()) return { blocked: false, tool: null, command: null }
-  if (ufwAllows(port)) return { blocked: false, tool: 'ufw', command: null }
+export function check(port, ip, overlayInterface = null) {
+  if (!ufwActive()) return { blocked: false, tool: null, command: null, remoteCommand: null }
+  const remoteCommand = overlayInterface
+    ? `sudo ufw allow in on ${overlayInterface} to any port ${port} proto tcp comment 'omarchy-connect remote'`
+    : null
+  if (ufwAllows(port)) return { blocked: false, tool: 'ufw', command: null, remoteCommand }
   const subnet = lanSubnet(ip)
   const from = subnet ? `from ${subnet} ` : ''
   return {
     blocked: true,
     tool: 'ufw',
     command: `sudo ufw allow ${from}to any port ${port} proto tcp comment 'omarchy-connect'`,
+    remoteCommand,
   }
 }
 

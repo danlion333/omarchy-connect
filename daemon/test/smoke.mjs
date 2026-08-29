@@ -138,6 +138,19 @@ const hello = await ready
 check('handshake', hello.protocol === 2, `caps: ${Object.keys(hello.capabilities).join(', ')}`)
 check('handshake reports an encrypted channel', hello.secure === true && hello.fingerprint === info.fingerprint, hello.fingerprint)
 
+// Where this desktop says it can be dialled. The suite connects over the
+// loopback with remote access off, so the honest answer is the LAN address
+// alone — an overlay address offered here would be one the daemon has been
+// told not to answer on.
+check('the phone is handed the addresses it may dial', Array.isArray(hello.endpoints) && hello.endpoints.length > 0,
+  (hello.endpoints || []).map((e) => `${e.host} (${e.kind})`).join(', '))
+check('the local network leads the list', hello.endpoints?.[0]?.kind === 'lan' && hello.endpoints[0].port === PORT)
+check('remote access being off means no tunnel is advertised',
+  !hello.endpoints.some((e) => e.kind !== 'lan'))
+check('a socket off the loopback is not a remote one', hello.link?.via === 'lan' && hello.link.kind === null,
+  JSON.stringify(hello.link))
+check('the endpoints channel is offered', hello.events.includes('endpoints'))
+
 phone.send({ t: 'sub', events: ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone'] })
 
 const stats = await req('system.stats')

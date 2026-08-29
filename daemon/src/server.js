@@ -43,12 +43,13 @@ import * as firewall from './lib/firewall.js'
 import * as wol from './lib/wol.js'
 import * as tls from './lib/tls.js'
 import * as sysinfo from './lib/sys.js'
+import * as overlay from './lib/overlay.js'
 
 export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
-export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'agent']
+export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'agent', 'endpoints']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
 
@@ -85,7 +86,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   const counters = { filesIn: 0, filesOut: 0, notifications: 0 }
   const transfers = []
   let localAddress = null
-  let firewallState = { blocked: false, tool: null, command: null }
+  // Where else this desktop can be reached, refreshed on the environment
+  // tick. A tunnel can come up long after the daemon did, so this is watched
+  // rather than read once at start.
+  let overlayState = overlay.known()
+  let firewallState = { blocked: false, tool: null, command: null, remoteCommand: null }
   let firewallCheckedAt = 0
   // What a phone would need to wake this desktop. Answered while the daemon
   // is up because by the time it is wanted there is no daemon to ask.
@@ -109,6 +114,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       host: localAddress,
       pairing: activePairing(),
       firewall: firewallState,
+      remote: { enabled: remoteEnabled(), ...overlay.summary(overlayState) },
       wake: { ...wakeState },
       scheme,
       tls: certificate
@@ -122,6 +128,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           online: Boolean(client),
           since: client ? client.since : null,
           address: client ? client.address : null,
+          // How this phone got here, so the panel can say "via tailscale"
+          // rather than showing an address nobody recognises.
+          via: client ? client.via : null,
+          link: client ? client.link : null,
           secure: client ? Boolean(client.secure) : null,
           battery: report?.battery ?? null,
           network: report?.network ?? null,
@@ -138,6 +148,38 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   const publishState = () => state.publish(snapshot())
 
   /**
+   * Whether this desktop answers a phone that is not on its own subnet.
+   *
+   * Read fresh every time rather than captured at start, because the switch
+   * is meant to be flicked on a running daemon.
+   */
+  const remoteEnabled = () => loadConfig().remote?.enabled === true
+
+  /**
+   * Every address the phone may dial, best first.
+   *
+   * The LAN address leads because it is the one that is fast, free and
+   * always right when the phone is home. Overlay addresses follow, and the
+   * MagicDNS name comes last of all: it is a real endpoint, but only while
+   * the tailnet's own DNS is switched on, so it is a fallback for the IP
+   * rather than a replacement for it.
+   *
+   * With remote access off this is the LAN address and nothing else — the
+   * phone is never handed a way in that the desktop would refuse.
+   */
+  function endpoints() {
+    const list = []
+    if (localAddress) list.push({ host: localAddress, port: listenPort, kind: 'lan' })
+    if (remoteEnabled()) list.push(...overlay.toEndpoints(overlayState, listenPort))
+    return list
+  }
+
+  /** Tell whoever is listening that the set of addresses changed under them. */
+  function announceEndpoints() {
+    bus.emit('event', 'endpoints', { endpoints: endpoints() })
+  }
+
+  /**
    * Whether any paired phone is on the network right now.
    *
    * Only one thing listens for this — the hands-free link, which holds the
@@ -146,15 +188,30 @@ export function createServer({ port, version = '0.1.0' } = {}) {
    * server's business and what anyone does about it is not.
    */
   const announcePresence = () => {
-    bus.emit('presence', [...clients].some((client) => client.device))
+    // A phone on the far end of a tunnel is not in the room, and telling the
+    // hands-free link otherwise would raise the Bluetooth profile on a
+    // handset five hundred kilometres away under `autoConnect: 'presence'`.
+    bus.emit('presence', [...clients].some((client) => client.device && client.via !== 'remote'))
   }
 
   async function refreshEnvironment() {
     const net = await sysinfo.network().catch(() => null)
     const ip = net?.ip || null
-    let changed = ip !== localAddress
-    if (changed && certificate) refreshCertificate(ip)
+    const addressChanged = ip !== localAddress
+    let changed = addressChanged
     localAddress = ip
+
+    // A tunnel that comes up after the daemon did changes two things: what
+    // the phone should be told it can dial, and what the certificate has to
+    // name. `tls.subjectNames` already picks up every non-internal IPv4, so
+    // re-minting here is what gets the 100.x address into the SAN — over the
+    // same private key, so the pin the phone is holding still matches.
+    const before = overlayState
+    overlayState = await overlay.detect({ force: true }).catch(() => before)
+    const overlayChanged = addressList(before) !== addressList(overlayState)
+    if (overlayChanged) changed = true
+    if ((addressChanged || overlayChanged) && certificate) refreshCertificate(ip)
+    if (overlayChanged) announceEndpoints()
 
     // Cheap enough to redo on every tick: one `nmcli` call cached per
     // interface, and a sysfs read. The card can be armed while the daemon
@@ -169,12 +226,21 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     // slow lane of its own rather than riding every republish.
     if (Date.now() - firewallCheckedAt > FIREWALL_RECHECK_MS) {
       firewallCheckedAt = Date.now()
-      const next = firewall.check(listenPort, ip)
-      if (next.blocked !== firewallState.blocked || next.command !== firewallState.command) changed = true
+      const next = firewall.check(listenPort, ip, overlayState.addresses[0]?.iface ?? null)
+      if (
+        next.blocked !== firewallState.blocked ||
+        next.command !== firewallState.command ||
+        next.remoteCommand !== firewallState.remoteCommand
+      ) {
+        changed = true
+      }
       firewallState = next
     }
     return changed
   }
+
+  /** The overlay addresses as one comparable string, for "did this change?". */
+  const addressList = (snap) => (snap?.addresses || []).map((entry) => entry.address).join(',') + `|${snap?.dnsName ?? ''}`
 
   /**
    * A new DHCP lease means the certificate no longer names the address the
@@ -546,6 +612,13 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
   wss.on('connection', (ws, req) => {
     const peer = req.socket.remoteAddress
+    // How this socket got here, decided once and never recomputed: the local
+    // end of the connection names the interface the kernel routed it in
+    // through, so a socket that arrived on the tailnet address arrived over
+    // the tailnet. Deliberately not a judgement about the *peer's* address —
+    // deciding who is a stranger by IP range is the mistake that has broken
+    // this in every project that tried it.
+    const link = overlay.classify(req.socket.localAddress, overlayState)
     const client = {
       ws,
       device: null,
@@ -554,6 +627,8 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       secure: null,
       negotiated: false,
       address: peer,
+      via: link.via,
+      link: link.kind,
       since: Date.now(),
     }
     clients.add(client)
@@ -744,6 +819,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // Handed over now because it cannot be asked for later: this is what
       // the phone sends a magic packet at once this desktop is asleep.
       wake: { ...wakeState },
+      // Every address this desktop can be dialled on, so a phone that moves
+      // off the subnet has somewhere to go without being re-paired. The list
+      // is handed over rather than asked for, for the same reason `wake` is:
+      // the moment it is wanted is the moment there is nothing to ask.
+      endpoints: endpoints(),
+      link: { via: client.via, kind: client.link },
       capabilities: collectCapabilities(),
       theme: readTheme(),
       events: DEFAULT_EVENTS,
@@ -803,6 +884,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     const message = { t: 'ev', event, data }
     for (const client of clients) {
       if (!client.device || !client.events.has(event)) continue
+      // Nothing telephonic travels down a tunnel. The capability list already
+      // tells a remote phone there is no telephony here, but the fan-out is
+      // where it is actually true: a `call` instruction the desktop issues
+      // must not reach a handset that is nowhere near this room, whatever the
+      // app on the other end believes it can do.
+      if (event === 'phone' && client.via === 'remote') continue
       send(client, message)
     }
   })

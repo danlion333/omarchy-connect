@@ -159,7 +159,8 @@ All of the frames below travel inside the encrypted channel described above.
 // desktop → phone
 { "t": "hello.ok", "protocol": 2, "secure": true, "fingerprint": "9AD3-E65B-D149-638A",
   "server": { "name", "version" }, "device": { … }, "host": { … },
-  "wake": { … }, "capabilities": { … }, "theme": { … }, "events": [ … ] }
+  "wake": { … }, "endpoints": [ { "host", "port", "kind" } ], "link": { "via", "kind" },
+  "capabilities": { … }, "theme": { … }, "events": [ … ] }
 
 // desktop → phone, then the socket closes
 { "t": "hello.err", "error": "wrong pairing code" }
@@ -174,6 +175,29 @@ because the moment it is wanted there is no daemon to ask.
 `capabilities` reports what this particular machine can actually do — whether
 `wpctl`, `brightnessctl`, `playerctl`, `hyprctl` and the `omarchy-*` helpers are
 installed. The app greys out what is missing instead of failing at call time.
+
+`endpoints` is every address this desktop can be dialled on, best first: the
+LAN address, then any overlay address (Tailscale, WireGuard, ZeroTier,
+NetBird), then the MagicDNS name last of all, as
+`kind: "dns"`. A name is offered after the addresses rather than instead of
+them because it only resolves while the tailnet's own DNS is switched on,
+while the address is ground truth. The phone keeps the list and dials down it;
+it does not scan for anything that is not on it. Addresses are IPv4 only,
+including Tailscale's — the `fd7a:` ULA is deliberately not advertised, for the
+same reason the certificate's SANs are IPv4 only.
+
+With remote access off — which is the default — `endpoints` is the LAN address
+and nothing else. The desktop never offers a way in that it would refuse.
+
+`link` is the desktop's verdict on how *this* socket got here: `via` is `"lan"`
+or `"remote"`, and `kind` names the overlay when it is remote. It is decided
+from the local end of the connection — the address the kernel routed it in on —
+and never from the peer's address, because deciding who is a stranger by IP
+range is wrong in both directions.
+
+These three fields are additive; the protocol is still 2. A daemon that
+predates them sends none of them and a phone that predates them ignores them,
+so either half upgrades on its own.
 
 ### What the phone is called
 
@@ -202,7 +226,7 @@ wins the moment it has one.
 ### Events
 
 ```jsonc
-{ "t": "sub", "events": ["stats", "clipboard", "notification", "theme", "file", "phone", "agent"] }
+{ "t": "sub", "events": ["stats", "clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
 { "t": "ev", "event": "stats", "data": { … } }
 ```
 
@@ -218,6 +242,11 @@ least one phone is subscribed.
 | `file` | A file arrived from a phone, or the desktop offered one. |
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`). |
 | `agent` | A coding agent appeared, changed state, or said something new. |
+| `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
+
+The `phone` channel is never delivered to a socket the desktop classed as
+`remote`: a call the desktop is asking a handset to answer has no business
+travelling to a handset that is nowhere near it.
 
 `ping`/`pong` frames are available for round-trip measurement; the daemon also
 runs a 20-second WebSocket ping and drops sockets that stop answering, because
