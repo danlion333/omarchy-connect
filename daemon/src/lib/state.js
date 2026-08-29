@@ -105,7 +105,11 @@ export function baseSnapshot({ version = null, port = null } = {}) {
     exec: execCommand(),
     service: serviceState(),
     pairing: null,
-    firewall: { blocked: false, tool: null, command: null },
+    firewall: { blocked: false, tool: null, command: null, remoteCommand: null },
+    // Whether the phone may dial in from outside the subnet, and by what.
+    // `enabled` is config and survives a stopped daemon; everything else is
+    // an answer only a running one can give, so it publishes as empty here.
+    remote: { enabled: cfg.remote?.enabled === true, kind: null, address: null, dnsName: null, keyExpiresAt: null },
     // What a phone would need to wake this desktop. It is the running daemon
     // that reads the card, so a stopped one publishes the shape and no answer
     // — the phone already has the copy it was given at `hello` anyway.

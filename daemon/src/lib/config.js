@@ -17,6 +17,16 @@ const DEFAULTS = {
   // shell. Nothing here is on until `omarchy-connect agent enable` says so.
   agents: { enabled: false, spawn: false },
   /**
+   * Whether the phone may reach this desktop from outside its own subnet,
+   * over whatever overlay network the machine already runs.
+   *
+   * Off, like agents, and for the same reason: the promise this project makes
+   * is that nothing leaves the subnet, and a promise with an exception in it
+   * has to be the user's exception rather than ours. Switching it on is
+   * `omarchy-connect remote on` or the panel.
+   */
+  remote: { enabled: false },
+  /**
    * When the desktop holds the Bluetooth hands-free link open.
    *
    * `ring` is the default: the link exists while a call does and not

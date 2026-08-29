@@ -128,10 +128,23 @@ export function battery() {
 const netBase = '/sys/class/net'
 let lastNet = null
 
+/**
+ * Interfaces an overlay network puts up: a tunnel that carries a stable
+ * unicast address over whatever the machine is actually attached to.
+ *
+ * Kept here rather than in `overlay.js` because two questions want the same
+ * answer — "is this the wire the desktop lives on?" (it is not, so
+ * `primaryInterface` has to skip it) and "which of my addresses travel?".
+ */
+export const OVERLAY_INTERFACE = /^(tailscale|ts|wg|zt|netbird|nb-|nebula|nordlynx|tun)/
+
 function ifaceType(name) {
   if (fs.existsSync(path.join(netBase, name, 'wireless'))) return 'wifi'
   if (name.startsWith('lo')) return 'loopback'
-  if (/^(docker|br-|veth|virbr|tun|tap|wg)/.test(name)) return 'virtual'
+  // Before the `virtual` branch, which swallowed `tun` and `wg` whole — and
+  // after `wireless`, because nothing wearing a tunnel name has a radio.
+  if (OVERLAY_INTERFACE.test(name)) return 'overlay'
+  if (/^(docker|br-|veth|virbr|tap)/.test(name)) return 'virtual'
   return 'ethernet'
 }
 
@@ -143,7 +156,11 @@ export function primaryInterface() {
     return null
   }
   const usable = candidates
-    .filter((n) => !['loopback', 'virtual'].includes(ifaceType(n)))
+    // An overlay is never the primary link: it rides on top of one. Letting
+    // `tailscale0` win here would put a 100.x address in the QR, the status
+    // file and the certificate's idea of "this desktop" — all of which mean
+    // the LAN address and nothing else.
+    .filter((n) => !['loopback', 'virtual', 'overlay'].includes(ifaceType(n)))
     .filter((n) => readText(path.join(netBase, n, 'operstate')) === 'up')
   // Prefer a wired link when both are up — that is what actually carries traffic.
   return usable.find((n) => ifaceType(n) === 'ethernet') || usable[0] || null
