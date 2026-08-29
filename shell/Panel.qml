@@ -1022,6 +1022,7 @@ Panel {
               text: Model.remoteText(bridge.remote)
               color: bridge.remoteEnabled && bridge.remote.address ? root.foreground : root.dim
               copyable: !!bridge.remote.address
+              copyValue: bridge.remote.address ? String(bridge.remote.address) : ""
               tooltipText: "Copy the remote address"
             }
             InfoLabel { glyph: "󰈷"; text: "Fingerprint" }
@@ -1398,6 +1399,10 @@ Panel {
   component DetailValue: InfoValue {
     property bool copyable: false
     property string tooltipText: "Copy to clipboard"
+    // What lands on the clipboard, when that is not the whole line. A row
+    // that reads "tailscale · 100.101.102.103" is the right thing to look at
+    // and the wrong thing to paste into an address field.
+    property string copyValue: ""
 
     Layout.fillWidth: true
     horizontalAlignment: Text.AlignRight
@@ -1409,7 +1414,7 @@ Panel {
       enabled: parent.copyable && parent.text !== ""
       hoverEnabled: enabled
       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-      onClicked: bridge.copyText(parent.text)
+      onClicked: bridge.copyText(parent.copyValue !== "" ? parent.copyValue : parent.text)
     }
 
     PanelToolTip {
