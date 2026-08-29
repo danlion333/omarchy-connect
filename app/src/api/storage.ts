@@ -1,7 +1,11 @@
 import * as SecureStore from 'expo-secure-store'
 
 import { DEFAULT_ALERTS, type AlertPrefs } from './alerts'
+import { migrateEndpoints, type Endpoint } from '../lib/endpoints'
 import type { WakeInfo } from '../lib/wol'
+
+export { MAX_ENDPOINTS, mergeEndpoints, migrateEndpoints } from '../lib/endpoints'
+export type { Endpoint, EndpointKind } from '../lib/endpoints'
 
 const KEY = 'omarchy-connect.desktop'
 const DEVICE_KEY = 'omarchy-connect.device-id'
@@ -25,12 +29,28 @@ export type SavedDesktop = {
    * wanted is the moment there is nothing to ask.
    */
   wake?: WakeInfo | null
+  /**
+   * Every address this desktop said it could be reached on, best first.
+   *
+   * `host`/`port` above stay as the last address that actually worked — they
+   * are what a build that predates this reads, and they are the tie-break
+   * when two candidates are equally plausible.
+   */
+  endpoints?: Endpoint[]
 }
 
+/**
+ * Read leniently, the way the alert preferences are: a record written before
+ * a field existed has to come back meaning something sensible, because the
+ * alternative is a build that silently forgets the desktop somebody paired.
+ */
 export async function loadDesktop(): Promise<SavedDesktop | null> {
   try {
     const raw = await SecureStore.getItemAsync(KEY)
-    return raw ? (JSON.parse(raw) as SavedDesktop) : null
+    if (!raw) return null
+    const saved = JSON.parse(raw) as SavedDesktop
+    if (!saved || typeof saved.host !== 'string') return null
+    return { ...saved, endpoints: migrateEndpoints(saved) }
   } catch {
     return null
   }
