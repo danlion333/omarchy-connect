@@ -28,6 +28,7 @@ import {
   backgroundLinkEnabled,
   drainOutbox,
   linkService,
+  networkFacts,
   noteAgentAlert,
   noteFileAlert,
   setBackgroundLinkStatus,
@@ -201,6 +202,10 @@ class Link {
       device: { id, name: deviceName(), platform: Platform.OS, model: String(Platform.Version) },
     })
     this.adopt(client)
+    // Seeded before the first dial, because the change event is no help here:
+    // on a cold start after a reboot the last network change happened before
+    // this process existed. Without this the first attempt goes out blind.
+    client.setNetwork(networkFacts())
     // A phone that was told to stay connected should already be running the
     // service — but it is also how the link survives this launch, so make
     // sure of it rather than assuming Android kept its side of the bargain.
@@ -322,11 +327,17 @@ class Link {
 
     const native = linkService()
     if (native) {
-      native.addListener('onNetworkChange', () => {
+      native.addListener('onNetworkChange', (facts) => {
+        // Two things at once. The facts decide whether dialling this desktop
+        // could work at all — a phone that has just left the house cannot
+        // reach a 192.168 address however often it asks — and a phone that
+        // has just arrived should not wait out a backoff rung it earned on
+        // the wrong network. `setNetwork` does both: it parks, or it re-dials.
+        //
         // A phone that just joined a network cannot resolve the desktop the
         // same millisecond; the first attempt failing is normal and the
         // backoff takes it from there.
-        this.client?.reconnectNow()
+        this.client?.setNetwork(facts ?? null)
       })
       // Somebody answered a waiting agent from the notification shade. The
       // text is already safe in the native backlog; this is the fast path for
@@ -336,7 +347,10 @@ class Link {
       // where the runtime happened to be up.
       native.addListener('onOutbox', () => void this.flushOutbox())
       native.addListener('onLinkReconnect', () => {
-        this.client?.reconnectNow()
+        // Forced: a deliberate tap outranks whatever Android said about the
+        // network. If the phone is parked because the facts are wrong, this
+        // is the only way out of it.
+        this.client?.reconnectNow(true)
       })
     }
   }
@@ -395,10 +409,15 @@ class Link {
           ? 'reconnecting'
           : status === 'connecting' || status === 'pairing'
             ? 'connecting'
-            : status === 'error'
-              ? this.state.error || 'not connected'
-              : 'not connected'
-    setBackgroundLinkStatus(text, this.state.desktop?.name ?? null, status === 'connected')
+            : // Parked is not a failure and must not read as one. The line used
+              // to say "the phone keeps trying", which stops being true the
+              // moment it stops trying — so it says what it is waiting for.
+              status === 'parked'
+              ? this.client?.parkedNote ?? 'waiting for your home network'
+              : status === 'error'
+                ? this.state.error || 'not connected'
+                : 'not connected'
+    setBackgroundLinkStatus(text, this.state.desktop?.name ?? null, status === 'connected', status === 'parked')
   }
 
   /* ── what the app asks of it ─────────────────────────────────────── */
@@ -483,8 +502,16 @@ class Link {
     this.patch({ ...INITIAL, ready: true })
   }
 
+  /**
+   * The reconnect the user asked for, from a screen.
+   *
+   * Forced, for the same reason the notification's button is: the link parks
+   * itself on a network Android describes as unable to reach this desktop, and
+   * an OEM that describes it wrongly must not leave somebody staring at a
+   * phone that refuses to dial. Tapping outranks the guess.
+   */
   reconnectNow() {
-    this.client?.reconnectNow()
+    this.client?.reconnectNow(true)
   }
 
   /**
@@ -512,7 +539,10 @@ class Link {
     try {
       await sendWakePacket(desktop.wake!, desktop.host)
       const answered = await waitForDesktop(() => probeHost(desktop.host, desktop.port))
-      this.client?.reconnectNow()
+      // Forced on the strength of the probe: something just answered at that
+      // address over HTTP, which is better evidence that the desktop is
+      // reachable than anything the transport can imply.
+      this.client?.reconnectNow(true)
       return answered
     } finally {
       this.wakingNow = false

@@ -1,8 +1,17 @@
 import type { Palette } from '../theme'
 import type { WakeInfo } from '../lib/wol'
+import { parkedReason, reachable, retryDelay, type NetworkFacts } from '../lib/retry.ts'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
 
-export type ConnectionStatus = 'idle' | 'connecting' | 'pairing' | 'connected' | 'reconnecting' | 'error'
+export type ConnectionStatus =
+  | 'idle'
+  | 'connecting'
+  | 'pairing'
+  | 'connected'
+  | 'reconnecting'
+  /** Not trying, because on this network trying could not work. See `lib/retry`. */
+  | 'parked'
+  | 'error'
 
 export type DeviceIdentity = {
   id: string
@@ -316,7 +325,6 @@ type Listener = (data: any) => void
 const REQUEST_TIMEOUT = 12_000
 const PING_EVERY = 15_000
 const PING_TIMEOUT = 10_000
-const BACKOFF = [1000, 2000, 4000, 8000, 15_000]
 
 /**
  * One WebSocket to one desktop, with request/response correlation, an event
@@ -352,6 +360,15 @@ export class ConnectClient {
   private retryTimer: any = null
   private attempt = 0
   private closedByUser = false
+  /**
+   * What the phone is attached to, as last reported by the native module.
+   *
+   * `null` until something says otherwise, which is also the permanent state
+   * anywhere the module does not exist — and `reachable` reads that as "try
+   * anyway", so nothing here changes behaviour on a platform that cannot
+   * answer the question.
+   */
+  private network: NetworkFacts | null = null
   /**
    * `phone` is not optional decoration: it is the channel the desktop uses to
    * ask this handset to answer a call or send a message. Leaving it out makes
@@ -423,10 +440,20 @@ export class ConnectClient {
 
   /* ── lifecycle ───────────────────────────────────────────────────── */
 
-  connect() {
+  /**
+   * `force` is the escape hatch for the Reconnect button, and only for it.
+   *
+   * Parking is decided from what Android says about the network, and an OEM
+   * that describes it wrongly would otherwise leave the user with a phone that
+   * refuses to dial and no way to argue. A deliberate tap outranks the guess.
+   */
+  connect(force = false) {
     this.closedByUser = false
     clearTimeout(this.retryTimer)
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+    // Pairing is exempt: the user is holding the phone in front of the address
+    // they just typed or scanned, and refusing to try would be absurd.
+    if (!force && !this.pairCode && !reachable(this.host, this.network)) return this.park()
 
     this.setStatus(this.pairCode ? 'pairing' : this.attempt > 0 ? 'reconnecting' : 'connecting', null)
 
@@ -487,11 +514,11 @@ export class ConnectClient {
    * something told us the world changed — the app came back to the foreground,
    * or the phone joined a different network.
    */
-  reconnectNow() {
+  reconnectNow(force = false) {
     this.attempt = 0
     clearTimeout(this.retryTimer)
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
-    this.connect()
+    this.connect(force)
   }
 
   /** Follows the desktop to a new address, keeping the pinned key. */
@@ -514,8 +541,61 @@ export class ConnectClient {
     return this.attempt
   }
 
+  /**
+   * What the phone is attached to, from the native network callback.
+   *
+   * This is the other half of the backoff: the ladder decides how long to wait
+   * between attempts, and this decides whether an attempt could succeed at
+   * all. A desktop at 192.168.1.20 is not going to answer a phone on mobile
+   * data however patiently it is asked.
+   */
+  setNetwork(facts: NetworkFacts | null) {
+    this.network = facts
+    if (this.closedByUser) return
+    if (reachable(this.host, facts)) {
+      // The phone just walked back onto a network that could carry this. The
+      // ladder starts over — waiting out a rung earned on the wrong network
+      // would be the delay this whole change exists to remove.
+      if (this.status === 'parked') this.reconnectNow()
+      return
+    }
+    // An open socket outranks any description of the network: if bytes are
+    // still moving, this phone is demonstrably able to reach that desktop, and
+    // no reading of the transport gets to say otherwise. A socket that only
+    // looks alive dies of its own ping timeout soon enough, and the parking
+    // decision is made properly on the way back through `onclose`.
+    if (this.ws?.readyState === WebSocket.OPEN) return
+    if (this.status !== 'idle' && this.status !== 'error') this.park()
+  }
+
+  /** The current view of the network, for anyone who has to explain it. */
+  get networkFacts(): NetworkFacts | null {
+    return this.network
+  }
+
+  /** Why the phone is not trying, in the words the notification uses. */
+  get parkedNote(): string {
+    return parkedReason(this.network)
+  }
+
+  /**
+   * Stops trying until something changes.
+   *
+   * The socket is not closed here — if one somehow survives onto a network
+   * that cannot reach the desktop it dies of its own ping timeout, and closing
+   * it would only route back through `onclose` into this same decision. All
+   * this does is cancel the timer that was going to fail.
+   */
+  private park() {
+    clearTimeout(this.retryTimer)
+    this.retryTimer = null
+    this.attempt = 0
+    this.setStatus('parked', null)
+  }
+
   private scheduleReconnect() {
-    const delay = BACKOFF[Math.min(this.attempt, BACKOFF.length - 1)]
+    if (!this.pairCode && !reachable(this.host, this.network)) return this.park()
+    const delay = retryDelay(this.attempt)
     this.attempt += 1
     this.setStatus('reconnecting')
     clearTimeout(this.retryTimer)

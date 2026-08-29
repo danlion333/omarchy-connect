@@ -56,6 +56,10 @@ class LinkActionReceiver : BroadcastReceiver() {
       }
       ACTION_RECONNECT -> {
         LinkPrefs.setStatus(context, "connecting")
+        // The tap is what un-parks the link: JavaScript is told to dial
+        // regardless of what Android says about the network, so the shade
+        // should stop saying it is waiting before the socket confirms it.
+        LinkPrefs.setWaiting(context, false)
         LinkService.refresh(context)
         wake(context)
         emit("onLinkReconnect", emptyMap())

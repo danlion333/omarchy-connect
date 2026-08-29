@@ -116,7 +116,15 @@ class LinkService : Service() {
           if (connected) R.drawable.omarchy_link_notification else R.drawable.omarchy_link_offline,
         )
         .setContentTitle(title)
-        .setContentText(if (connected) status else "tap to open \u00b7 the phone keeps trying")
+        .setContentText(
+          when {
+            connected -> status
+            // Parked: the title already says what it is waiting for, so this
+            // line must not also claim an effort that is not being made.
+            LinkPrefs.isWaiting(context) -> "tap to open \u00b7 Reconnect tries anyway"
+            else -> "tap to open \u00b7 the phone keeps trying"
+          },
+        )
         .setContentIntent(tap)
         .setOngoing(true)
         .setSilent(true)
@@ -174,6 +182,7 @@ class LinkService : Service() {
     // the last incarnation wrote about being connected is stale by definition,
     // and the notification is drawn on the next line.
     LinkPrefs.setConnected(this, false)
+    LinkPrefs.setWaiting(this, false)
     // Android gives a service started with `startForegroundService` five
     // seconds to put up its notification, so this happens before anything
     // that could conceivably block.
@@ -264,6 +273,7 @@ class LinkService : Service() {
   override fun onDestroy() {
     running = false
     LinkPrefs.setConnected(this, false)
+    LinkPrefs.setWaiting(this, false)
     // Nothing is left that could carry an answer to the desktop, or fetch a
     // file it offers to save, so the shade should not keep offering either.
     Shade.cancelEverything(this)

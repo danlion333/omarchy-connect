@@ -736,6 +736,8 @@ function statusLabel(status: string) {
       return 'connected'
     case 'reconnecting':
       return 'reconnecting…'
+    case 'parked':
+      return 'waiting for your network'
     case 'connecting':
       return 'connecting…'
     case 'error':

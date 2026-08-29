@@ -1,11 +1,19 @@
 import { requireNativeModule, NativeModule } from 'expo'
 import { Platform } from 'react-native'
 
+import type { NetworkFacts } from '../../src/lib/retry'
+
 export type LinkStatusText = string
 
 type Events = {
-  /** The default network came or went — the moment to re-dial, not to wait. */
-  onNetworkChange: () => void
+  /**
+   * The default network came, went, or changed shape.
+   *
+   * Carries what the phone is now attached to, because the answer decides
+   * whether re-dialling could work at all — see `lib/retry`. The payload is
+   * the same shape `networkFacts()` returns.
+   */
+  onNetworkChange: (facts: NetworkFacts) => void
   /** A notification button asked for something the app has to finish. */
   onOutbox: () => void
   /** The reconnect button on the ongoing notification. */
@@ -25,12 +33,13 @@ export type AlertKind = 'agent' | 'done' | 'file' | 'clip'
 
 declare class OmarchyLink extends NativeModule<Events> {
   isAvailable(): boolean
+  networkFacts(): NetworkFacts
   isRunning(): boolean
   isEnabled(): boolean
   hasChoice(): boolean
   start(): void
   stop(): void
-  setStatus(status: LinkStatusText, desktop: string | null, connected: boolean): void
+  setStatus(status: LinkStatusText, desktop: string | null, connected: boolean, waiting: boolean): void
   notifyAgentWaiting(
     id: string,
     agent: string,
@@ -128,10 +137,37 @@ export function stopBackgroundLink(): void {
   }
 }
 
-/** Keeps the ongoing notification honest about what the socket is doing. */
-export function setBackgroundLinkStatus(status: string, desktop: string | null, connected: boolean): void {
+/**
+ * What the phone is attached to, or `null` where nothing can say.
+ *
+ * `null` is not "offline" — it is "unknown", and `lib/retry` reads it as
+ * permission to try anyway. Anywhere without this native module (iOS, Expo Go)
+ * that is the permanent answer, and the retry behaviour is what it always was.
+ */
+export function networkFacts(): NetworkFacts | null {
   try {
-    linkService()?.setStatus(status, desktop, connected)
+    return linkService()?.networkFacts() ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Keeps the ongoing notification honest about what the socket is doing.
+ *
+ * `waiting` is not the opposite of `connected`: it says the phone has stopped
+ * dialling on purpose, because on this network it could not succeed. The
+ * notification words itself differently for the two, since "the phone keeps
+ * trying" is a promise and one of these states is not keeping it.
+ */
+export function setBackgroundLinkStatus(
+  status: string,
+  desktop: string | null,
+  connected: boolean,
+  waiting: boolean,
+): void {
+  try {
+    linkService()?.setStatus(status, desktop, connected, waiting)
   } catch {
     /* the notification is the least important thing in the room */
   }

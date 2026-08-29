@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
@@ -72,6 +73,15 @@ class OmarchyLinkModule : Module() {
 
     Function("isAvailable") { true }
 
+    /**
+     * What the phone is attached to, right now.
+     *
+     * The event fires on change, which is no help to a client opening its
+     * first socket — after a reboot the last change was before this process
+     * existed. See `lib/retry` for what is done with the answer.
+     */
+    Function("networkFacts") { describeNetwork() }
+
     /** Whether the service is up right now, as opposed to merely wanted. */
     Function("isRunning") { LinkService.running }
 
@@ -103,10 +113,11 @@ class OmarchyLinkModule : Module() {
      * a human to read, and this is what the title, the icon and the reconnect
      * button branch on. See `LinkPrefs.isConnected`.
      */
-    Function("setStatus") { status: String, desktop: String?, connected: Boolean ->
+    Function("setStatus") { status: String, desktop: String?, connected: Boolean, waiting: Boolean ->
       LinkPrefs.setStatus(context, status)
       LinkPrefs.setDesktop(context, desktop)
       LinkPrefs.setConnected(context, connected)
+      LinkPrefs.setWaiting(context, waiting)
       LinkService.refresh(context)
     }
 
@@ -267,9 +278,15 @@ class OmarchyLinkModule : Module() {
     val callback = object : ConnectivityManager.NetworkCallback() {
       override fun onAvailable(network: Network) = send()
       override fun onLost(network: Network) = send()
+      override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) = send()
       private fun send() {
         try {
-          this@OmarchyLinkModule.sendEvent("onNetworkChange", mapOf<String, Any?>())
+          // Deliberately not reading the callback's own `network` argument:
+          // moving from Wi-Fi to mobile data fires `onAvailable` for the new
+          // one and `onLost` for the old one in an order nobody promises, and
+          // believing `onLost` would report a phone with no network at all.
+          // Asking the manager what is current is ordering-proof.
+          this@OmarchyLinkModule.sendEvent("onNetworkChange", describeNetwork())
         } catch (error: Exception) {
           /* the runtime went away between the callback and the send */
         }
@@ -281,6 +298,49 @@ class OmarchyLinkModule : Module() {
     } catch (error: Exception) {
       /* some devices refuse this without a foreground app; not fatal */
     }
+  }
+
+  /**
+   * As much of what the phone is attached to as Android will say for free.
+   *
+   * Note what is *not* here: the SSID. From Android 10 reading it needs a
+   * location permission, and asking for the user's whereabouts to work out
+   * whether to retry a socket is a trade nobody would accept. The transport is
+   * enough — Wi-Fi or Ethernet means this handset could plausibly be on the
+   * same wire as a desktop, and that is the whole question.
+   *
+   * `vpn` is reported separately rather than folded into `lan`, because a
+   * tunnel carries private addresses over any transport underneath it. A phone
+   * on mobile data inside a VPN can reach a 192.168 address, and parking it
+   * would break exactly the setup that never needed parking.
+   *
+   * When anything here cannot be determined the answer is the permissive one:
+   * an unknown network reads as usable, and the client retries the way it did
+   * before any of this existed.
+   */
+  private fun describeNetwork(): Map<String, Any?> {
+    val unknown = mapOf<String, Any?>("online" to true, "lan" to true, "vpn" to false)
+    val manager = context.getSystemService(ConnectivityManager::class.java) ?: return unknown
+    val active = try {
+      manager.activeNetwork
+    } catch (error: Exception) {
+      return unknown
+    } ?: return mapOf<String, Any?>("online" to false, "lan" to false, "vpn" to false)
+    val caps = try {
+      manager.getNetworkCapabilities(active)
+    } catch (error: Exception) {
+      null
+    } ?: return unknown
+    return mapOf(
+      // A network the system will not certify as carrying the internet is one
+      // the socket has no business waking up for.
+      "online" to caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET),
+      "lan" to (
+        caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) ||
+          caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        ),
+      "vpn" to caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN),
+    )
   }
 
   private fun unwatchNetwork() {

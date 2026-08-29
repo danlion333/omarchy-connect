@@ -15,6 +15,7 @@ object LinkPrefs {
   private const val KEY_STATUS = "status"
   private const val KEY_DESKTOP = "desktop"
   private const val KEY_CONNECTED = "connected"
+  private const val KEY_WAITING = "waiting"
 
   private fun prefs(context: Context) =
     context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -61,5 +62,21 @@ object LinkPrefs {
 
   fun setConnected(context: Context, value: Boolean) {
     prefs(context).edit().putBoolean(KEY_CONNECTED, value).apply()
+  }
+
+  /**
+   * Whether the phone has stopped dialling on purpose.
+   *
+   * Disconnected used to mean one thing, so the notification could say "the
+   * phone keeps trying" and be right. It no longer does: on a network that
+   * cannot reach this desktop the retry loop parks itself rather than fail
+   * every fifteen seconds all night, and a line promising it keeps trying
+   * would then be exactly the kind of decoration the title was fixed to stop
+   * being. See `lib/retry`.
+   */
+  fun isWaiting(context: Context): Boolean = prefs(context).getBoolean(KEY_WAITING, false)
+
+  fun setWaiting(context: Context, value: Boolean) {
+    prefs(context).edit().putBoolean(KEY_WAITING, value).apply()
   }
 }
