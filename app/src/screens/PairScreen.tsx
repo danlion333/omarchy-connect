@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, TextInput, View } from 'react-native'
+import { ActivityIndicator, View } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 
 import { useConnection } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Empty, ListRow, Screen, Segmented, Title } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Screen, Segmented, Title } from '../ui/kit'
 import { DEFAULT_PORT, parsePairingUrl, probeHost, scanSubnet, type Discovered, type PairingTarget } from '../api/discovery'
 import { font, radius, size, space } from '../theme'
 
@@ -278,6 +278,10 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
   return (
     <Card>
       <CardHeader icon="edit-3" title="Manual" subtitle="address and code" />
+      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
+        any address the desktop answers on will do — including the one its tunnel gave it, if you are
+        pairing from somewhere else entirely. `omarchy-connect pair` prints that one beside the QR.
+      </Body>
       <Field label="Host" value={host} onChange={setHost} placeholder="192.168.1.100" keyboardType="numbers-and-punctuation" />
       <Field label="Port" value={port} onChange={setPort} placeholder={String(DEFAULT_PORT)} keyboardType="number-pad" />
       <Field label="Code" value={code} onChange={setCode} placeholder="123456" keyboardType="number-pad" maxLength={6} />
@@ -357,46 +361,3 @@ function CodeEntry({
   )
 }
 
-function Field({
-  label,
-  value,
-  onChange,
-  placeholder,
-  keyboardType,
-  maxLength,
-}: {
-  label: string
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  keyboardType?: 'default' | 'number-pad' | 'numbers-and-punctuation'
-  maxLength?: number
-}) {
-  const { palette } = useConnection()
-  return (
-    <View style={{ marginBottom: space.md }}>
-      <Caps style={{ marginBottom: space.xs }}>{label}</Caps>
-      <TextInput
-        value={value}
-        onChangeText={onChange}
-        placeholder={placeholder}
-        placeholderTextColor={palette.muted}
-        keyboardType={keyboardType}
-        maxLength={maxLength}
-        autoCapitalize="none"
-        autoCorrect={false}
-        style={{
-          color: palette.light_foreground,
-          fontFamily: font.regular,
-          fontSize: size.body,
-          backgroundColor: palette.darker_background,
-          borderColor: palette.lighter_background,
-          borderWidth: 1,
-          borderRadius: radius.sm,
-          paddingHorizontal: space.md,
-          paddingVertical: space.md,
-        }}
-      />
-    </View>
-  )
-}

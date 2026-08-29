@@ -4,7 +4,7 @@ import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 
 import { useConnection } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, ListRow, Screen } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Field, ListRow, Screen } from '../ui/kit'
 import { clock, duration } from '../lib/format'
 import {
   canAnswerCalls,
@@ -96,6 +96,10 @@ export function SettingsScreen() {
         <DataGrid
           pairs={[
             { label: 'Address', value: desktop ? `${desktop.host}:${desktop.port}` : '—' },
+            // Which road, not which address. The address above answers "where
+            // is it"; this answers "how did I get there", which is the fact
+            // that explains why the telephony surfaces are missing.
+            { label: 'Link', value: linkLabel(hello?.link) },
             { label: 'Paired', value: desktop ? clock(desktop.pairedAt) : '—' },
             { label: 'Daemon', value: hello?.server.version ?? '—' },
             { label: 'Protocol', value: hello ? `v${hello.protocol}` : '—' },
@@ -108,6 +112,7 @@ export function SettingsScreen() {
           <Feather name={hello?.secure ? 'lock' : 'unlock'} size={13} color={hello?.secure ? palette.green : palette.orange} />
           <Caps tone={palette.muted}>{hello?.secure ? 'encrypted' : 'not encrypted'}</Caps>
           <Chip label={desktop?.tls ? 'tls' : 'plain'} tone={desktop?.tls ? palette.green : palette.muted} />
+          {hello?.link?.via === 'remote' ? <Chip label="remote" tone={palette.orange} /> : null}
           <Body tone={palette.light_foreground} style={{ fontFamily: font.medium, fontSize: size.label, marginLeft: 'auto' }}>
             {fingerprint ?? '—'}
           </Body>
@@ -173,6 +178,8 @@ export function SettingsScreen() {
         )}
       </Card>
 
+      <RemoteAccess />
+
       <WakeOnLan />
 
       <BackgroundLink />
@@ -210,12 +217,149 @@ export function SettingsScreen() {
  * answers were all given by the desktop while it was still awake: once it is
  * asleep there is nobody to ask.
  */
+/**
+ * The addresses this desktop can be reached at from off its own network, and
+ * a way to add one the desktop could not describe.
+ *
+ * Shown once the desktop has offered a road that is not the local wire, or
+ * once somebody has added one — a card explaining a feature that is switched
+ * off on the desktop, on a screen nobody can switch it on from, is a card
+ * that only makes the desktop look broken.
+ */
+function RemoteAccess() {
+  const { desktop, hello, palette, addEndpoint, removeEndpoint } = useConnection()
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState(String(desktop?.port ?? 8765))
+  const [checking, setChecking] = useState(false)
+  const [outcome, setOutcome] = useState<string | null>(null)
+  const [adding, setAdding] = useState(false)
+
+  const endpoints = desktop?.endpoints ?? []
+  const travelling = endpoints.filter((entry) => entry.kind !== 'lan')
+  const remote = hello?.link?.via === 'remote'
+
+  if (!travelling.length && !adding) {
+    return (
+      <Card>
+        <CardHeader icon="globe" title="Remote access" subtitle="reach this desktop away from home" tone={palette.muted} />
+        <Body tone={palette.muted} style={{ fontSize: size.label }}>
+          this desktop has only offered its address on your own network. Switch remote access on there —
+          `omarchy-connect remote on`, or the panel — and the address it can be reached at from anywhere
+          arrives on the next connection.
+        </Body>
+        <View style={{ height: space.md }} />
+        <Button icon="plus" variant="ghost" label="Add an address by hand" onPress={() => setAdding(true)} />
+      </Card>
+    )
+  }
+
+  const submit = async () => {
+    setChecking(true)
+    setOutcome(null)
+    const result = await addEndpoint(host, Number(port) || (desktop?.port ?? 8765))
+    setChecking(false)
+    if (result.ok) {
+      setHost('')
+      setAdding(false)
+      setOutcome(null)
+      return
+    }
+    setOutcome(result.error ?? 'that address could not be used')
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon="globe"
+        title="Remote access"
+        subtitle={remote ? 'connected from away' : 'reach this desktop away from home'}
+        tone={remote ? palette.green : palette.muted}
+      />
+      {travelling.length ? (
+        <DataGrid
+          pairs={travelling.map((entry) => ({
+            label: entry.kind,
+            value: `${entry.host}${entry.port === desktop?.port ? '' : `:${entry.port}`}`,
+            tone: entry.host === desktop?.host ? palette.green : undefined,
+          }))}
+          columns={1}
+        />
+      ) : null}
+      <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+        your desktop's tunnel address travels with it — pair once, and the phone finds it from anywhere the
+        tunnel reaches. Calls and messages stay at home: telephony is switched off on a remote link.
+      </Body>
+
+      {travelling.some((entry) => entry.source === 'manual') ? (
+        <>
+          <Divider />
+          <Caps style={{ marginBottom: space.xs }}>Added by hand</Caps>
+          {travelling
+            .filter((entry) => entry.source === 'manual')
+            .map((entry) => (
+              <ListRow
+                key={`${entry.host}:${entry.port}`}
+                title={entry.host}
+                subtitle={`port ${entry.port}`}
+                right={<Button icon="x" variant="ghost" onPress={() => void removeEndpoint(entry.host, entry.port)} />}
+              />
+            ))}
+        </>
+      ) : null}
+
+      <Divider />
+      {adding ? (
+        <>
+          <Field label="Address" value={host} onChange={setHost} placeholder="100.101.102.103" />
+          <Field label="Port" value={port} onChange={setPort} keyboardType="number-pad" maxLength={5} />
+          {outcome ? (
+            <Body tone={palette.red} style={{ fontSize: size.label, marginBottom: space.md }}>
+              {outcome}
+            </Body>
+          ) : null}
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <View style={{ flex: 1 }}>
+              <Button
+                icon={checking ? 'loader' : 'check'}
+                label={checking ? 'Checking…' : 'Add'}
+                onPress={submit}
+                disabled={!host.trim() || checking}
+              />
+            </View>
+            <Button
+              variant="ghost"
+              label="Cancel"
+              onPress={() => {
+                setAdding(false)
+                setOutcome(null)
+              }}
+            />
+          </View>
+          <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.sm }}>
+            the address is checked before it is kept — anything answering with a key that is not your
+            desktop's is refused
+          </Body>
+        </>
+      ) : (
+        <Button icon="plus" variant="ghost" label="Add an address by hand" onPress={() => setAdding(true)} />
+      )}
+    </Card>
+  )
+}
+
 function WakeOnLan() {
-  const { desktop, palette } = useConnection()
+  const { desktop, palette, client } = useConnection()
   const [copied, setCopied] = useState(false)
   const wake = desktop?.wake
 
   if (!wake?.supported) return null
+
+  // A magic packet is a broadcast on the local wire, and a tunnel does not
+  // carry broadcasts. The button stays: sending it is a harmless datagram,
+  // this reading of the network can be wrong, and a phone that has just
+  // walked back through the front door should not have to reopen the screen
+  // to get its button back. But it says what it expects to happen.
+  const offTheWire = client?.networkFacts ? !client.networkFacts.lan : false
 
   const armed = wake.armed === null ? 'cannot tell' : wake.armed ? 'yes' : 'no'
   const copy = async (command: string) => {
@@ -246,6 +390,12 @@ function WakeOnLan() {
         <Body tone={palette.orange} style={{ fontSize: size.label, marginTop: space.md }}>
           this phone cannot send the packet — there is no UDP socket in Expo Go or on iOS, so waking needs the
           Android build
+        </Body>
+      ) : null}
+      {offTheWire ? (
+        <Body tone={palette.orange} style={{ fontSize: size.label, marginTop: space.md }}>
+          this phone is not on the desktop's own network, and a magic packet does not travel down a tunnel —
+          the button still works, it just has nowhere to shout from here
         </Body>
       ) : null}
       {wake.note ? (
@@ -728,6 +878,18 @@ function IosBridge() {
       />
     </>
   )
+}
+
+/**
+ * How this socket got here, in words rather than in a code.
+ *
+ * A desktop too old to say gets a dash rather than a guess: "home network" is
+ * a claim, and the only thing that knows is the machine at the other end.
+ */
+function linkLabel(link?: { via: string; kind: string | null }) {
+  if (!link) return '—'
+  if (link.via !== 'remote') return 'home network'
+  return link.kind && link.kind !== 'overlay' ? `${link.kind} · remote` : 'remote'
 }
 
 function statusLabel(status: string) {

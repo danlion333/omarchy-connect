@@ -40,6 +40,9 @@ type ConnectionValue = {
   /** Sends the magic packet, then waits for the desktop to answer again. */
   wake: () => Promise<boolean>
   forget: () => Promise<void>
+  /** Adds an address by hand, after proving it is the paired desktop. */
+  addEndpoint: (host: string, port: number) => Promise<{ ok: boolean; error?: string }>
+  removeEndpoint: (host: string, port: number) => Promise<void>
   can: (plugin: string, feature: string) => boolean
 }
 
@@ -69,6 +72,8 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const call = useCallback<ConnectionValue['call']>((method, params = {}) => link.call(method, params), [])
   const pair = useCallback((target: PairingTarget) => link.pair(target), [])
   const forget = useCallback(() => link.forget(), [])
+  const addEndpoint = useCallback((host: string, port: number) => link.addEndpoint(host, port), [])
+  const removeEndpoint = useCallback((host: string, port: number) => link.removeEndpoint(host, port), [])
   const reconnect = useCallback(() => link.reconnectNow(), [])
   const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
@@ -99,9 +104,25 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       reconnect,
       wake,
       forget,
+      addEndpoint,
+      removeEndpoint,
       can,
     }),
-    [state, agentsWaiting, refreshAgents, refreshAgentJobs, fingerprint, call, pair, reconnect, wake, forget, can],
+    [
+      state,
+      agentsWaiting,
+      refreshAgents,
+      refreshAgentJobs,
+      fingerprint,
+      call,
+      pair,
+      reconnect,
+      wake,
+      forget,
+      addEndpoint,
+      removeEndpoint,
+      can,
+    ],
   )
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>

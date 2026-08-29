@@ -5,6 +5,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type StyleProp,
   type TextStyle,
@@ -474,6 +475,56 @@ export function Chip({
         {label}
       </Text>
     </Pressable>
+  )
+}
+
+/**
+ * A labelled text box.
+ *
+ * Lived in the pairing screen until a second screen needed one to take an
+ * address by hand. Nothing about it was ever specific to pairing.
+ */
+export function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+  keyboardType,
+  maxLength,
+}: {
+  label: string
+  value: string
+  onChange: (v: string) => void
+  placeholder?: string
+  keyboardType?: 'default' | 'number-pad' | 'numbers-and-punctuation'
+  maxLength?: number
+}) {
+  const p = usePalette()
+  return (
+    <View style={{ marginBottom: space.md }}>
+      <Caps style={{ marginBottom: space.xs }}>{label}</Caps>
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor={p.muted}
+        keyboardType={keyboardType}
+        maxLength={maxLength}
+        autoCapitalize="none"
+        autoCorrect={false}
+        style={{
+          color: p.light_foreground,
+          fontFamily: font.regular,
+          fontSize: size.body,
+          backgroundColor: p.darker_background,
+          borderColor: p.lighter_background,
+          borderWidth: 1,
+          borderRadius: radius.sm,
+          paddingHorizontal: space.md,
+          paddingVertical: space.md,
+        }}
+      />
+    </View>
   )
 }
 

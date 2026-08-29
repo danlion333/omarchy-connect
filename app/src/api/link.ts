@@ -589,6 +589,57 @@ class Link {
   }
 
   /**
+   * Take an address somebody typed in, having checked it is the right machine.
+   *
+   * The check is the point of the whole flow. An address entered by hand is
+   * the one road into this app that no pairing QR vouched for, so the desktop
+   * at the other end has to prove it is the desktop we already paired with, by
+   * the same pinned identity key everything else here rests on. Anything else
+   * answering is refused by name rather than stored and puzzled over later.
+   */
+  async addEndpoint(host: string, port: number): Promise<{ ok: boolean; error?: string }> {
+    const desktop = this.state.desktop
+    const client = this.client
+    if (!desktop || !client?.publicKey) return { ok: false, error: 'no desktop is paired' }
+    const address = host.trim()
+    if (!address) return { ok: false, error: 'an address is needed' }
+
+    const found = await probeHost(address, port).catch(() => null)
+    if (!found) return { ok: false, error: 'no answer from that address' }
+    if (found.publicKey !== client.publicKey) return { ok: false, error: 'that machine is not your desktop' }
+    if (client.certPin && found.certPin && found.certPin !== client.certPin) {
+      return { ok: false, error: 'that desktop answered with a different certificate' }
+    }
+
+    const endpoints = [
+      ...(desktop.endpoints ?? []).filter((entry) => !(entry.host === address && entry.port === port)),
+      { host: address, port, kind: 'manual' as const, source: 'manual' as const },
+    ]
+    await this.storeEndpoints(endpoints)
+    return { ok: true }
+  }
+
+  /** Forgets an address somebody added by hand. The desktop's own stay. */
+  async removeEndpoint(host: string, port: number) {
+    const desktop = this.state.desktop
+    if (!desktop) return
+    await this.storeEndpoints(
+      (desktop.endpoints ?? []).filter(
+        (entry) => entry.source !== 'manual' || entry.host !== host || entry.port !== port,
+      ),
+    )
+  }
+
+  private async storeEndpoints(endpoints: SavedDesktop['endpoints']) {
+    const desktop = this.state.desktop
+    if (!desktop) return
+    const next = { ...desktop, endpoints }
+    this.client?.setEndpoints(endpoints ?? [])
+    await saveDesktop(next).catch(() => {})
+    this.patch({ desktop: next })
+  }
+
+  /**
    * Wakes the desktop, then waits for it to come back.
    *
    * Nothing acknowledges a magic packet, so the only honest confirmation is
