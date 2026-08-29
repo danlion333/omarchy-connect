@@ -249,11 +249,11 @@ class Link {
       }),
       client.on('hello', (msg: Hello) => {
         this.patch({ hello: msg, ...(msg.theme ? { palette: { ...FALLBACK_PALETTE, ...msg.theme } } : {}) })
-        // Written down every time rather than once at pairing: the card can
-        // be armed, swapped or given a new subnet long after, and the copy
-        // that matters is the one taken while the desktop was still awake.
-        void this.rememberWake(msg.wake ?? null)
-        void this.rememberEndpoints(msg.endpoints ?? null)
+        // Written down every time rather than once at pairing: the wake card
+        // can be armed, swapped or given a new subnet long after, the address
+        // list changes with the desktop's tunnels, and the address this socket
+        // actually landed on is only known now.
+        void this.rememberPairing(client, msg)
         // The desktop client puts this phone's battery in the Omarchy bar.
         // Only a desktop that says it wants the report gets one.
         stopReporting?.()
@@ -428,6 +428,56 @@ class Link {
       return found
     }
     return null
+  }
+
+  /**
+   * Everything a working `hello` teaches us about the pairing, written down.
+   *
+   * One after another rather than three at once: each of these reads the
+   * stored record, changes one part of it and writes the whole thing back, so
+   * running them together would have the last writer quietly drop what the
+   * others had just decided.
+   */
+  private async rememberPairing(client: ConnectClient, msg: Hello) {
+    await this.rememberAddress(client.host, client.port)
+    await this.rememberWake(msg.wake ?? null)
+    await this.rememberEndpoints(msg.endpoints ?? null)
+  }
+
+  /**
+   * The address that just carried a working connection.
+   *
+   * `host`/`port` on the stored pairing are documented as the last address
+   * that actually worked, and until now only `relocate` ever moved them. The
+   * client picks its own address too — it orders the candidates at every dial
+   * and races the ones it is not dialling — and none of that reached the
+   * record, so the phone could sit on a tunnel address while the pairing still
+   * named the home one. That is not just untidy: it is what the Settings
+   * screen reads to say which road is in use, and what `orderCandidates` is
+   * handed as the address that last worked.
+   *
+   * Written only when it says something new. This goes to the keychain, and a
+   * reconnect that landed exactly where the record already points has nothing
+   * to add.
+   */
+  private async rememberAddress(host: string, port: number) {
+    const desktop = this.state.desktop
+    if (!desktop || !host) return
+    const moved = desktop.host !== host || desktop.port !== port
+    const endpoints = desktop.endpoints ?? []
+    const unproven = !endpoints.some((entry) => entry.host === host && entry.port === port && entry.lastGood)
+    if (!moved && !unproven) return
+    const now = Date.now()
+    const next = {
+      ...desktop,
+      host,
+      port,
+      endpoints: endpoints.map((entry) =>
+        entry.host === host && entry.port === port ? { ...entry, lastGood: now } : entry,
+      ),
+    }
+    await saveDesktop(next).catch(() => {})
+    this.patch({ desktop: next })
   }
 
   /**

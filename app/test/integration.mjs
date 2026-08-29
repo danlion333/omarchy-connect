@@ -212,6 +212,63 @@ impostor.close()
   asks.close()
 }
 
+/* ── coming home ─────────────────────────────────────────────────────── */
+
+// The bug: candidates were ordered at the moment of dialling and a live socket
+// was never dialled again, so a phone that came home over a tunnel stayed on
+// the tunnel until that socket happened to die — and the desktop reads such a
+// link as remote, which is what switches every telephony surface off. The
+// phone now asks, on a network change, whether a better road has opened, and
+// follows it only once that address has answered with the key we pinned.
+{
+  const probe = async (host, port) => {
+    try {
+      const res = await fetch(`http://${host}:${port}/api/info`, { signal: AbortSignal.timeout(2000) })
+      if (!res.ok) return null
+      const body = await res.json()
+      return { publicKey: body.publicKey ?? null, certPin: null }
+    } catch {
+      return null
+    }
+  }
+  // Two ways to the same daemon — the loopback range is all one machine, which
+  // is what lets one process stand in for a desktop with a tunnel address and
+  // a home address at once.
+  let facts = { online: true, lan: false, vpn: true }
+  const away = new ConnectClient({
+    host: '127.0.0.1',
+    port: PORT,
+    token: client.token,
+    publicKey: info.publicKey,
+    device: { id: 'integration-test', name: 'Test Phone', platform: 'android', model: 'node' },
+    network: () => facts,
+    probe,
+    endpoints: [
+      { host: '127.0.0.1', port: PORT, kind: 'tailscale', source: 'hello' },
+      { host: '127.0.0.2', port: PORT, kind: 'lan', source: 'hello' },
+    ],
+  })
+  await new Promise((resolve, reject) => {
+    away.on('hello', resolve)
+    away.on('unauthorized', (e) => reject(new Error(e)))
+    setTimeout(() => reject(new Error('remote dial timed out')), 10000)
+    away.connect()
+  })
+  check('off the wire, the tunnel address is the one dialled', away.host === '127.0.0.1', away.host)
+
+  // Wi-Fi comes back. Nothing about the socket has changed — it is open and
+  // working — and that used to be the end of it.
+  const home = new Promise((resolve, reject) => {
+    away.on('hello', resolve)
+    setTimeout(() => reject(new Error('did not move to the local address')), 10000)
+  })
+  facts = { online: true, lan: true, vpn: false }
+  away.setNetwork(facts)
+  await home
+  check('a working socket moves to the local wire when the phone comes home', away.host === '127.0.0.2', away.host)
+  away.close()
+}
+
 client.close()
 second.close()
 rogue.close()

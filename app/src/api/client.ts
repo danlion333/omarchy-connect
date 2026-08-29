@@ -352,6 +352,18 @@ const PING_TIMEOUT = 10_000
 const PROBE_STAGGER_MS = 250
 
 /**
+ * When to ask again, after a road that ought to be better did not answer.
+ *
+ * The moment a network change is reported is the worst possible moment to ask:
+ * the phone has an address and not much else — no route yet, nothing in the
+ * ARP cache, and on a real handset the first question to the desktop times out
+ * as a matter of course. Asking once and giving up therefore means never
+ * moving, which is the whole of the bug. So it is asked again, a few times,
+ * over the minute in which joining a network actually finishes.
+ */
+const UPGRADE_RETRIES = [2_000, 5_000, 15_000, 30_000]
+
+/**
  * One WebSocket to one desktop, with request/response correlation, an event
  * bus, and reconnection. The socket is the only thing that talks to the
  * daemon; screens go through `call()` and `on()`.
@@ -429,6 +441,15 @@ export class ConnectClient {
    * would be about an address nobody is going to use.
    */
   private raceToken = 0
+
+  /**
+   * Probes asking whether a better road home has opened under a live socket.
+   *
+   * Separate from `raceToken` because it answers a different question — that
+   * one races a dial that is happening, this one second-guesses a link that is
+   * already up — and because a dial has to invalidate both.
+   */
+  private upgradeToken = 0
 
   /**
    * How to ask an address whether our desktop is behind it.
@@ -550,6 +571,7 @@ export class ConnectClient {
     // Any dial makes every probe still in flight stale: they are answers
     // about a decision that has already been made.
     this.raceToken += 1
+    this.upgradeToken += 1
     this.refreshNetwork()
     // Pairing is exempt: the user is holding the phone in front of the address
     // they just typed or scanned, and refusing to try would be absurd.
@@ -632,7 +654,13 @@ export class ConnectClient {
   reconnectNow(force = false) {
     this.attempt = 0
     clearTimeout(this.retryTimer)
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+      // Nothing to reconnect, but the phone has plainly been somewhere — the
+      // app was reopened, or somebody asked for this — and that is as good a
+      // moment as a network change to ask whether the road has improved.
+      if (this.ws.readyState === WebSocket.OPEN) void this.preferBetter()
+      return
+    }
     this.connect(force)
   }
 
@@ -674,7 +702,11 @@ export class ConnectClient {
       // The phone just walked back onto a network that could carry this. The
       // ladder starts over — waiting out a rung earned on the wrong network
       // would be the delay this whole change exists to remove.
-      if (this.status === 'parked') this.reconnectNow()
+      if (this.status === 'parked') return this.reconnectNow()
+      // A socket that is working is not the same thing as a socket on the
+      // right road. Coming home is exactly the case where both are true at
+      // once, and the phone has to notice without waiting for the link to die.
+      if (this.ws?.readyState === WebSocket.OPEN) void this.preferBetter()
       return
     }
     // An open socket outranks any description of the network: if bytes are
@@ -684,6 +716,67 @@ export class ConnectClient {
     // decision is made properly on the way back through `onclose`.
     if (this.ws?.readyState === WebSocket.OPEN) return
     if (this.status !== 'idle' && this.status !== 'error') this.park()
+  }
+
+  /**
+   * Whether a probe's answer came from the desktop we paired with.
+   *
+   * The two checks anything follows an address on: the identity key must be
+   * the one pinned at pairing, and a certificate pin we are holding must not
+   * have changed under us.
+   */
+  private isOurDesktop(found: { publicKey: string | null; certPin: string | null } | null): boolean {
+    if (!found || found.publicKey !== this.publicKey) return false
+    return !(this.certPin && found.certPin && found.certPin !== this.certPin)
+  }
+
+  /**
+   * The phone moved, and the road it is on may no longer be the best one.
+   *
+   * Candidates are ordered at the moment of dialling, and a socket that is up
+   * is never dialled again — so a phone that came home over a tunnel stayed on
+   * the tunnel for as long as that socket lived, however long that was. The
+   * desktop reads such a link as remote, and everything that only belongs on
+   * the local wire — the call mirroring, the messages, hands-free — stays
+   * switched off in the same room as the desktop.
+   *
+   * A probe rather than a hang-up. The ordering says the local address *ought*
+   * to be better; only an answer from the desktop's own key at that address
+   * says it is actually there, and dropping a working link on the strength of
+   * the first is how the phone would end up with neither road.
+   */
+  private async preferBetter() {
+    const probe = this.probe
+    if (!probe || !this.publicKey) return
+    const token = (this.upgradeToken += 1)
+    for (let round = 0; ; round += 1) {
+      // Abandoned the moment the socket is no longer the one being
+      // second-guessed, or a later change has asked the question again: a link
+      // that has since dropped re-decides all of this properly on its own way
+      // back through `connect`.
+      if (token !== this.upgradeToken || this.ws?.readyState !== WebSocket.OPEN) return
+      // Asked rather than remembered, for the reason `refreshNetwork` gives:
+      // the ordering is only as good as the reading it was made on, and these
+      // rounds are spread over a minute in which the reading can change.
+      this.refreshNetwork()
+      const ordered = this.candidates()
+      const at = ordered.findIndex((entry) => entry.host === this.host && entry.port === this.port)
+      // An address that is not in the list at all is one this network has no
+      // business on, whatever the socket says — so everything reachable
+      // outranks it. Otherwise only what sorts ahead of it is worth asking.
+      const better = at === -1 ? ordered : ordered.slice(0, at)
+      if (!better.length) return
+      for (const candidate of better.slice(0, 3)) {
+        if (token !== this.upgradeToken || this.ws?.readyState !== WebSocket.OPEN) return
+        const found = await probe(candidate.host, candidate.port).catch(() => null)
+        if (token !== this.upgradeToken || this.ws?.readyState !== WebSocket.OPEN) return
+        if (!this.isOurDesktop(found)) continue
+        this.moveTo(candidate.host, candidate.port)
+        return
+      }
+      if (round >= UPGRADE_RETRIES.length) return
+      await new Promise((resolve) => setTimeout(resolve, UPGRADE_RETRIES[round]))
+    }
   }
 
   /**
@@ -738,11 +831,8 @@ export class ConnectClient {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) return
         const found = await probe(candidate.host, candidate.port).catch(() => null)
         if (token !== this.raceToken) return
-        if (!found || found.publicKey !== this.publicKey) return
-        // The same two checks `link.relocate` makes before following an
-        // address: the identity key must be the desktop we paired with, and
-        // a certificate pin we are holding must not have changed under us.
-        if (this.certPin && found.certPin && found.certPin !== this.certPin) return
+        // The same checks `link.relocate` makes before following an address.
+        if (!this.isOurDesktop(found)) return
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
         this.moveTo(candidate.host, candidate.port)
       }, PROBE_STAGGER_MS * (index + 1))
@@ -776,6 +866,8 @@ export class ConnectClient {
 
   close() {
     this.closedByUser = true
+    this.raceToken += 1
+    this.upgradeToken += 1
     clearTimeout(this.retryTimer)
     this.stopPing()
     this.failAllPending(new Error('closed'))

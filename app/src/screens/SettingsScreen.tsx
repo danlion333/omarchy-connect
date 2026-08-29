@@ -202,7 +202,9 @@ export function SettingsScreen() {
       </Card>
 
       <Body tone={palette.muted} style={{ fontSize: size.label, textAlign: 'center', marginTop: space.sm }}>
-        Omarchy Connect · everything stays on your network
+        {hello?.link?.via === 'remote'
+          ? 'Omarchy Connect · no account, no cloud · this link is coming in over your own tunnel'
+          : 'Omarchy Connect · no account, no cloud · nothing is leaving your network'}
       </Body>
     </Screen>
   )
