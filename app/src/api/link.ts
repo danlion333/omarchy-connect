@@ -16,10 +16,12 @@ import {
   forgetDesktop,
   loadAlertPrefs,
   loadDesktop,
+  mergeEndpoints,
   saveDesktop,
   type SavedDesktop,
 } from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
+import { orderCandidates } from '../lib/retry'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
@@ -206,6 +208,11 @@ class Link {
       // goes away, which is the change nothing can report a successor to. So
       // every decision to dial asks rather than remembers.
       network: networkFacts,
+      // How a candidate address is asked whether the desktop is behind it.
+      // Handed in rather than reached for, so `api/client` stays free of the
+      // native modules `api/discovery` needs.
+      probe: probeHost,
+      endpoints: saved.endpoints ?? [],
     })
     this.adopt(client)
     // Still seeded here, so the screen and the notification have an answer
@@ -246,6 +253,7 @@ class Link {
         // be armed, swapped or given a new subnet long after, and the copy
         // that matters is the one taken while the desktop was still awake.
         void this.rememberWake(msg.wake ?? null)
+        void this.rememberEndpoints(msg.endpoints ?? null)
         // The desktop client puts this phone's battery in the Omarchy bar.
         // Only a desktop that says it wants the report gets one.
         stopReporting?.()
@@ -371,7 +379,18 @@ class Link {
     this.relocatingNow = true
     this.patch({ relocating: true })
     try {
-      const found = await findDesktopByKey(client.publicKey, client.port)
+      // The addresses we already know come first, and they are asked one at a
+      // time rather than swept for: a tunnel address is a single question with
+      // a yes-or-no answer, and it can be asked from anywhere. The subnet
+      // sweep is the expensive road and the only one that can find an address
+      // nobody has told us about — so it runs second, and only while the
+      // phone is on a subnet worth sweeping. An overlay is never scanned;
+      // dialling addresses it handed us is the whole of the contract.
+      const found =
+        (await this.probeKnownEndpoints(client)) ??
+        (client.networkFacts === null || client.networkFacts.lan
+          ? await findDesktopByKey(client.publicKey, client.port)
+          : null)
       // The identity key already proves this is the right machine, but if it
       // has TLS on it must also still be the certificate we pinned — a desktop
       // that answers with a different one is not one we follow silently.
@@ -392,6 +411,46 @@ class Link {
   }
 
   /**
+   * Ask each address the desktop gave us, cheapest first, whether it is home.
+   *
+   * The two checks are the ones `relocate` has always made before following an
+   * address anywhere: the identity key must be the one pinned at pairing, and
+   * a certificate pin we hold must not have changed under us. Anything that
+   * answers with somebody else's key is not our desktop, whatever the address.
+   */
+  private async probeKnownEndpoints(client: ConnectClient) {
+    const candidates = orderCandidates(this.state.desktop?.endpoints ?? [], client.networkFacts, client.host)
+    for (const candidate of candidates) {
+      if (candidate.host === client.host && candidate.port === client.port) continue
+      const found = await probeHost(candidate.host, candidate.port).catch(() => null)
+      if (!found || found.publicKey !== client.publicKey) continue
+      if (client.certPin && found.certPin && found.certPin !== client.certPin) continue
+      return found
+    }
+    return null
+  }
+
+  /**
+   * Keeps the stored list of addresses in step with what the desktop just
+   * said about itself, the way `rememberWake` does for the wake block.
+   *
+   * An address somebody typed in survives this; see `mergeEndpoints`.
+   */
+  private async rememberEndpoints(advertised: Hello['endpoints'] | null) {
+    const desktop = this.state.desktop
+    if (!desktop || !Array.isArray(advertised)) return
+    const merged = mergeEndpoints(
+      desktop.endpoints,
+      advertised.map((entry) => ({ ...entry, source: 'hello' as const })),
+    )
+    this.client?.setEndpoints(merged)
+    if (JSON.stringify(desktop.endpoints ?? []) === JSON.stringify(merged)) return
+    const next = { ...desktop, endpoints: merged }
+    await saveDesktop(next).catch(() => {})
+    this.patch({ desktop: next })
+  }
+
+  /**
    * Keeps the stored pairing's wake block in step with what the desktop just
    * said about itself. A no-op when nothing moved — this writes to secure
    * storage, and doing that once a reconnect for no reason is a waste.
@@ -407,9 +466,19 @@ class Link {
 
   /** Keeps the foreground service's notification honest. */
   private announce(status: ConnectionStatus) {
+    // Worth saying out loud, because it is the difference between "the phone
+    // is home" and "the phone is anywhere at all and the tunnel is up", and
+    // because it explains why the telephony surfaces have gone quiet.
+    const via = this.state.hello?.link
+    const remotely =
+      via?.via === 'remote'
+        ? via.kind && via.kind !== 'overlay'
+          ? `connected over ${via.kind}`
+          : 'connected remotely'
+        : 'connected'
     const text =
       status === 'connected'
-        ? 'connected'
+        ? remotely
         : status === 'reconnecting'
           ? 'reconnecting'
           : status === 'connecting' || status === 'pairing'

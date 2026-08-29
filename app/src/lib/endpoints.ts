@@ -27,7 +27,13 @@ export type EndpointKind = 'lan' | 'tailscale' | 'wireguard' | 'zerotier' | 'net
 export type Endpoint = {
   host: string
   port: number
-  kind: EndpointKind
+  /**
+   * Widened on purpose. These are the kinds known today, but the label comes
+   * off the wire from a desktop that may be newer than this app, and a phone
+   * that refuses to store an overlay it has not heard of is a phone that
+   * cannot be reached over it. Unknown kinds are simply tried.
+   */
+  kind: EndpointKind | (string & {})
   source: 'pairing' | 'hello' | 'manual'
   /** When this address last carried a working connection. */
   lastGood?: number

@@ -9,6 +9,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ConnectClient } from '../src/api/client.ts'
+import { mergeEndpoints } from '../src/lib/endpoints.ts'
 import { magicPacket, wakeTargets } from '../src/lib/wol.ts'
 
 const PORT = Number(process.env.PORT || 8801)
@@ -75,6 +76,29 @@ check('the channel is encrypted end to end', hello.secure === true && hello.fing
 check('token is stored on the client', typeof client.token === 'string' && client.token.length === 64)
 check('capabilities arrive', Object.keys(hello.capabilities).length >= 6)
 check('theme arrives', typeof hello.theme.background === 'string', hello.theme.name)
+
+/* ── the addresses this desktop says it has ─────────────────────────────── */
+
+check('the desktop hands over the addresses it can be dialled on',
+  Array.isArray(hello.endpoints) && hello.endpoints.length > 0,
+  (hello.endpoints || []).map((e) => `${e.host} (${e.kind})`).join(', '))
+check('and says how this socket got here', hello.link?.via === 'lan', JSON.stringify(hello.link))
+check('with remote off, no tunnel is offered', !(hello.endpoints || []).some((e) => e.kind !== 'lan'))
+check('the client takes the list it was handed',
+  client.endpoints.length === 0 || client.endpoints.every((e) => typeof e.host === 'string'))
+
+// What `api/link` does with the list, without the keychain in the way: the
+// merge is the part with the rule in it, and the rule is that an address
+// somebody typed in outlives whatever the desktop advertises.
+const typed = { host: '203.0.113.9', port: 8765, kind: 'manual', source: 'manual' }
+const merged = mergeEndpoints([typed], hello.endpoints.map((e) => ({ ...e, source: 'hello' })))
+check('a typed-in address survives what the desktop advertises',
+  merged.some((e) => e.source === 'manual') && merged.length === hello.endpoints.length + 1,
+  merged.map((e) => e.kind).join(' '))
+
+client.setEndpoints(merged)
+check('and the client dials down the merged list',
+  client.endpoints.length === merged.length)
 
 // Wake-on-LAN is the one thing the phone has to be told before it needs it:
 // once the desktop is asleep there is nothing left to ask.

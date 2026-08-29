@@ -1,6 +1,13 @@
 import type { Palette } from '../theme'
 import type { WakeInfo } from '../lib/wol'
-import { parkedReason, reachable, retryDelay, type NetworkFacts } from '../lib/retry.ts'
+import {
+  isTunnelKind,
+  orderCandidates,
+  parkedReason,
+  retryDelay,
+  type Candidate,
+  type NetworkFacts,
+} from '../lib/retry.ts'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
 
 export type ConnectionStatus =
@@ -42,6 +49,13 @@ export type Hello = {
   host: HostInfo
   /** How this desktop could be woken once it is asleep. Absent on older daemons. */
   wake?: WakeInfo
+  /**
+   * Every address this desktop can be dialled on, best first. Absent on
+   * daemons that predate remote access, which is why nothing may assume it.
+   */
+  endpoints?: Candidate[]
+  /** How this particular socket got here, as the desktop sees it. */
+  link?: { via: 'lan' | 'remote'; kind: string | null }
   capabilities: Capabilities
   theme: Palette
   events: string[]
@@ -329,6 +343,15 @@ const PING_EVERY = 15_000
 const PING_TIMEOUT = 10_000
 
 /**
+ * How long a probe waits behind the one in front of it.
+ *
+ * Long enough that a desktop sitting at the address we expected is never
+ * asked a second question, short enough that a desktop that has moved is
+ * found before the first backoff rung is out.
+ */
+const PROBE_STAGGER_MS = 250
+
+/**
  * One WebSocket to one desktop, with request/response correlation, an event
  * bus, and reconnection. The socket is the only thing that talks to the
  * daemon; screens go through `call()` and `on()`.
@@ -349,6 +372,15 @@ export class ConnectClient {
   tls: boolean
   /** The certificate pin recorded at pairing time, for display and diagnosis. */
   certPin: string | null
+  /**
+   * Every address this desktop said it could be reached on.
+   *
+   * `host` above is still the one address a socket is opened to — this class
+   * is single-socket all the way down and making it otherwise would be a
+   * rewrite — but it is now chosen from this list rather than fixed at
+   * construction.
+   */
+  endpoints: Candidate[] = []
 
   private secure: SecureChannel | null = null
   private handshake: ReturnType<typeof startHandshake> | null = null
@@ -366,9 +398,9 @@ export class ConnectClient {
    * What the phone is attached to, as last reported by the native module.
    *
    * `null` until something says otherwise, which is also the permanent state
-   * anywhere the module does not exist — and `reachable` reads that as "try
-   * anyway", so nothing here changes behaviour on a platform that cannot
-   * answer the question.
+   * anywhere the module does not exist — and the candidate ordering reads
+   * that as "try anyway", so nothing here changes behaviour on a platform
+   * that cannot answer the question.
    */
   private network: NetworkFacts | null = null
   /**
@@ -388,7 +420,25 @@ export class ConnectClient {
    * ask this handset to answer a call or send a message. Leaving it out makes
    * every such request time out on the desktop with no sign anything is wrong.
    */
-  private subscriptions: string[] = ['stats', 'clipboard', 'theme', 'file', 'agent', 'phone']
+  private subscriptions: string[] = ['stats', 'clipboard', 'theme', 'file', 'agent', 'phone', 'endpoints']
+
+  /**
+   * Probes racing the socket that is being opened right now.
+   *
+   * Abandoned rather than awaited when the direct dial succeeds: the answer
+   * would be about an address nobody is going to use.
+   */
+  private raceToken = 0
+
+  /**
+   * How to ask an address whether our desktop is behind it.
+   *
+   * Injected rather than imported. `api/discovery` reaches for `expo-network`,
+   * and this file is deliberately free of native modules — it is the reason
+   * the integration suite can drive the real client against the real daemon
+   * under plain Node. A client built without one simply never races.
+   */
+  private probe: ((host: string, port: number) => Promise<{ publicKey: string | null; certPin: string | null } | null>) | null = null
 
   constructor(opts: {
     host: string
@@ -400,6 +450,8 @@ export class ConnectClient {
     certPin?: string | null
     device: DeviceIdentity
     network?: () => NetworkFacts | null
+    endpoints?: Candidate[]
+    probe?: (host: string, port: number) => Promise<{ publicKey: string | null; certPin: string | null } | null>
   }) {
     this.host = opts.host
     this.port = opts.port
@@ -410,6 +462,34 @@ export class ConnectClient {
     this.certPin = opts.certPin ?? null
     this.device = opts.device
     this.askNetwork = opts.network ?? null
+    this.endpoints = opts.endpoints ?? []
+    this.probe = opts.probe ?? null
+  }
+
+  /**
+   * A fresh list from the desktop, or from somebody adding an address by hand.
+   *
+   * Deliberately does not re-dial. A list arrives with every `hello`, which is
+   * to say while a socket is open and working, and dropping that to act on
+   * news about addresses would be the most expensive possible response to good
+   * news. The next dial reads the new list.
+   */
+  setEndpoints(endpoints: Candidate[]) {
+    this.endpoints = endpoints || []
+  }
+
+  /**
+   * The addresses worth dialling right now, best first.
+   *
+   * Falls back to the single address this client was built with, which is
+   * what every installation looked like before endpoints existed and what a
+   * desktop too old to advertise them still looks like.
+   */
+  private candidates(): Candidate[] {
+    const list = this.endpoints.length
+      ? this.endpoints
+      : [{ host: this.host, port: this.port, kind: 'lan' as const, source: 'pairing' as const }]
+    return orderCandidates(list, this.network, this.host)
   }
 
   /**
@@ -467,10 +547,28 @@ export class ConnectClient {
     this.closedByUser = false
     clearTimeout(this.retryTimer)
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+    // Any dial makes every probe still in flight stale: they are answers
+    // about a decision that has already been made.
+    this.raceToken += 1
     this.refreshNetwork()
     // Pairing is exempt: the user is holding the phone in front of the address
     // they just typed or scanned, and refusing to try would be absurd.
-    if (!force && !this.pairCode && !reachable(this.host, this.network)) return this.park()
+    if (this.pairCode || force) {
+      /* dial exactly what we were given */
+    } else {
+      const candidates = this.candidates()
+      if (candidates.length === 0) return this.park()
+      // The best candidate is dialled straight away, so the overwhelmingly
+      // common case — a desktop with one address, which is every installation
+      // that predates this — costs nothing it did not cost before. The rest
+      // are probed alongside it, and only matter if this one fails.
+      const best = candidates[0]
+      if (best.host !== this.host || best.port !== this.port) {
+        this.host = best.host
+        this.port = best.port
+      }
+      this.raceOthers(candidates.slice(1))
+    }
 
     this.setStatus(this.pairCode ? 'pairing' : this.attempt > 0 ? 'reconnecting' : 'connecting', null)
 
@@ -569,7 +667,10 @@ export class ConnectClient {
   setNetwork(facts: NetworkFacts | null) {
     this.network = facts
     if (this.closedByUser) return
-    if (reachable(this.host, facts)) {
+    // Whether *any* road is open, not whether this one is: a phone that just
+    // switched its VPN on has gained a way to the desktop even though the
+    // address it is holding is as unreachable as it was a second ago.
+    if (orderCandidates(this.endpoints.length ? this.endpoints : [{ host: this.host, port: this.port, kind: 'lan' }], facts, this.host).length > 0) {
       // The phone just walked back onto a network that could carry this. The
       // ladder starts over — waiting out a rung earned on the wrong network
       // would be the delay this whole change exists to remove.
@@ -609,7 +710,43 @@ export class ConnectClient {
 
   /** Why the phone is not trying, in the words the notification uses. */
   get parkedNote(): string {
-    return parkedReason(this.network)
+    return parkedReason(this.network, this.endpoints.some((entry) => isTunnelKind(entry.kind)))
+  }
+
+  /**
+   * Ask the addresses we are not dialling whether the desktop is there.
+   *
+   * A probe rather than a second WebSocket: racing full handshakes would mean
+   * two half-authenticated sockets and a great deal of state this class does
+   * not have room for, whereas `/api/info` is one request that answers the
+   * only question worth asking — is our desktop, the one whose key we pinned,
+   * reachable at this address. Staggered, so a desktop that is exactly where
+   * we expect it is never asked twice.
+   *
+   * The winner is not connected to here. It is moved to, through the same
+   * `moveTo` that following a new DHCP lease uses, and only once the direct
+   * dial has actually failed — a probe that comes back while the real socket
+   * is opening is news we do not need.
+   */
+  private raceOthers(others: Candidate[]) {
+    const token = this.raceToken
+    const probe = this.probe
+    if (!others.length || !this.publicKey || !probe) return
+    others.slice(0, 3).forEach((candidate, index) => {
+      setTimeout(async () => {
+        if (token !== this.raceToken) return
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return
+        const found = await probe(candidate.host, candidate.port).catch(() => null)
+        if (token !== this.raceToken) return
+        if (!found || found.publicKey !== this.publicKey) return
+        // The same two checks `link.relocate` makes before following an
+        // address: the identity key must be the desktop we paired with, and
+        // a certificate pin we are holding must not have changed under us.
+        if (this.certPin && found.certPin && found.certPin !== this.certPin) return
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+        this.moveTo(candidate.host, candidate.port)
+      }, PROBE_STAGGER_MS * (index + 1))
+    })
   }
 
   /**
@@ -629,7 +766,7 @@ export class ConnectClient {
 
   private scheduleReconnect() {
     this.refreshNetwork()
-    if (!this.pairCode && !reachable(this.host, this.network)) return this.park()
+    if (!this.pairCode && this.candidates().length === 0) return this.park()
     const delay = retryDelay(this.attempt)
     this.attempt += 1
     this.setStatus('reconnecting')
@@ -721,20 +858,34 @@ export class ConnectClient {
         this.pairCode = null
         this.emit('paired', msg)
         return
-      case 'hello.ok':
+      case 'hello.ok': {
         this.attempt = 0
         this.hello = msg as Hello
+        // This address just carried a working, authenticated connection,
+        // which is the only evidence worth ordering candidates by.
+        const now = Date.now()
+        this.endpoints = this.endpoints.map((entry) =>
+          entry.host === this.host && entry.port === this.port ? { ...entry, lastGood: now } : entry,
+        )
         this.setStatus('connected', null)
         this.emit('hello', msg)
         this.subscribe(this.subscriptions)
         this.startPing()
         return
+      }
       case 'hello.err':
         this.lastError = msg.error
         this.setStatus('error', msg.error)
         this.emit('unauthorized', msg.error)
         return
       case 'ev':
+        // The desktop's addresses changed under a live socket — a tunnel came
+        // up, the lease moved, remote access was switched. Taken here as well
+        // as persisted by `api/link`, so the next dial uses it even if the app
+        // never gets as far as writing it down.
+        if (msg.event === 'endpoints' && Array.isArray(msg.data?.endpoints)) {
+          this.setEndpoints(msg.data.endpoints.map((entry: Candidate) => ({ ...entry, source: 'hello' as const })))
+        }
         this.emit(`ev:${msg.event}`, msg.data)
         this.emit('ev', msg)
         return
