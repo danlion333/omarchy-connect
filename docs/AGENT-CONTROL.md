@@ -8,7 +8,7 @@ bottom for what that covers and what it does not.
 ```
 phone ──ws── daemon ──┬── adapter  ──► ~/.claude/projects/…/<session>.jsonl   read
                       ├── hook     ◄── claude hooks over 127.0.0.1            register + notify
-                      └── writer   ──► tmux send-keys  |  wtype + focus       write
+                      └── writer   ──► tmux · herdr · wtype + focus          write
 ```
 
 ## The shape of the problem
@@ -35,7 +35,7 @@ Only in a thin layer. The split:
 | --- | --- | --- |
 | Transport, protocol, encryption | no | already exists |
 | Session registry, state machine | no | same lifecycle everywhere |
-| Writing (tmux / wtype) | no | it is a terminal either way |
+| Writing (tmux / herdr / wtype) | no | it is a terminal either way |
 | App UI | no | a chat is a chat |
 | **Transcript location + parsing** | **yes** | every agent invented its own format |
 | **Real-time signals (hooks)** | **yes** | only some agents have them |
@@ -53,8 +53,8 @@ A session is what the phone lists and opens:
   "title": "omarchy-connect",       // basename of cwd
   "cwd": "/home/dan/Projects/omarchy-connect",
   "state": "idle" | "working" | "waiting" | "gone",
-  "writable": "tmux" | "wtype" | null,
-  "pane": "%3",                     // tmux pane, when there is one
+  "writable": "tmux" | "herdr" | "wtype" | null,
+  "pane": "%3",                     // the multiplexer's pane — "%3" tmux, "w1:p1" herdr
   "pid": 53316,
   "startedAt": 1756100000000,
   "lastActivity": 1756100420000,
@@ -205,8 +205,79 @@ To get sessions into tmux in the first place:
 
 - `omarchy-connect agent run -- claude` — starts the agent in a dedicated
   session (`oc-agent-<n>`), attached in the current terminal, so the desktop
-  experience is unchanged and the phone gets a writable pane for free.
-- Already-running tmux panes are adopted by the scan above.
+  experience is unchanged and the phone gets a writable pane for free. Inside
+  tmux — or inside a herdr pane — it wraps nothing and says so.
+- Already-running tmux panes are adopted by the scan above, and so are herdr
+  panes, by the environment their agents are carrying.
+
+### The other multiplexer: herdr
+
+tmux is not the only thing on an Omarchy desktop that owns a pty. [herdr] is a
+terminal workspace manager built for coding agents — workspaces, tabs, tiled
+panes, and a sidebar that tells a working agent from a blocked one — and a
+desktop that runs several agents at once is quite likely to be running it
+instead of tmux. Everything the tmux road claims is true here as well: the pane
+is herdr's pty, the agent is the process on the far end of it, and bytes
+written to it arrive as if they had been typed.
+
+What differs is how you ask, and one of the differences is a genuine
+improvement.
+
+**There is no command to shell out to.** herdr's server listens on a unix
+socket — `~/.config/herdr/herdr.sock`, or `sessions/<name>/herdr.sock` for a
+named session — and speaks newline-delimited JSON, one object per line:
+
+```jsonc
+{ "id": "1", "method": "pane.send_input", "params": { "pane_id": "w1:p1", "text": "…", "keys": ["enter"] } }
+{ "id": "1", "result": { "type": "ok" } }
+```
+
+The `herdr` binary is a client of that socket like anything else, so the daemon
+is one too. A call costs a connect rather than a process, and a refusal comes
+back as a code and a sentence instead of a string on stderr to be guessed at.
+
+**A pane is named rather than hunted for.** herdr puts `HERDR_ENV=1`,
+`HERDR_PANE_ID`, `HERDR_WORKSPACE_ID`, `HERDR_TAB_ID` and `HERDR_SOCKET_PATH`
+into every process it starts, so an agent is carrying the answer around in its
+own environment and `/proc/<pid>/environ` is where the daemon reads it. This is
+not merely convenient: walking the process tree, which is how a tmux pane is
+found, cannot work here at all. herdr's server is detached, so an agent's
+forebears lead to a daemon rather than to anything on a screen.
+
+**The claim in the environment is a claim, not an answer**, and this is the
+part that had to be built rather than assumed. An environment is inherited by
+everything a process starts and it outlives the pane it describes: a tmux
+*server* first started from inside a herdr pane hands `HERDR_PANE_ID` down to
+every pane it opens for the rest of its life, on other screens entirely. A
+phone acting on that would type a message into a stranger's terminal. So the
+claim is checked against the pane it names — `pane.process_info` says which
+shell herdr started there and what is running in the foreground, and the agent
+has to be one of them or a descendant of one. A server that is not running, a
+pane that has been closed and a socket left behind by a crash all fail that
+check the same way, which is the truthful answer in each case.
+
+That also settles precedence when a desktop is running both. The process-tree
+walk is the strongest claim there is — the agent *is* a descendant of that
+pane's shell — so a tmux pane found that way wins outright. herdr comes next,
+because it is checked against a live server. A tmux pane a hook merely named in
+`$TMUX_PANE` comes last, because that is the one claim nothing has verified.
+
+**One call does what tmux needs three for.** `pane.send_input` takes the text
+and the keys together, and consults the pane's live bracketed-paste mode rather
+than being told about it. Verified against a pty with `\e[?2004h` set: a
+two-line message arrived wrapped in `\e[200~`…`\e[201~` and followed by `\r`.
+So where the tmux road writes the text, waits, and writes a Return, herdr does
+it in one request — and there is no window between the two for a dropped
+connection to land in, and no half a message left in somebody's composer when
+one does. `pane.read` gives the raw screen the same way `capture-pane` does.
+
+A chord is still sent key by key with a gap between presses, even though herdr
+would take the whole array at once. The gap is the point: a prompt that has
+just redrawn itself drops the key arriving on the heels of the last one, and a
+chord that ticks two boxes and walks to a submit tab is exactly where that
+costs an answer nobody gave.
+
+[herdr]: https://herdr.dev/docs/socket-api/
 
 ### Fallback: the compositor types
 
@@ -446,6 +517,30 @@ holding the phone still had to get up.
   cropped or marked up is in the clipboard and nowhere a picker can reach it,
   and that is the common case — so it sits beside Photos and Files rather than
   under them.
+
+**Stage 2¾ — the other multiplexer. Done.** `daemon/src/agents/herdr.js`,
+`envOf` in `proc.js`, the road selection in `writer.js`, `writable: "herdr"`
+through the protocol and the app, and the herdr road into `agents.spawn` for a
+desktop that has no tmux. A desktop running herdr instead of tmux could already
+*see* its agents — discovery is `/proc` and hooks, and neither cares what owns
+the pty — but every one of them was read-only, which is the half of the feature
+that does not need a phone. Three things came out of it worth writing down:
+
+- *The environment is the correlation, and it has to be verified.* `$TMUX_PANE`
+  and `HERDR_PANE_ID` are the same kind of fact and neither is trustworthy on
+  its own; what makes the herdr one usable is that the pane can be asked who is
+  running in it. The check is a call, not a heuristic, and it is what keeps a
+  variable inherited by an unrelated process from becoming a composer pointed
+  at somebody else's terminal.
+- *A phone should not be able to tell the two roads apart*, and it nearly
+  cannot: one line in the app names the pane and the multiplexer that owns it,
+  and every other decision — is there a composer, is the raw screen one tap
+  away, does anything on the desktop move when you send — reads `inPane()`
+  rather than the name of a multiplexer. That is the whole of the app change.
+- *The socket is a better interface than a CLI*, and the atomic send is the
+  proof: `pane.send_input` is one request where tmux is `send-keys` then
+  `send-keys Enter`, and the gap between those two writes is a real gap that a
+  phone's connection can drop into.
 
 **Stage 3 — breadth.** Codex adapter, Gemini adapter, `capture-pane` raw mode
 for everything else.

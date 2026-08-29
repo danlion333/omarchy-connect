@@ -2,7 +2,7 @@ import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
 import { useConnection } from '../state/ConnectionContext'
-import type { AgentLimit, AgentLimits, AgentVitals } from '../api/client'
+import type { AgentLimit, AgentLimits, AgentSession, AgentVitals } from '../api/client'
 import { Meter } from './kit'
 import { alpha, font, radius, size, space } from '../theme'
 
@@ -224,3 +224,16 @@ export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
     </View>
   )
 }
+
+/**
+ * Is this session in a multiplexer's pane, rather than at a keyboard the
+ * desktop has to borrow?
+ *
+ * Two roads answer yes — tmux and herdr — and everything the phone decides
+ * from the answer is the same for both: the composer is a text field rather
+ * than an apology, the raw screen is one tap away, and nothing on the desktop
+ * moves when you send. Which of the two it is belongs on the one line that
+ * names the pane, and nowhere else.
+ */
+export const inPane = (session: Pick<AgentSession, 'writable'>) =>
+  session.writable === 'tmux' || session.writable === 'herdr'

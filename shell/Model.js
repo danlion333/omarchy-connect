@@ -403,7 +403,7 @@ function agents(status) {
     enabled: value.enabled === true,
     hooks: value.hooks === true,
     adapters: Array.isArray(value.adapters) ? value.adapters : [],
-    // "tmux", "wtype" or null — which road this desktop has into a terminal.
+    // "tmux", "herdr", "wtype" or null — this desktop's road into a terminal.
     // A daemon from before the writing half simply has none, which reads the
     // same as a desktop that cannot type into anything.
     write: typeof value.write === "string" ? value.write : null,
@@ -448,7 +448,8 @@ function agentsText(value, running) {
     // Whether the phone can answer or only watch is the difference between a
     // notification you can act on and one you can only read, so it is what
     // this line spends its remaining words on — counted from the sessions
-    // themselves, because a desktop with tmux still has agents outside it.
+    // themselves, because a desktop with a multiplexer still has agents
+    // running outside it.
     var answerable = value.sessions.filter(function (s) { return isObject(s) && s.writable }).length
     var how = answerable === 0 ? "reading only" : answerable === value.running ? "answerable" : answerable + " answerable"
     return (value.running === 1 ? "one session · " : value.running + " sessions · ") + how

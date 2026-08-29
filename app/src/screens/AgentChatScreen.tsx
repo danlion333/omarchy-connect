@@ -22,7 +22,7 @@ import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } 
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import { Body, Button, Caps, Chip, Meter } from '../ui/kit'
-import { StatusLine } from '../ui/agentkit'
+import { StatusLine, inPane } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
 import { ago } from '../lib/format'
@@ -210,7 +210,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         tone={stateTone}
         onBack={onBack}
         raw={raw !== null}
-        onToggleRaw={session.writable === 'tmux' ? () => setRaw((was) => (was === null ? '' : null)) : undefined}
+        onToggleRaw={inPane(session) ? () => setRaw((was) => (was === null ? '' : null)) : undefined}
         onStatus={() => setSkills(true)}
       />
 
@@ -1403,8 +1403,8 @@ function Composer({
       <View style={{ ...frame, gap: space.sm }}>
         <Caps tone={palette.orange}>The desktop will type this itself</Caps>
         <Body tone={palette.muted}>
-          This agent is not in tmux, so the desktop focuses its window and types on your behalf. It steals focus for a
-          moment, and it will interleave with anyone typing at the keyboard. Start it with{' '}
+          This agent is in no multiplexer's pane, so the desktop focuses its window and types on your behalf. It steals
+          focus for a moment, and it will interleave with anyone typing at the keyboard. Start it with{' '}
           <Text style={{ fontFamily: font.medium }}>omarchy-connect agent run</Text> to get a cleaner road.
         </Body>
         <Button label="Type anyway" icon="edit-2" tone={palette.orange} onPress={() => setAcknowledged(true)} />
@@ -1529,7 +1529,7 @@ function Composer({
         <TextInput
           value={text}
           onChangeText={setText}
-          placeholder={session.writable === 'tmux' ? 'answer the agent…' : 'the desktop will type this…'}
+          placeholder={inPane(session) ? 'answer the agent…' : 'the desktop will type this…'}
           placeholderTextColor={palette.muted}
           autoCapitalize="sentences"
           autoCorrect
@@ -1579,8 +1579,8 @@ function Composer({
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
           {shots.length
             ? 'the desktop keeps the picture and hands the agent its path'
-            : session.writable === 'tmux'
-              ? `tmux ${session.pane}`
+            : inPane(session)
+              ? `${session.writable} ${session.pane}`
               : 'the desktop types this — focus moves for a moment'}
         </Text>
       )}

@@ -5,7 +5,7 @@ import { Feather } from '@expo/vector-icons'
 import { useConnection } from '../state/ConnectionContext'
 import type { AgentCapabilities, AgentJob, AgentSession } from '../api/client'
 import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, StatusDot } from '../ui/kit'
-import { Limits, StatusLine, tokens } from '../ui/agentkit'
+import { Limits, StatusLine, inPane, tokens } from '../ui/agentkit'
 import { AgentChatScreen } from './AgentChatScreen'
 import { AgentLaunchScreen } from './AgentLaunchScreen'
 import { ago } from '../lib/format'
@@ -181,7 +181,7 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
 
       {caps?.enabled && !caps.write ? (
         <Body tone={palette.muted} style={{ textAlign: 'center' }}>
-          Reading only — that desktop has neither tmux nor wtype, so nothing there can type into a terminal
+          Reading only — that desktop has no multiplexer and no wtype, so nothing there can type into a terminal
         </Body>
       ) : null}
       {/* Background agents are read-only by their nature rather than for want
@@ -229,7 +229,7 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
             session.job ? 'background' : session.via === 'scan' ? 'found by scan' : null,
             // Which road in, because it decides whether the composer is a text
             // field or an apology — and `wtype` is worth knowing before you open it.
-            session.writable === 'tmux'
+            inPane(session)
               ? 'answerable'
               : session.writable === 'wtype'
                 ? 'answerable · steals focus'

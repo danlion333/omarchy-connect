@@ -214,11 +214,13 @@ export type AgentSession = {
   cwd: string | null
   state: AgentState
   /**
-   * How a message could be typed into this session. `tmux` is exact; `wtype`
-   * borrows the compositor's keyboard and steals focus for a moment; `null`
-   * means nothing on that desktop can reach the terminal it is running in.
+   * How a message could be typed into this session. `tmux` and `herdr` are
+   * both exact — the pane's pty belongs to the multiplexer, so the text
+   * arrives as if it had been typed; `wtype` borrows the compositor's
+   * keyboard and steals focus for a moment; `null` means nothing on that
+   * desktop can reach the terminal it is running in.
    */
-  writable: 'tmux' | 'wtype' | null
+  writable: 'tmux' | 'herdr' | 'wtype' | null
   pane: string | null
   pid: number | null
   startedAt: number
@@ -239,7 +241,7 @@ export type AgentSession = {
 }
 
 /** The best road a desktop has into a terminal, whatever a session is on. */
-export type AgentWrite = 'tmux' | 'wtype' | null
+export type AgentWrite = 'tmux' | 'herdr' | 'wtype' | null
 
 export type AgentCapabilities = {
   enabled?: boolean

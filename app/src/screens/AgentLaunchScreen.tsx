@@ -105,8 +105,10 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
         await load()
         // A resumed session and a new pane both turn up in the list behind
         // this screen, which is where the person is going next; a background
-        // agent takes a moment to register and has nothing to open yet.
-        if (res.via === 'tmux') onBack()
+        // agent takes a moment to register and has nothing to open yet. Asked
+        // the way round that keeps working: which multiplexer held the pane is
+        // the desktop's business, and there is more than one of them.
+        if (res.via !== 'background') onBack()
       } catch (err) {
         setError((err as Error).message)
       } finally {
@@ -150,7 +152,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
             <CardHeader
               icon="play"
               title="Send one off"
-              subtitle={background ? 'no terminal — it works and you read it later' : 'in a tmux pane you can type into'}
+              subtitle={background ? 'no terminal — it works and you read it later' : 'in a pane you can type into'}
             />
             {places.length ? (
               <ScrollView
@@ -213,7 +215,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
             <Body tone={palette.muted} style={{ marginTop: space.sm, fontSize: size.micro }}>
               {background
                 ? 'It detaches: nothing on the desktop shows it, and nothing can type into it. What it did is read here.'
-                : 'It opens in a detached tmux session — answerable from this phone, and there when you sit down.'}
+                : 'It opens in a pane of its own that nobody is looking at — answerable from this phone, and there when you sit down.'}
             </Body>
           </Card>
         ) : (

@@ -567,7 +567,7 @@ see **Security model**, because writing to an agent is a shell.
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
 | `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
 | `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
-| `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. tmux only. |
+| `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. Needs a multiplexer: tmux or herdr. |
 | `agents.limits` | — | `{ limits }` — how much of the plan is left, or `null`. |
 | `agents.skills` | `{ id \| cwd }` | `{ cwd, skills, commands, builtins }` — everything the agent answers to by name. |
 | `agents.command` | `{ id, name, args, submit }` | `{ ok, command, via }` — runs one, with `name` checked against that list. |
@@ -587,8 +587,8 @@ A session is what the phone lists and opens:
   "project": "omarchy-connect",     // basename of cwd, since the title no longer is
   "cwd": "/home/dan/Projects/omarchy-connect",
   "state": "idle" | "working" | "waiting" | "gone",
-  "writable": "tmux",               // "tmux" | "wtype" | null — how it can be answered
-  "pane": "%3",                     // tmux pane, when a hook reported one
+  "writable": "tmux",               // "tmux" | "herdr" | "wtype" | null — how it can be answered
+  "pane": "%3",                     // the multiplexer's pane — "%3" for tmux, "w1:p1" for herdr
   "pid": 53316,
   "startedAt": 1756100000000,
   "lastActivity": 1756100420000,
@@ -729,10 +729,13 @@ the one already open are things somebody at the desktop started; this starts a
 process that was not there before, which is a different sentence to say yes to.
 It goes down one of two roads:
 
-- **`tmux new-session -d`** — a terminal that exists but that nobody is looking
-  at, which is exactly the shape the writer wants: answerable from the phone
-  immediately, and there to attach to when you sit down. This is the default
-  and it needs tmux.
+- **A pane nobody is looking at** — `tmux new-session -d`, or a herdr workspace
+  created on a server that is already up. Exactly the shape the writer wants:
+  answerable from the phone immediately, and there to attach to when you sit
+  down. tmux is asked first only because it starts a server on demand where
+  herdr's is a thing the person at the desktop keeps running; the herdr road
+  hands the prompt over as an argument array rather than as a command line,
+  because a prompt from a phone is arbitrary text.
 - **`claude --bg`** — detached outright. No terminal, no pane, nothing that can
   ever be typed into. What it gets instead is a job the CLI tracks, which is
   what makes an agent worth starting from a phone you are about to put in your
@@ -850,9 +853,9 @@ app patches the capability in place, then lists the sessions.
 
 `capabilities.agents` is `{ enabled, adapters, read, write, keys, attach, answer, spawn }`.
 `write` is the best road this desktop has into a terminal — `"tmux"`,
-`"wtype"`, or `null` when it has neither. A session says which road *it* is on
-in its own `writable`, and the two differ often: a desktop with tmux installed
-still has agents running outside it.
+`"herdr"`, `"wtype"`, or `null` when it has none of them. A session says which
+road *it* is on in its own `writable`, and the two differ often: a desktop with
+tmux installed still has agents running outside it.
 
 #### Answering
 
@@ -865,6 +868,13 @@ compositor typing on the user's behalf. Both ship, and they are not equivalent:
   multi-line one goes through `load-buffer` + `paste-buffer -p`, because a TUI
   with bracketed paste enabled needs it to arrive as one paste rather than as a
   burst of Returns that would submit half a message. Nothing steals focus.
+- **`herdr`** is the same kind of road under a different multiplexer, and the
+  one a desktop full of coding agents is likely to be on. It is asked over a
+  unix socket rather than by running a command, and `pane.send_input` carries
+  the message and the Return that submits it in a single request — bracketing
+  the paste itself when the application has asked for bracketed paste. So
+  where tmux takes two writes with a gap between them, herdr takes one that
+  cannot half-arrive. Its pane ids look like `w1:p1`.
 - **`wtype`** is the honest fallback for an agent in a bare terminal. The
   daemon remembers what was focused, focuses the agent's window, types, and
   puts focus back. It steals focus for a moment, it interleaves with anyone
@@ -873,7 +883,9 @@ compositor typing on the user's behalf. Both ship, and they are not equivalent:
 
 `omarchy-connect agent run -- claude` starts an agent in a dedicated tmux
 session, attached in the current terminal, so the desktop experience is
-unchanged and the phone gets the good road for free.
+unchanged and the phone gets the good road for free. Inside tmux or inside a
+herdr pane it wraps nothing at all and says so: that terminal is already one
+the phone can answer.
 
 `agents.key` takes a whitelist, not a pass-through: `send-keys` would forward
 anything, and the set worth exposing to a phone is small — `Enter`, `Escape`,
@@ -1005,7 +1017,7 @@ to invoke the CLI again.
 
 The `agents` block is what the panel's switch is drawn from:
 `{ enabled, adapters, hooks, write, running, waiting, sessions }`. `write` is
-the road this desktop has into a terminal — `"tmux"`, `"wtype"` or `null` —
+the road this desktop has into a terminal — `"tmux"`, `"herdr"`, `"wtype"` or `null` —
 which is what lets the panel say whether a session can be answered or only
 watched. `adapters` and `hooks` are answers a stopped daemon still has — which agents are installed
 here, and whether their lifecycle hooks are in `~/.claude/settings.json` — so

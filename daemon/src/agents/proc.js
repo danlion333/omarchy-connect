@@ -127,3 +127,31 @@ export function ancestors(pid, depth = 12) {
   }
   return chain
 }
+
+/**
+ * A few named variables out of a process's environment, and nothing else.
+ *
+ * `/proc/<pid>/environ` is the environment a process was handed at exec, which
+ * is how a multiplexer's own bookkeeping reaches everything it starts: a
+ * herdr pane tells its shell which pane it is, and the agent that shell runs
+ * inherits that answer whether or not anybody thought to record it. Walking
+ * the process tree can find a *terminal*; only this can name the pane.
+ *
+ * The filter is not tidiness. An agent's environment is one of the more
+ * sensitive files on the desktop — it is where API keys live — and this
+ * daemon has no business holding any of it. Asking for names rather than
+ * reading the file into a map means what is not asked for is never kept.
+ */
+export function envOf(pid, names) {
+  const raw = procFile(pid, 'environ')
+  if (!raw) return null
+  const wanted = new Set(names)
+  const found = {}
+  for (const entry of raw.split('\0')) {
+    const eq = entry.indexOf('=')
+    if (eq < 1) continue
+    const key = entry.slice(0, eq)
+    if (wanted.has(key)) found[key] = entry.slice(eq + 1)
+  }
+  return found
+}

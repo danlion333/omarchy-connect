@@ -1,5 +1,6 @@
 import { has, run } from '../lib/exec.js'
 import * as hypr from '../lib/hypr.js'
+import * as herdr from './herdr.js'
 import * as tmux from './tmux.js'
 import { ADAPTERS } from './index.js'
 import { ancestors, commOf, hasTty } from './proc.js'
@@ -20,6 +21,11 @@ const AGENT_BINARIES = new Set(ADAPTERS.flatMap((adapter) => adapter.binaries))
  *   - **tmux** is the good road. The pane is tmux's own pty, so the text
  *     arrives exactly as typed, nothing steals focus, and a multi-line message
  *     can be delivered as a bracketed paste instead of a burst of Returns.
+ *   - **herdr** is the same road under a different multiplexer, and the one a
+ *     desktop full of coding agents is likely to be on. It asks over a socket
+ *     rather than by running a command, and it takes the message and its
+ *     Return in a single request — so where tmux needs two writes and a gap
+ *     between them, herdr needs one that cannot half-arrive.
  *   - **wtype** is the honest fallback. For an agent in a bare terminal the
  *     daemon already owns both halves — Hyprland focus and a keyboard — so it
  *     remembers what was focused, focuses the terminal, types, and puts focus
@@ -55,25 +61,25 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
  * outside it is a bug in the app rather than something to forward hopefully.
  */
 const KEYS = {
-  Enter: { tmux: 'Enter', wtype: ['-k', 'Return'] },
-  Escape: { tmux: 'Escape', wtype: ['-k', 'Escape'] },
-  Tab: { tmux: 'Tab', wtype: ['-k', 'Tab'] },
-  Space: { tmux: 'Space', wtype: ['-k', 'space'] },
-  BSpace: { tmux: 'BSpace', wtype: ['-k', 'BackSpace'] },
-  Up: { tmux: 'Up', wtype: ['-k', 'Up'] },
-  Down: { tmux: 'Down', wtype: ['-k', 'Down'] },
-  Left: { tmux: 'Left', wtype: ['-k', 'Left'] },
-  Right: { tmux: 'Right', wtype: ['-k', 'Right'] },
+  Enter: { tmux: 'Enter', herdr: 'enter', wtype: ['-k', 'Return'] },
+  Escape: { tmux: 'Escape', herdr: 'esc', wtype: ['-k', 'Escape'] },
+  Tab: { tmux: 'Tab', herdr: 'tab', wtype: ['-k', 'Tab'] },
+  Space: { tmux: 'Space', herdr: 'space', wtype: ['-k', 'space'] },
+  BSpace: { tmux: 'BSpace', herdr: 'backspace', wtype: ['-k', 'BackSpace'] },
+  Up: { tmux: 'Up', herdr: 'up', wtype: ['-k', 'Up'] },
+  Down: { tmux: 'Down', herdr: 'down', wtype: ['-k', 'Down'] },
+  Left: { tmux: 'Left', herdr: 'left', wtype: ['-k', 'Left'] },
+  Right: { tmux: 'Right', herdr: 'right', wtype: ['-k', 'Right'] },
   // The two interrupts. `C-c` stops a runaway tool and is the one the app puts
   // on screen; `C-d` ends the session outright, so it is reachable but never
   // offered as a button.
-  'C-c': { tmux: 'C-c', wtype: ['-M', 'ctrl', '-k', 'c', '-m', 'ctrl'] },
-  'C-d': { tmux: 'C-d', wtype: ['-M', 'ctrl', '-k', 'd', '-m', 'ctrl'] },
+  'C-c': { tmux: 'C-c', herdr: 'ctrl+c', wtype: ['-M', 'ctrl', '-k', 'c', '-m', 'ctrl'] },
+  'C-d': { tmux: 'C-d', herdr: 'ctrl+d', wtype: ['-M', 'ctrl', '-k', 'd', '-m', 'ctrl'] },
 }
 
 // A numbered permission prompt is answered by typing the digit, not by a named
 // key, so the digits are literal text on both roads.
-for (const digit of '123456789') KEYS[digit] = { tmux: null, literal: digit }
+for (const digit of '123456789') KEYS[digit] = { tmux: null, herdr: null, literal: digit }
 
 export const KEY_NAMES = Object.keys(KEYS)
 
@@ -84,13 +90,27 @@ const wtypeAvailable = () => has('wtype') && hypr.available()
 /** The best a session on this desktop could possibly be, for `capabilities`. */
 export function best() {
   if (tmux.available()) return 'tmux'
+  if (herdr.available()) return 'herdr'
   if (wtypeAvailable()) return 'wtype'
   return null
 }
 
 export function transports() {
-  return { tmux: tmux.available(), wtype: wtypeAvailable() }
+  return { tmux: tmux.available(), herdr: herdr.available(), wtype: wtypeAvailable() }
 }
+
+/**
+ * The two roads that own a pty, as against the one that borrows a keyboard.
+ *
+ * Worth a name because the difference between them is what the app draws: a
+ * multiplexer road has a pane, hands over a raw screen, and steals nothing
+ * from whoever is at the desktop. Which multiplexer it is matters to this
+ * module and to almost nothing else.
+ */
+export const isPane = (road) => road === 'tmux' || road === 'herdr'
+
+/** tmux pane ids are `%3`; herdr's are `w1:p1`. The shape says which is which. */
+const isTmuxPane = (id) => typeof id === 'string' && id.startsWith('%')
 
 /* ── matching a session to something that can be typed into ────────────── */
 
@@ -162,18 +182,47 @@ export async function survey(sessions) {
     // typed into the foreground one. Read-only is the truthful answer.
     if (!entry.pid || !hasTty(entry.pid)) {
       entry.pane = null
+      entry.socket = null
       entry.window = null
       entry.writable = null
       continue
     }
 
-    // A hook reports `$TMUX_PANE` outright, which beats any amount of walking
-    // — but a pane id outlives the pane, so it still has to exist.
-    let pane = entry.pane ? paneById.get(entry.pane) || null : null
-    if (!pane) pane = chain.map((pid) => paneByPid.get(pid)).find(Boolean) || null
+    // Walking the process tree is the strongest claim there is: the agent is
+    // a descendant of that pane's own shell, and no stale id or inherited
+    // environment can fake that. A hook's `$TMUX_PANE` is what answers when
+    // the walk comes up empty — but a pane id outlives the pane, so it still
+    // has to exist, and it is only a tmux id if it looks like one.
+    const walked = chain.map((pid) => paneByPid.get(pid)).find(Boolean) || null
+    const declared = !walked && isTmuxPane(entry.pane) ? paneById.get(entry.pane) || null : null
 
-    if (pane) {
-      entry.pane = pane.id
+    if (walked) {
+      entry.pane = walked.id
+      entry.socket = null
+      entry.window = null
+      entry.writable = 'tmux'
+      continue
+    }
+
+    // herdr next — and ahead of the pane a hook merely named, on purpose. A
+    // multiplexer started from inside another one hands its own bookkeeping
+    // down to everything it opens afterwards, in both directions, so a
+    // desktop running both has claims that are simply inherited rather than
+    // true. The walk above settles it when it can; between two claims it
+    // could not settle, the one checked against a live server beats the one
+    // taken on trust.
+    const inHerdr = herdr.available() ? await herdr.locate(entry.pid, chain) : null
+    if (inHerdr) {
+      entry.pane = inHerdr.pane
+      entry.socket = inHerdr.socket
+      entry.window = null
+      entry.writable = 'herdr'
+      continue
+    }
+    entry.socket = null
+
+    if (declared) {
+      entry.pane = declared.id
       entry.window = null
       entry.writable = 'tmux'
       continue
@@ -248,6 +297,15 @@ export async function send(entry, text, { submit = true } = {}) {
     return { via: 'tmux', pane: entry.pane, submitted: submit }
   }
 
+  // The message and the Return that submits it go in one request, which is
+  // the one thing this road does better than the tmux one: there is no window
+  // between the text and the Enter for a dropped connection to land in, and
+  // no half a message left in somebody's composer when one does.
+  if (entry.writable === 'herdr') {
+    await herdr.input(entry, { text: body, keys: submit ? ['enter'] : [] })
+    return { via: 'herdr', pane: entry.pane, submitted: submit }
+  }
+
   if (entry.writable === 'wtype') {
     await borrowFocus(entry.window, async () => {
       if (body) await wtype(['--', body])
@@ -291,6 +349,20 @@ export async function chord(entry, names, { gap = KEY_GAP_MS } = {}) {
     return { via: 'tmux', pane: entry.pane, keys: names }
   }
 
+  // One request per press rather than the whole chord in one, which herdr
+  // would take. The gap is the point: a prompt that has just redrawn itself
+  // drops the key arriving on the heels of the last one, and a chord that
+  // ticks two boxes and submits is exactly the case where that costs an
+  // answer nobody gave.
+  if (entry.writable === 'herdr') {
+    for (const [i, spec] of specs.entries()) {
+      if (i) await sleep(gap)
+      if (spec.literal) await herdr.type(entry, spec.literal)
+      else await herdr.key(entry, spec.herdr)
+    }
+    return { via: 'herdr', pane: entry.pane, keys: names }
+  }
+
   if (entry.writable === 'wtype') {
     await borrowFocus(entry.window, async () => {
       for (const [i, spec] of specs.entries()) {
@@ -311,10 +383,10 @@ export async function press(entry, name) {
 
 /** The raw screen, which only a multiplexer can hand over. */
 export async function screen(entry, lines) {
-  if (entry.writable !== 'tmux' || !entry.pane) {
-    throw new Error('the raw screen needs a tmux pane — this session is not in one')
+  if (!isPane(entry.writable) || !entry.pane) {
+    throw new Error('the raw screen needs a multiplexer pane — this session is not in one')
   }
-  return tmux.capture(entry.pane, lines)
+  return entry.writable === 'herdr' ? herdr.capture(entry, lines) : tmux.capture(entry.pane, lines)
 }
 
 /**

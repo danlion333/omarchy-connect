@@ -14,6 +14,7 @@ import * as limits from '../agents/limits.js'
 import * as jobs from '../agents/jobs.js'
 import * as tasks from '../agents/tasks.js'
 import * as tmux from '../agents/tmux.js'
+import * as herdr from '../agents/herdr.js'
 import { pair } from '../agents/pairing.js'
 import { alive, ancestors, commOf, hasTty, procFile, startedAt, startTicks } from '../agents/proc.js'
 
@@ -301,6 +302,10 @@ function upsert(fields) {
     // whether anything on this desktop can reach the session's terminal.
     writable: null,
     pane: fields.pane || null,
+    // Which herdr server that pane belongs to, when the pane is herdr's. A
+    // desktop may be running several — a default session and a named one —
+    // and a pane id means nothing without the socket it was minted on.
+    socket: null,
     // The Hyprland window that owns the terminal, when there is no pane.
     window: null,
     pid: fields.pid || null,
@@ -923,7 +928,7 @@ async function ensureWritable(entry) {
     throw new Error(
       writer.best()
         ? 'that session is not in a terminal this desktop can type into — start it with `omarchy-connect agent run`'
-        : 'this desktop has no way to type into a terminal — install tmux, or wtype for the fallback',
+        : 'this desktop has no way to type into a terminal — install tmux or herdr, or wtype for the fallback',
     )
   }
   return entry
@@ -1314,8 +1319,11 @@ function checkedResume(adapter, cwd, id) {
  *     exists but that nobody is looking at, which is exactly the shape the
  *     writer wants: the phone can type into it from the first second, and
  *     whoever is at the desktop can attach to it later. This is the default,
- *     and it needs tmux — without a multiplexer there is no terminal for a
- *     new agent to be born into that a phone could ever reach.
+ *     and it needs a multiplexer — without one there is no terminal for a new
+ *     agent to be born into that a phone could ever reach. herdr does the
+ *     same job with a workspace nobody is looking at, and is asked second
+ *     only because it also has to be *running*: tmux starts a server on
+ *     demand, and herdr's is a thing the person at the desktop keeps.
  *   - **In the background.** `claude --bg` detaches outright: no terminal, no
  *     pane, no way to type into it ever. What it gets instead is a job the CLI
  *     tracks, which is what makes an agent worth starting from a phone you are
@@ -1340,18 +1348,43 @@ async function startAgent({ adapter, cwd, resume = null, prompt = '', background
     return { via: 'background', output: res.stdout.slice(0, 400) }
   }
 
-  if (!tmux.available()) {
-    throw new Error('this desktop has no tmux, so a new agent would open in a terminal nothing can reach')
-  }
-  const session = await tmux.freeSessionName()
-  // `--` twice over: once so tmux hands the rest to the agent verbatim, and
-  // the prompt last so a prompt beginning with a dash is still a prompt.
+  // `--` so the prompt reaches the agent as a prompt: one beginning with a
+  // dash is a perfectly ordinary thing to ask for from a phone.
   const command = [...args, ...(prompt ? ['--', prompt] : [])]
-  const res = await run('tmux', ['new-session', '-d', '-s', session, '-c', cwd, '--', bin, ...command], {
-    timeout: SPAWN_TIMEOUT_MS,
-  })
-  if (!res.ok) throw new Error(res.stderr || 'tmux could not start that session')
-  return { via: 'tmux', session }
+
+  if (tmux.available()) {
+    const session = await tmux.freeSessionName()
+    // `--` a second time, this time so tmux hands the rest over verbatim.
+    const res = await run('tmux', ['new-session', '-d', '-s', session, '-c', cwd, '--', bin, ...command], {
+      timeout: SPAWN_TIMEOUT_MS,
+    })
+    if (!res.ok) throw new Error(res.stderr || 'tmux could not start that session')
+    return { via: 'tmux', session }
+  }
+
+  // A workspace of its own on a herdr server that is already up. The arguments
+  // are handed over as an array rather than as a command line, which matters
+  // more here than anywhere else in this file: a prompt from a phone is
+  // arbitrary text, and arbitrary text spliced into a shell command is how a
+  // chat box becomes a shell. `agent.start` also waits until herdr has seen
+  // the agent come up, so a launch that fails says so instead of leaving a
+  // session that never appears.
+  const socket = herdr.available() ? await herdr.liveSocket() : null
+  if (socket) {
+    const started = await herdr.startAgent(socket, {
+      kind: adapter.id,
+      cwd,
+      args: command,
+      timeout: SPAWN_TIMEOUT_MS,
+    })
+    return { via: 'herdr', ...started }
+  }
+
+  throw new Error(
+    herdr.available()
+      ? 'this desktop has no tmux and no herdr server running, so a new agent would open in a terminal nothing can reach'
+      : 'this desktop has no tmux, so a new agent would open in a terminal nothing can reach',
+  )
 }
 
 /* ── what the desktop is spending ──────────────────────────────────────── */
@@ -1646,8 +1679,9 @@ export default {
      *
      * The transcript is the better read for a conversation, but a permission
      * prompt is drawn on screen and never written to disk — so the options a
-     * phone is about to answer exist only here. tmux only: nothing else on
-     * this desktop can hand over somebody else's screen.
+     * phone is about to answer exist only here. A multiplexer only — tmux or
+     * herdr: nothing else on this desktop owns somebody else's screen well
+     * enough to hand it over.
      */
     async 'agents.screen'({ id, lines = 60 } = {}) {
       requireEnabled()

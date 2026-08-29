@@ -1364,9 +1364,19 @@ async function cmdAgentRun(args) {
     process.exit(await wait(spawn(command[0], command.slice(1), inherit)))
   }
 
+  // herdr owns its panes' ptys exactly as tmux owns its own, and it tells
+  // everything it starts which pane it is in — so a terminal here needs no
+  // wrapper either, and nesting a multiplexer inside one would be worse than
+  // doing nothing.
+  if (process.env.HERDR_ENV === '1') {
+    console.log(dim('  already inside a herdr pane — this one is writable as it is\n'))
+    process.exit(await wait(spawn(command[0], command.slice(1), inherit)))
+  }
+
   if (!agentTmux.available()) {
     log.warn('tmux is not installed — starting the agent anyway, but a phone will only be able to read it')
-    console.log(dim('  pacman -S tmux   to make sessions started this way answerable\n'))
+    console.log(dim('  pacman -S tmux   to make sessions started this way answerable'))
+    console.log(dim('  or run this from a herdr pane, which a phone can answer just as well\n'))
     process.exit(await wait(spawn(command[0], command.slice(1), inherit)))
   }
 

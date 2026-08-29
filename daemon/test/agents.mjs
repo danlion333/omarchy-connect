@@ -281,6 +281,34 @@ const hasTmux = (() => {
 const tmux = (args) =>
   execFileSync('tmux', args, { env: { ...process.env, TMUX_TMPDIR: sandbox }, encoding: 'utf8' }).trim()
 
+/**
+ * The other multiplexer, tested the same way and for the same reason: a road
+ * that carries bytes into somebody else's pty is only worth believing when a
+ * real pty has been asked whether they arrived.
+ */
+const hasHerdr = (() => {
+  try {
+    execFileSync('which', ['herdr'], { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
+})()
+
+// A server of our own, in the sandbox, so the suite never reaches into the
+// session the person running it has open — and never writes over the layout
+// that session would restore from. `XDG_CONFIG_HOME` moves the whole of it:
+// the socket, the log and the saved state all follow it, which a socket path
+// on its own does not. The sandbox stays under `/tmp` for a reason too — a
+// unix socket name is 108 bytes and no more.
+const herdrEnv = { ...process.env, XDG_CONFIG_HOME: sandbox }
+const herdrSocket = path.join(sandbox, 'herdr', 'herdr.sock')
+const herdr = (args) => {
+  const out = execFileSync('herdr', args, { env: herdrEnv, encoding: 'utf8' }).trim()
+  // Not every command answers: `pane run` does the thing and says nothing.
+  return out ? JSON.parse(out).result : null
+}
+
 const settle = (ms = 350) => new Promise((r) => setTimeout(r, ms))
 const waitFor = async (events, predicate, ms = 4000) => {
   const until = Date.now() + ms
@@ -1058,6 +1086,94 @@ if (!hasTmux) {
   // be unreachable: it lived behind a scan that threw on its first line, so a
   // desktop accumulated every agent it had ever seen and dropped none of them.
   check('an agent whose process died stops being listed', !orphaned, String(orphaned?.state))
+}
+
+/* ── answering, through the other multiplexer ──────────────────────────── */
+
+// herdr owns its panes' ptys exactly as tmux owns its own, so the road is the
+// same road and this is the same test: a real server, a real pane, and the
+// bytes counted at the far end. What differs is how you ask — a socket rather
+// than a command — and one thing that had to be proven rather than assumed,
+// which is that a pane named in an environment is not a pane a process is in.
+if (!hasHerdr) {
+  console.log('  skip  herdr is not installed — the second writing road was not exercised')
+} else {
+  const server = spawn('herdr', ['server'], { env: herdrEnv, stdio: 'ignore' })
+  for (let i = 0; i < 80 && !fs.existsSync(herdrSocket); i += 1) await settle(100)
+
+  const received = path.join(sandbox, 'herdr-pane.txt')
+  const pane = herdr(['workspace', 'create', '--cwd', sandbox, '--label', 'oc-test']).root_pane.pane_id
+  herdr(['pane', 'run', pane, `cat > ${received}`])
+  await settle(500)
+
+  const shellPid = herdr(['pane', 'process-info', '--pane', pane]).process_info.shell_pid
+  // The agent is a child of the shell herdr started in the pane — here, a
+  // `cat`, which is as much as the writer ever needs to know about it.
+  const agentPid = Number(execFileSync('pgrep', ['-P', String(shellPid)], { encoding: 'utf8' }).trim().split('\n')[0])
+
+  await hook('UserPromptSubmit', { pid: agentPid })
+  const found = (await req('agents.list')).sessions.find((s) => s.id === session.id)
+  check('a session inside a herdr pane is answerable', found?.writable === 'herdr', `${found?.writable} ${found?.pane}`)
+  check('and it names the pane herdr gave it', found?.pane === pane, `${found?.pane} vs ${pane}`)
+
+  const sent = await req('agents.send', { id: session.id, text: 'так, продовжуй' })
+  check('agents.send reports the herdr road', sent.ok === true && sent.via === 'herdr', JSON.stringify(sent))
+
+  // The same three shapes the tmux road had to survive: text that is not
+  // ASCII, a message with a newline in it, and a digit answering a prompt.
+  await req('agents.send', { id: session.id, text: 'line one\nline two', submit: true })
+  await req('agents.key', { id: session.id, key: '2' })
+  await req('agents.key', { id: session.id, key: 'Enter' })
+  await settle(500)
+
+  const arrived = fs.readFileSync(received, 'utf8')
+  check('the text reaches the far end of a herdr pty', arrived.includes('так, продовжуй'), JSON.stringify(arrived))
+  check('utf-8 survives the socket', arrived.split('\n')[0] === 'так, продовжуй')
+  check('a multi-line message stays one message here too', arrived.includes('line one\nline two'), JSON.stringify(arrived))
+  check('a digit answers a numbered prompt', arrived.split('\n').includes('2'), JSON.stringify(arrived))
+
+  const screen = await req('agents.screen', { id: session.id, lines: 20 })
+  check('herdr hands over the raw screen as well', screen.screen.includes('line two'), screen.screen.split('\n').slice(-1)[0])
+
+  /* ── the claim that has to be checked ────────────────────────────────── */
+
+  // An environment is inherited by everything a process starts and it outlives
+  // the pane it describes, so `HERDR_PANE_ID` is a claim rather than an
+  // answer. If it were taken at face value a message meant for one agent would
+  // be typed into a stranger's terminal — which is the whole reason the claim
+  // is checked against the pane's own process list before anybody writes.
+  {
+    const herdrMod = await import('../src/agents/herdr.js')
+    const impostor = spawn('sleep', ['30'], {
+      env: { ...process.env, HERDR_PANE_ID: pane, HERDR_SOCKET_PATH: herdrSocket },
+      stdio: 'ignore',
+    })
+    await settle(250)
+    check('a pane named in an inherited environment is read', herdrMod.claimed(impostor.pid)?.pane === pane)
+    check(
+      'but a process that is not in that pane is not offered it',
+      (await herdrMod.locate(impostor.pid, [impostor.pid])) === null,
+    )
+    check(
+      'while the agent that really is in it keeps it',
+      (await herdrMod.locate(agentPid, [agentPid, shellPid]))?.pane === pane,
+    )
+    impostor.kill()
+  }
+
+  // A server that has gone takes its panes with it, and every composer that
+  // was pointed at one. Nothing on this desktop can type into a pty that no
+  // longer exists, and a phone must be told so rather than shown a text field.
+  try {
+    herdr(['server', 'stop'])
+  } catch {
+    server.kill()
+  }
+  await settle(500)
+  await req('agents.list')
+  const stranded = (await req('agents.list')).sessions.find((s) => s.id === session.id)
+  check('a herdr server that has gone takes the composer with it', !stranded || stranded.writable !== 'herdr', String(stranded?.writable))
+  server.kill()
 }
 
 // The rest of this file is about a live session again, so announce one: the

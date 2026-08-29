@@ -659,12 +659,16 @@ for it rather than typing into whichever window happens to be up the process
 tree.
 
 Answering is the harder half, because nothing may push bytes into a terminal
-another process owns. There are two roads and the app tells you which one a
+another process owns. There are three roads and the app tells you which one a
 session is on. Inside **tmux** the pane is tmux's own pty, so a message arrives
 exactly as typed and nothing on the desktop moves — `agent run` exists to put
 an agent there, attached in the terminal you started it from, so the desktop
-experience is unchanged. Outside tmux the daemon falls back to **the
-compositor typing on your behalf**: it remembers what was focused, focuses the
+experience is unchanged. Inside **herdr** the same is true and rather more
+neatly: the daemon asks over herdr's own socket, and the message and the
+Return that submits it travel in one request that cannot half-arrive. A pane
+there needs no wrapper at all, because herdr tells everything it starts which
+pane it is in. Outside either, the daemon falls back to **the compositor
+typing on your behalf**: it remembers what was focused, focuses the
 agent's window, types, and puts focus back. That one steals focus for a moment
 and will interleave with anyone at the keyboard, so the app says so before the
 first send. Either way the useful answer to a stopped agent is usually a single
@@ -882,7 +886,7 @@ daemon/         Node.js daemon — one dependency (ws)
   src/agents/   one adapter per coding agent — where its transcript lives and
                 how to read a line of it — plus the lifecycle hooks the desktop
                 installs into Claude Code's own settings, and the writer that
-                types back through tmux or the compositor
+                types back through tmux, herdr or the compositor
   src/lib/      …including the three Bluetooth clients: hands-free call control
                 over PipeWire, the BlueZ side that raises that link for a call
                 and puts it down after, and an iPhone's notifications over
