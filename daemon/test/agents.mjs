@@ -27,6 +27,28 @@ const projects = path.join(sandbox, '.claude', 'projects', SLUG)
 fs.mkdirSync(projects, { recursive: true })
 const transcript = path.join(projects, `${SESSION}.jsonl`)
 
+/**
+ * This process's environment, with every trace of herdr taken out of it.
+ *
+ * The suite is very likely being run from inside a herdr pane — for a change
+ * about herdr that is the obvious place to run it from — and herdr puts
+ * `HERDR_SOCKET_PATH` and friends into everything a pane starts. The variable
+ * outranks `XDG_CONFIG_HOME` in herdr's own CLI, so a sandbox that only moved
+ * the config directory was no sandbox at all: the suite created workspaces on
+ * the live server, raised a second server against the real socket, and ended
+ * by running `server stop` on it — killing the pane it was running in, and
+ * taking the rest of the run with it.
+ *
+ * So the sandbox starts by forgetting, and everything spawned from here — the
+ * daemon, the CLI, herdr itself — is given this rather than `process.env`.
+ * What is left of the inheritance is `/proc`: this process was started with
+ * those variables and its own `environ` still says so, which is why the pid
+ * announced as an agent below is a child's rather than this one's.
+ */
+const cleanEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) => !key.startsWith('HERDR_')),
+)
+
 const line = (obj) => JSON.stringify(obj) + '\n'
 const at = '2026-08-25T19:24:33.475Z'
 
@@ -148,7 +170,7 @@ async function startDaemon(enabled) {
   writeConfig(enabled)
   daemon = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'start', '--port', String(PORT)], {
     env: {
-      ...process.env,
+      ...cleanEnv,
       HOME: sandbox,
       XDG_CONFIG_HOME: sandbox,
       // A picture on its way to an agent lands in the cache; this suite is not
@@ -181,8 +203,26 @@ async function stopDaemon() {
   daemon = null
 }
 
+/**
+ * A live process for a hook to point at, and deliberately not this one.
+ *
+ * `cleanEnv` cannot reach backwards: `/proc/<pid>/environ` holds the
+ * environment a process was *started* with, so this runner goes on naming a
+ * real pane on the real herdr server for as long as it lives, whatever it does
+ * to `process.env`. A daemon told that this pid is an agent would check that
+ * claim, find it true, and hand a phone a composer onto the terminal the suite
+ * is running in. So the pid announced as an agent belongs to a child started
+ * without any of it — a node process, like the runner, and one that outlasts
+ * the suite by a wide margin.
+ */
+const standIn = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 900000)'], {
+  env: cleanEnv,
+  stdio: 'ignore',
+})
+
 process.on('exit', () => {
   daemon?.kill('SIGTERM')
+  standIn.kill()
   fs.rmSync(sandbox, { recursive: true, force: true })
 })
 
@@ -297,11 +337,13 @@ const hasHerdr = (() => {
 
 // A server of our own, in the sandbox, so the suite never reaches into the
 // session the person running it has open — and never writes over the layout
-// that session would restore from. `XDG_CONFIG_HOME` moves the whole of it:
-// the socket, the log and the saved state all follow it, which a socket path
-// on its own does not. The sandbox stays under `/tmp` for a reason too — a
-// unix socket name is 108 bytes and no more.
-const herdrEnv = { ...process.env, XDG_CONFIG_HOME: sandbox }
+// that session would restore from. Both halves are needed. `XDG_CONFIG_HOME`
+// moves the whole of it: the socket, the log and the saved state all follow
+// it, which a socket path on its own does not. And `cleanEnv` is what makes
+// that stick — an inherited `HERDR_SOCKET_PATH` outranks it and would point
+// every command below back at the real server. The sandbox stays under `/tmp`
+// for a reason too: a unix socket name is 108 bytes and no more.
+const herdrEnv = { ...cleanEnv, XDG_CONFIG_HOME: sandbox }
 const herdrSocket = path.join(sandbox, 'herdr', 'herdr.sock')
 const herdr = (args) => {
   const out = execFileSync('herdr', args, { env: herdrEnv, encoding: 'utf8' }).trim()
@@ -521,7 +563,7 @@ await startDaemon(false)
   )
   const allowed = await req('agents.list')
   check('the same link can read agents now — no reconnect', Array.isArray(allowed.sessions))
-  const accepted = await hook('SessionStart', { ppid: process.pid })
+  const accepted = await hook('SessionStart', { ppid: standIn.pid })
   check('a hook lands once the switch is on', accepted.ok === true, accepted.id)
   check('the status file tells the panel it is on', readStatus().agents.enabled === true)
   check('the decision survives a restart', readStoredConfig().agents?.enabled === true)
@@ -1133,7 +1175,11 @@ if (!hasHerdr) {
   check('a digit answers a numbered prompt', arrived.split('\n').includes('2'), JSON.stringify(arrived))
 
   const screen = await req('agents.screen', { id: session.id, lines: 20 })
+  // Twenty lines of terminal, not twenty rows counted up from the bottom of a
+  // window that is mostly blank — which is what herdr's own count means, and
+  // what used to answer a freshly started agent with an empty screen.
   check('herdr hands over the raw screen as well', screen.screen.includes('line two'), screen.screen.split('\n').slice(-1)[0])
+  check('and no more of it than was asked for', screen.screen.split('\n').length <= 20, String(screen.screen.split('\n').length))
 
   /* ── the claim that has to be checked ────────────────────────────────── */
 
@@ -1145,7 +1191,7 @@ if (!hasHerdr) {
   {
     const herdrMod = await import('../src/agents/herdr.js')
     const impostor = spawn('sleep', ['30'], {
-      env: { ...process.env, HERDR_PANE_ID: pane, HERDR_SOCKET_PATH: herdrSocket },
+      env: { ...cleanEnv, HERDR_PANE_ID: pane, HERDR_SOCKET_PATH: herdrSocket },
       stdio: 'ignore',
     })
     await settle(250)
@@ -1177,9 +1223,10 @@ if (!hasHerdr) {
 }
 
 // The rest of this file is about a live session again, so announce one: the
-// hook road is how a real agent says which process it is, and this test runner
-// is a process that is certainly running.
-await hook('UserPromptSubmit', { pid: process.pid })
+// hook road is how a real agent says which process it is, and the stand-in is
+// a process that is certainly running — and, unlike this runner, one whose
+// environment names no terminal anybody is sitting at.
+await hook('UserPromptSubmit', { pid: standIn.pid })
 
 /* ── a question the transcript does not have yet ───────────────────────── */
 
@@ -1325,7 +1372,7 @@ await stopDaemon()
   // time out instead of being told 404 — which is a different bug entirely.
   const cli = await new Promise((resolve) => {
     const child = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'agent', 'enable'], {
-      env: { ...process.env, HOME: sandbox, XDG_CONFIG_HOME: sandbox, OMARCHY_CONNECT_STATE: path.join(sandbox, 'state') },
+      env: { ...cleanEnv, HOME: sandbox, XDG_CONFIG_HOME: sandbox, OMARCHY_CONNECT_STATE: path.join(sandbox, 'state') },
     })
     let err = ''
     child.stderr.setEncoding('utf8')

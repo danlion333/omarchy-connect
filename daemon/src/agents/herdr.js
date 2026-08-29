@@ -204,6 +204,21 @@ export const type = (target, text) => input(target, { text })
 export const key = (target, name) => input(target, { keys: [name] })
 
 /**
+ * How tall the pane is, or nothing if the server will not say.
+ *
+ * Only wanted for the arithmetic in `capture`, and a failure there is not
+ * worth failing the capture over — a zero simply asks for fewer rows.
+ */
+async function viewportRows(target) {
+  try {
+    const panes = (await call(target.socket, 'pane.list'))?.panes || []
+    return Number(panes.find((pane) => pane.pane_id === target.pane)?.scroll?.viewport_rows) || 0
+  } catch {
+    return 0
+  }
+}
+
+/**
  * What the terminal actually shows.
  *
  * The same reason tmux's `capture-pane` is here: a permission prompt is drawn
@@ -213,16 +228,26 @@ export const key = (target, name) => input(target, { keys: [name] })
  * monospace block wants — `recent-unwrapped` is for reading logs back, not for
  * showing somebody their terminal. Colour is dropped, because a phone
  * rendering escape sequences as text is worse than one without them.
+ *
+ * The counting is ours because herdr's is not the one a phone means. `lines`
+ * there is rows from the bottom of the *grid*, blank ones included, so a pane
+ * holding five lines of text in a forty-row window answers a request for
+ * twenty with twenty blank rows — nothing at all. That is not an edge case: it
+ * is every agent that has only just started, and the phone was shown an empty
+ * screen for it. So the window asked for is the pane's own height on top of
+ * what was wanted, and the last `count` lines of what comes back is the answer
+ * — which is what `capture-pane -S` means on the tmux road.
  */
 export async function capture(target, lines = 60) {
   const count = Math.min(Math.max(Number(lines) || 60, 5), 400)
   const res = await call(target.socket, 'pane.read', {
     pane_id: target.pane,
     source: 'recent',
-    lines: count,
+    lines: count + (await viewportRows(target)),
     strip_ansi: true,
   })
-  return String(res?.read?.text || '').replace(/\s+$/, '')
+  const text = String(res?.read?.text || '').replace(/\s+$/, '')
+  return text ? text.split('\n').slice(-count).join('\n') : ''
 }
 
 /* ── starting one ──────────────────────────────────────────────────────── */
