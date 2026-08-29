@@ -191,6 +191,21 @@ const rank = (a, b) => {
 export async function detect({ force = false } = {}) {
   if (!force && cache && Date.now() - cache.at < CACHE_MS) return cache
 
+  // A test seam, and the only way to exercise a remote link on a machine with
+  // no tunnel on it. It can only ever make an address *more* restricted — a
+  // socket classed as remote is one telephony is taken away from and the
+  // config gate applies to — so there is nothing here to be talked into.
+  const pretend = process.env.OMARCHY_CONNECT_FAKE_OVERLAY
+  if (pretend) {
+    cache = {
+      at: Date.now(),
+      addresses: pretend.split(',').map((address) => ({ address: address.trim(), iface: 'fake0', kind: 'tailscale' })),
+      dnsName: 'fake.example.ts.net',
+      keyExpiry: null,
+    }
+    return cache
+  }
+
   const interfaces = fromInterfaces()
   const byAddress = new Map(interfaces.map((entry) => [entry.address, entry]))
 

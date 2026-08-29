@@ -22,9 +22,19 @@ export function buildMethodTable() {
   return table
 }
 
-export function collectCapabilities() {
+/**
+ * What this desktop can do for the phone on the other end of one particular
+ * socket.
+ *
+ * `ctx` describes that socket rather than the machine — today only `remote`,
+ * which is true when the phone reached us down a tunnel rather than over the
+ * wire. Only the phone plugin reads it; the rest answer the same for
+ * everybody, because a tunnel changes nothing about whether `wpctl` is
+ * installed.
+ */
+export function collectCapabilities(ctx = {}) {
   const caps = {}
-  for (const plugin of plugins) caps[plugin.name] = plugin.capabilities?.() ?? {}
+  for (const plugin of plugins) caps[plugin.name] = plugin.capabilities?.(ctx) ?? {}
   return caps
 }
 

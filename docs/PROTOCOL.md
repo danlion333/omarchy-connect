@@ -985,6 +985,65 @@ Hyprland 0.56 replaced the flat dispatcher names (`workspace 3`) with a Lua API
 (`hl.dsp.focus{workspace="3"}`). The daemon asks the compositor which one it
 speaks and sends the matching spelling, so both generations work.
 
+## Remote access
+
+Off by default. With it off this daemon is what it has always been: a machine
+on one subnet, advertising one address, answering phones that can reach it
+there.
+
+With it on, the desktop advertises the addresses its overlay networks gave it
+alongside the LAN one (see `endpoints` under **Handshake**) and answers sockets
+that arrive over them. It brings up no tunnel of its own — Tailscale,
+Headscale, WireGuard, ZeroTier, NetBird and the rest are the user's to run, and
+all this daemon does is notice and report what they handed the machine. There
+is nothing to configure but the switch: `omarchy-connect remote on`, or the
+toggle on the desktop panel.
+
+Nothing about identity changes. The phone pins the desktop's X25519 key at
+pairing and, under TLS, its certificate too; those pins are what make a socket
+trustworthy, and they are indifferent to which address it came in on. The
+daemon accordingly never decides who is a stranger by IP range — the mistake
+that has broken this in project after project — and the address matching it
+does do is against its *own* addresses, to answer "which of my interfaces did
+this arrive on", never "does this peer look like a friend".
+
+### What a remote link cannot do
+
+Every telephony capability is reported absent to a socket the desktop classed
+as `remote`, and every `phone.*` method refuses it with `not available on a
+remote link`. The `phone` event channel is not fanned out to it at all.
+
+That covers mirroring, sending, call history, answering and rejecting, the
+hands-free profile and the iPhone bridge. It is deliberate rather than
+incidental: hands-free is a Bluetooth link to a handset in this room, a
+ringing card is a call someone here can pick up, and mirroring a text message
+to a desktop the phone is nowhere near is carrying private mail down a tunnel
+for nobody to read.
+
+A phone on a remote link also does not count as present, so the hands-free
+policy `autoConnect: "presence"` will not raise the Bluetooth profile for it.
+
+### Refusals
+
+A `hello` on a remote socket while the switch is off is answered with
+`{ "t": "hello.err", "error": "remote access is off on this desktop — run \`omarchy-connect remote on\` there" }`
+and close code `4006` — named rather than silent, because a phone dialling an
+address it was legitimately handed deserves to know why the desktop stopped
+answering. Switching remote off on a running daemon closes any remote socket
+already open with the same code, and pushes an `endpoints` event carrying the
+LAN-only list.
+
+### Firewall
+
+The local rule Omarchy suggests is scoped to the desktop's own subnet, and a
+phone arriving through a tunnel is not on it. `omarchy-connect remote` prints a
+second rule scoped to the tunnel interface instead of an address range, which
+stays correct when the overlay's addressing changes:
+
+```bash
+sudo ufw allow in on tailscale0 to any port 8765 proto tcp comment 'omarchy-connect remote'
+```
+
 ## Loopback endpoints
 
 These answer only on `127.0.0.1`, because they are the CLI, a coding agent's
@@ -1001,6 +1060,7 @@ machine with.
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
+| `POST /api/remote/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for being reachable from off its own network. Answers `{ ok, remote }`. |
 
 `POST /api/agent/hook` is the bridge between a coding agent and this daemon:
 `omarchy-connect agent hook` reads the agent's JSON on stdin, adds what only

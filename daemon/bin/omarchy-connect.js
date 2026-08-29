@@ -19,6 +19,7 @@ import * as tls from '../src/lib/tls.js'
 import { run, has, spawn, spawnDetached } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import * as sys from '../src/lib/sys.js'
+import * as overlay from '../src/lib/overlay.js'
 import { INBOX } from '../src/plugins/share.js'
 import { detected as detectedAgents } from '../src/agents/index.js'
 import * as agentHooks from '../src/agents/hooks.js'
@@ -265,10 +266,18 @@ async function cmdPair(args) {
     pin: cert?.pin ?? null,
   })
   const qr = await renderQr(url)
+  // The QR always carries the LAN address, because that is the one somebody
+  // scanning a screen in this room is on. The remote address is printed
+  // beside it for the other case — a phone that will never be on this network
+  // can be typed into the app's manual pane, which has never cared what an
+  // address looks like.
+  const found = cfg.remote?.enabled === true ? await overlay.detect({ force: true }) : null
+  const remote = found?.addresses[0] || null
   console.log(
     pairingScreen(qr, [
       ['code', code],
       ['address', `${cert ? 'https' : 'http'}://${ip}:${cfg.port}`],
+      ...(remote ? [['remote', `${remote.address}:${cfg.port} (${remote.kind})`]] : []),
       ['fingerprint', fingerprint(key)],
       ...(cert ? [['tls pin', cert.pin]] : []),
       ['expires', `${Math.round((expiresAt - Date.now()) / 1000)}s`],
@@ -1386,6 +1395,115 @@ async function cmdAgentRun(args) {
   process.exit(await wait(spawn('tmux', ['new-session', '-s', name, '--', ...command], inherit)))
 }
 
+/**
+ * The switch that lets a phone in from off this network, and the one screen
+ * that says whether there is anything for it to come in over.
+ *
+ * A tunnel that is up is not the same as a tunnel that works: an expired node
+ * key leaves the interface exactly where it was and takes the machine off the
+ * tailnet anyway, and a firewall scoped to the local subnet drops a peer that
+ * is not on it. Both are silent from the phone's end — it simply stops
+ * answering — so both are said here.
+ */
+async function cmdRemote(args) {
+  const action = String(args._[0] || 'status').toLowerCase()
+  const cfg = loadConfig()
+
+  if (action === 'on' || action === 'enable' || action === 'off' || action === 'disable') {
+    const on = action === 'on' || action === 'enable'
+    const res = await daemonRequest('/api/remote/control', { method: 'POST', body: { op: on ? 'enable' : 'disable' } })
+    // As with agent control: no daemon, or one older than this endpoint, is
+    // not a failure — the config is what the next start reads, so write it.
+    const applied = res.ok === true
+    if (!applied && res.status && res.status !== 404) {
+      log.error(res.data?.error || `could not turn remote access ${on ? 'on' : 'off'}`)
+      process.exit(1)
+    }
+    if (!applied) saveConfig({ ...cfg, remote: { ...(cfg.remote || {}), enabled: on } })
+
+    if (on) {
+      log.ok('remote access on')
+      const found = await overlay.detect({ force: true })
+      if (found.addresses.length === 0) {
+        console.log(
+          dim(
+            '\n  nothing to reach this desktop over yet. Bring up a tunnel it can\n' +
+              '  share with the phone — tailscale up is the short road — and the\n' +
+              '  address will be handed over on the phone\'s next connection.\n',
+          ),
+        )
+      } else {
+        console.log(
+          dim(
+            '\n  the phone can now reach this desktop from anywhere the tunnel\n' +
+              '  reaches. Calls and messages stay here: telephony is switched off\n' +
+              '  on a remote link, whichever way the phone asks.\n',
+          ),
+        )
+      }
+    } else {
+      log.ok('remote access off')
+      console.log(dim('\n  back to this network only — any remote phone has been hung up on\n'))
+    }
+    if (!applied && (state.read()?.running || res.status)) {
+      log.warn('the running daemon did not take it — restart it: systemctl --user restart omarchy-connect')
+    }
+    return
+  }
+
+  if (action !== 'status') {
+    log.error(`unknown remote action: ${action}`)
+    console.log(dim('\n  omarchy-connect remote [status|on|off]\n'))
+    process.exit(1)
+  }
+
+  const found = await overlay.detect({ force: true })
+  const first = found.addresses[0] || null
+  const enabled = cfg.remote?.enabled === true
+  console.log(
+    card('REMOTE ACCESS', [
+      ['state', enabled ? 'on' : 'off'],
+      ['over', first ? `${first.kind}${first.iface ? ` (${first.iface})` : ''}` : 'no tunnel up'],
+      ['address', first ? `${first.address}:${cfg.port}` : '—'],
+      ['name', found.dnsName ?? '—'],
+    ]),
+  )
+
+  if (found.addresses.length > 1) {
+    console.log(dim('\n  also reachable at:'))
+    for (const entry of found.addresses.slice(1)) console.log(dim(`    ${entry.address}  ${entry.kind}`))
+    console.log('')
+  }
+
+  if (!enabled) {
+    console.log(dim('\n  omarchy-connect remote on   to let the phone in from off this network\n'))
+    return
+  }
+  if (!first) {
+    console.log(dim('\n  remote access is on, but there is no tunnel for it to use yet\n'))
+    return
+  }
+
+  // Two weeks is enough notice to re-authenticate without it being nagging;
+  // a key that has already gone is the loudest line on the screen, because
+  // from the phone the symptom is an address that simply stops answering.
+  if (found.keyExpiry) {
+    const days = Math.round((found.keyExpiry - Date.now()) / 86_400_000)
+    if (days <= 0) log.error(`the node key expired ${Math.abs(days)} day(s) ago — run: tailscale up`)
+    else if (days <= 14) log.warn(`the node key expires in ${days} day(s) — run: tailscale up --force-reauth`)
+  }
+
+  const fw = firewall.check(cfg.port, await localAddress(), first.iface)
+  if (fw.blocked && fw.remoteCommand) {
+    console.log(dim('\n  ufw is dropping this port. The local rule is not enough — a phone on\n'))
+    console.log(dim('  the tunnel is not on your subnet — so allow the tunnel itself in:\n'))
+    console.log(`  ${fw.remoteCommand}`)
+    console.log('')
+  } else {
+    console.log(dim('\n  the phone can reach this desktop from anywhere the tunnel reaches\n'))
+  }
+}
+
 async function cmdAgent(args) {
   const action = args._[0] || 'status'
 
@@ -1646,6 +1764,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
+  ${bold('remote')} <status|on|off>      let the phone in from off this network
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('wake')}                        whether a phone could wake this desktop
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate
@@ -1668,6 +1787,7 @@ const commands = {
   ios: cmdIos,
   phone: cmdPhone,
   agent: cmdAgent,
+  remote: cmdRemote,
   config: cmdConfig,
   firewall: cmdFirewall,
   wake: cmdWake,

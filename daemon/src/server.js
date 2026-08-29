@@ -13,6 +13,7 @@ import {
   touchDevice,
   removeDevice,
   pairedDevice,
+  updateConfig,
 } from './lib/config.js'
 import { readTheme } from './lib/theme.js'
 import { host as hostInfo } from './lib/sys.js'
@@ -154,6 +155,36 @@ export function createServer({ port, version = '0.1.0' } = {}) {
    * is meant to be flicked on a running daemon.
    */
   const remoteEnabled = () => loadConfig().remote?.enabled === true
+
+  /**
+   * Flip the switch on a running daemon.
+   *
+   * Turning it off is more than a config write: every phone already on a
+   * remote socket is holding a link this desktop has just decided it does not
+   * want, and every phone anywhere is holding a candidate list with a tunnel
+   * address in it. So the sockets go, and the new list is pushed to whoever
+   * is left.
+   */
+  function setRemoteEnabled(on) {
+    updateConfig((c) => {
+      c.remote = { ...(c.remote || {}), enabled: on === true }
+    })
+    // The new list first, then the hang-up. In that order the phone about to
+    // lose its link learns the tunnel address is gone before it goes, so it
+    // stops dialling one this desktop will refuse; the other way round it
+    // would retry down the candidate list all the way to the backoff tail.
+    announceEndpoints()
+    if (!on) {
+      for (const client of clients) {
+        if (client.via !== 'remote') continue
+        send(client, { t: 'error', error: 'remote access was switched off on this desktop' })
+        client.ws.close(4006, 'remote access is off')
+      }
+    }
+    return remoteSummary()
+  }
+
+  const remoteSummary = () => ({ enabled: remoteEnabled(), ...overlay.summary(overlayState), endpoints: endpoints() })
 
   /**
    * Every address the phone may dial, best first.
@@ -467,6 +498,39 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     }
 
     /**
+     * Localhost only, for the same reason the agent switch is: whether this
+     * desktop answers a phone that is not on its own network is a decision
+     * that belongs at the keyboard, and no paired phone can make it. Live, so
+     * the switch means something on a daemon that is already running.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/remote/control') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 4096) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          if (op !== 'enable' && op !== 'disable' && op !== 'status') {
+            return json(res, 400, { error: `unknown remote action: ${op}` })
+          }
+          // A status ask is the one moment somebody is looking, so it is
+          // worth the syscalls to answer with what is up right now rather
+          // than with whatever the last tick saw.
+          if (op === 'status') overlayState = await overlay.detect({ force: true }).catch(() => overlayState)
+          const remote = op === 'status' ? remoteSummary() : setRemoteEnabled(op === 'enable')
+          publishState()
+          json(res, 200, { ok: true, remote })
+        } catch (err) {
+          json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
      * Localhost only: the switch the desktop panel flips.
      *
      * Reading an agent is the widest exposure this daemon offers, so the
@@ -736,6 +800,15 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   function handleHello(client, msg, peer, helloTimer) {
     const { ws } = client
     const info = msg.device || {}
+    // The gate, said out loud rather than as a timeout. A phone dialling an
+    // address it was handed while remote was on deserves to be told why the
+    // desktop has stopped answering, and the answer names the command that
+    // undoes it.
+    if (client.via === 'remote' && !remoteEnabled()) {
+      log.warn(`refused a remote connection from ${peer} — remote access is off`)
+      send(client, { t: 'hello.err', error: 'remote access is off on this desktop — run `omarchy-connect remote on` there' })
+      return ws.close(4006, 'remote access is off')
+    }
     // What the phone says it is, before any of it is trusted or trimmed —
     // the only place the desktop can see whether a generic name is its own
     // doing or the app's.
@@ -825,7 +898,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // the moment it is wanted is the moment there is nothing to ask.
       endpoints: endpoints(),
       link: { via: client.via, kind: client.link },
-      capabilities: collectCapabilities(),
+      capabilities: collectCapabilities({ remote: client.via === 'remote' }),
       theme: readTheme(),
       events: DEFAULT_EVENTS,
     })
@@ -858,8 +931,15 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   async function handleRequest(client, msg) {
     const fn = methods.get(msg.method)
     if (!fn) return send(client, { t: 'res', id: msg.id, ok: false, error: `unknown method: ${msg.method}` })
+    // Advertising a capability as absent is a courtesy to the app; refusing
+    // the call is the part that is actually true. A phone that predates the
+    // remote link, or one whose capability list went stale mid-session, still
+    // gets the same answer.
+    if (client.via === 'remote' && msg.method.startsWith('phone.')) {
+      return send(client, { t: 'res', id: msg.id, ok: false, error: 'not available on a remote link' })
+    }
     try {
-      const data = await fn(msg.params || {}, { device: client.device })
+      const data = await fn(msg.params || {}, { device: client.device, via: client.via })
       send(client, { t: 'res', id: msg.id, ok: true, data: data ?? null })
     } catch (err) {
       log.debug(`${msg.method} failed:`, err.message)

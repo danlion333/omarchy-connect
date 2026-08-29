@@ -1112,7 +1112,21 @@ function fromHandsfree(call, previous) {
 export default {
   name: 'phone',
 
-  capabilities() {
+  /**
+   * Nothing telephonic survives a remote link.
+   *
+   * Not a matter of taste: the Bluetooth hands-free profile is a radio link
+   * to a handset in this room, the ringing card is a call somebody here can
+   * pick up, and mirroring a text message to a desktop the phone cannot see
+   * is carrying private mail down a tunnel for nobody to read. The app gates
+   * every telephony surface it has on `can('phone', …)`, so saying no here
+   * takes the ring screen, the call controls and the hands-free panel off it
+   * without a single special case on that side.
+   */
+  capabilities(ctx = {}) {
+    if (ctx.remote) {
+      return { mirror: false, send: false, history: 0, answer: false, bluetooth: false, ios: false, remote: true }
+    }
     return {
       mirror: true,
       send: true,
