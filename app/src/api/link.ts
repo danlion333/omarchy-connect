@@ -200,11 +200,16 @@ class Link {
       tls: saved.tls ?? false,
       certPin: saved.certPin ?? null,
       device: { id, name: deviceName(), platform: Platform.OS, model: String(Platform.Version) },
+      // The pull half of the network question. The change event is no help on
+      // a cold start — after a reboot the last change happened before this
+      // process existed — and it is no help either after the last network
+      // goes away, which is the change nothing can report a successor to. So
+      // every decision to dial asks rather than remembers.
+      network: networkFacts,
     })
     this.adopt(client)
-    // Seeded before the first dial, because the change event is no help here:
-    // on a cold start after a reboot the last network change happened before
-    // this process existed. Without this the first attempt goes out blind.
+    // Still seeded here, so the screen and the notification have an answer
+    // before the first dial rather than only after it.
     client.setNetwork(networkFacts())
     // A phone that was told to stay connected should already be running the
     // service — but it is also how the link survives this launch, so make

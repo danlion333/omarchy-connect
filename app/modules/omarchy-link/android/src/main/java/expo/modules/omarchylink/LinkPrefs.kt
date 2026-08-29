@@ -79,4 +79,24 @@ object LinkPrefs {
   fun setWaiting(context: Context, value: Boolean) {
     prefs(context).edit().putBoolean(KEY_WAITING, value).apply()
   }
+
+  /**
+   * Forgets everything the last socket said about itself, in one write.
+   *
+   * All three belong to a socket, and a service starting or stopping is a
+   * socket that does not exist — so they have to go together. Clearing the two
+   * flags and leaving the text produced a notification that argued with
+   * itself: `waiting` false drew "the phone keeps trying" under a title still
+   * reading "waiting for a network", written by a client that had been parked
+   * before the restart. The text falls back to "starting up", which is both
+   * true at that moment and true about the flags underneath it.
+   */
+  fun forgetConnection(context: Context) {
+    prefs(context)
+      .edit()
+      .putString(KEY_STATUS, "")
+      .putBoolean(KEY_CONNECTED, false)
+      .putBoolean(KEY_WAITING, false)
+      .apply()
+  }
 }

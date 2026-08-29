@@ -149,6 +149,45 @@ const pinned = await new Promise((resolve) => {
 check('a desktop with the wrong identity key is refused', pinned)
 impostor.close()
 
+/* ── the network the client asks about rather than remembers ─────────── */
+
+// Android reports a network change with a callback, and the last network going
+// away is the change after which no further callback arrives — so a phone in
+// aeroplane mode used to sit on the description it was handed at the moment of
+// the loss and dial all night on the strength of it. The client now asks
+// before every dial, and this is that asking: the pushed answer says the phone
+// is on the local wire, the pulled one says there is no network at all, and
+// the dial has to go by the second.
+{
+  let facts = { online: true, lan: true, vpn: false }
+  const asks = new ConnectClient({
+    host: '127.0.0.1',
+    port: PORT,
+    token: client.token,
+    publicKey: info.publicKey,
+    device: { id: 'integration-test', name: 'Test Phone', platform: 'android', model: 'node' },
+    network: () => facts,
+  })
+  // What a change event would have left behind, and what used to be believed.
+  asks.setNetwork({ online: true, lan: true, vpn: false })
+  facts = { online: false, lan: false, vpn: false }
+  asks.connect()
+  check('a stale description of the network does not get a dial', asks.status === 'parked', asks.status)
+  check('and the shade is told which kind of waiting it is', asks.parkedNote === 'waiting for a network', asks.parkedNote)
+
+  // And back: the phone rejoins a network, and the fresh reading is what lets
+  // it through — the same pull, on the same code path.
+  facts = { online: true, lan: true, vpn: false }
+  const back = await new Promise((resolve, reject) => {
+    asks.on('hello', resolve)
+    asks.on('unauthorized', (e) => reject(new Error(e)))
+    setTimeout(() => reject(new Error('reconnect timed out')), 10000)
+    asks.reconnectNow()
+  })
+  check('a network that came back is dialled on the next reading', back.device.id === 'integration-test')
+  asks.close()
+}
+
 client.close()
 second.close()
 rogue.close()

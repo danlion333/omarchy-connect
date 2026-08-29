@@ -372,6 +372,18 @@ export class ConnectClient {
    */
   private network: NetworkFacts | null = null
   /**
+   * How to ask what the phone is attached to, rather than wait to be told.
+   *
+   * The push is not enough on its own. Android reports a network change with
+   * a callback, and the last network going away is the one change after which
+   * no further callback can arrive — so a description that was wrong at that
+   * moment stays wrong for as long as the phone is offline, and the retry
+   * loop keeps dialling on the strength of it. Every decision to dial pulls a
+   * fresh answer first; `null` where nothing can answer, which is the same
+   * permissive default as never having been told.
+   */
+  private askNetwork: (() => NetworkFacts | null) | null = null
+  /**
    * `phone` is not optional decoration: it is the channel the desktop uses to
    * ask this handset to answer a call or send a message. Leaving it out makes
    * every such request time out on the desktop with no sign anything is wrong.
@@ -387,6 +399,7 @@ export class ConnectClient {
     tls?: boolean
     certPin?: string | null
     device: DeviceIdentity
+    network?: () => NetworkFacts | null
   }) {
     this.host = opts.host
     this.port = opts.port
@@ -396,6 +409,7 @@ export class ConnectClient {
     this.tls = opts.tls ?? false
     this.certPin = opts.certPin ?? null
     this.device = opts.device
+    this.askNetwork = opts.network ?? null
   }
 
   /**
@@ -453,6 +467,7 @@ export class ConnectClient {
     this.closedByUser = false
     clearTimeout(this.retryTimer)
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+    this.refreshNetwork()
     // Pairing is exempt: the user is holding the phone in front of the address
     // they just typed or scanned, and refusing to try would be absurd.
     if (!force && !this.pairCode && !reachable(this.host, this.network)) return this.park()
@@ -570,6 +585,23 @@ export class ConnectClient {
     if (this.status !== 'idle' && this.status !== 'error') this.park()
   }
 
+  /**
+   * Takes a fresh reading, quietly.
+   *
+   * Deliberately not `setNetwork`: this runs at the moment a dial is being
+   * decided, and the parking and re-dialling that a *reported* change is worth
+   * would be re-entering the very decision it was called from. All this does
+   * is make sure the decision is made on today's answer.
+   */
+  private refreshNetwork() {
+    if (!this.askNetwork) return
+    try {
+      this.network = this.askNetwork()
+    } catch {
+      /* a provider that throws says nothing; the last reading stands */
+    }
+  }
+
   /** The current view of the network, for anyone who has to explain it. */
   get networkFacts(): NetworkFacts | null {
     return this.network
@@ -596,6 +628,7 @@ export class ConnectClient {
   }
 
   private scheduleReconnect() {
+    this.refreshNetwork()
     if (!this.pairCode && !reachable(this.host, this.network)) return this.park()
     const delay = retryDelay(this.attempt)
     this.attempt += 1

@@ -179,10 +179,10 @@ class LinkService : Service() {
     super.onCreate()
     running = true
     // A fresh service instance means a fresh process and no socket: whatever
-    // the last incarnation wrote about being connected is stale by definition,
-    // and the notification is drawn on the next line.
-    LinkPrefs.setConnected(this, false)
-    LinkPrefs.setWaiting(this, false)
+    // the last incarnation wrote about being connected — the flags and the
+    // line of prose alike — is stale by definition, and the notification is
+    // drawn on the next line.
+    LinkPrefs.forgetConnection(this)
     // Android gives a service started with `startForegroundService` five
     // seconds to put up its notification, so this happens before anything
     // that could conceivably block.
@@ -272,8 +272,7 @@ class LinkService : Service() {
 
   override fun onDestroy() {
     running = false
-    LinkPrefs.setConnected(this, false)
-    LinkPrefs.setWaiting(this, false)
+    LinkPrefs.forgetConnection(this)
     // Nothing is left that could carry an answer to the desktop, or fetch a
     // file it offers to save, so the shade should not keep offering either.
     Shade.cancelEverything(this)

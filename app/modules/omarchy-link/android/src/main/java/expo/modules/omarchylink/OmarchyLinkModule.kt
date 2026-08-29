@@ -314,23 +314,31 @@ class OmarchyLinkModule : Module() {
    * on mobile data inside a VPN can reach a 192.168 address, and parking it
    * would break exactly the setup that never needed parking.
    *
-   * When anything here cannot be determined the answer is the permissive one:
+   * When the system cannot be asked at all the answer is the permissive one:
    * an unknown network reads as usable, and the client retries the way it did
-   * before any of this existed.
+   * before any of this existed. That is not the same as the system answering
+   * "nothing" — see `gone` below.
    */
   private fun describeNetwork(): Map<String, Any?> {
     val unknown = mapOf<String, Any?>("online" to true, "lan" to true, "vpn" to false)
+    val gone = mapOf<String, Any?>("online" to false, "lan" to false, "vpn" to false)
     val manager = context.getSystemService(ConnectivityManager::class.java) ?: return unknown
     val active = try {
       manager.activeNetwork
     } catch (error: Exception) {
       return unknown
-    } ?: return mapOf<String, Any?>("online" to false, "lan" to false, "vpn" to false)
+    } ?: return gone
+    // A null here is not "cannot say": `getNetworkCapabilities` answers null
+    // for a network connectivity no longer knows about, and during a teardown
+    // `activeNetwork` still hands back the handle of the one that is going.
+    // Reading that as unknown — and so as usable — is what left a phone in
+    // aeroplane mode retrying all night: the callback that reported the loss
+    // was the last one there would be, so nothing ever corrected the answer.
     val caps = try {
       manager.getNetworkCapabilities(active)
     } catch (error: Exception) {
-      null
-    } ?: return unknown
+      return unknown
+    } ?: return gone
     return mapOf(
       // A network the system will not certify as carrying the internet is one
       // the socket has no business waking up for.
