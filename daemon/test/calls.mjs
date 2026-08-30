@@ -1143,6 +1143,80 @@ const timerJunk = await post('/api/call', { op: 'timer', value: 'sometimes' })
 check('anything else is refused honestly', timerJunk.status === 400 && /on or off/.test(timerJunk.data.error || ''),
   timerJunk.data.error)
 
+/* ── a call this phone placed ───────────────────────────────────────────── */
+
+/**
+ * The bug this section exists to hold shut: the desktop's clock running ahead
+ * of the handset's, by exactly as long as the far end rang.
+ *
+ * Android tells an ordinary app that the line went off-hook. On a call somebody
+ * placed that is the moment of dialling, and nothing is ever broadcast for the
+ * moment the far end picks up — so a desktop that starts counting when it is
+ * told a call is up counts the ringing as conversation. The phone reads the
+ * real answer off the dialler's own card and sends it along afterwards, and a
+ * card already counting has to take the correction rather than carry the error
+ * to the end of the call.
+ */
+const outCard = () => notifyLines().filter((line) => /On call · Мар'яна/.test(line))
+
+await req('phone.report', {
+  events: [{ kind: 'call', call: 'ring-out', state: 'dialing', direction: 'outgoing', from: '+15558001', name: "Мар'яна" }],
+})
+await new Promise((resolve) => setTimeout(resolve, 1200))
+const dialling = (await req('phone.history', { limit: 1 })).call
+check('a number being dialled is a live call', dialling?.state === 'dialing', JSON.stringify(dialling))
+check('but nothing is counting yet — nobody has answered', dialling?.startedAt === null, JSON.stringify(dialling))
+check('and no card is up to count on', outCard().length === 0, `${outCard().length} card(s)`)
+
+// Off-hook reaches the desktop with no clock on it, so it guesses at the only
+// moment it knows: now. This is the wrong answer, and the next report fixes it.
+await req('phone.report', {
+  events: [{ kind: 'call', call: 'ring-out', state: 'active', direction: 'outgoing', from: '+15558001', name: "Мар'яна" }],
+})
+await new Promise((resolve) => setTimeout(resolve, 1500))
+const guessed = (await req('phone.history', { limit: 1 })).call
+check('answered, the desktop starts counting on its own guess', typeof guessed?.startedAt === 'number',
+  JSON.stringify(guessed))
+check('and a card goes up on it', outCard().length >= 1, `${outCard().length} card(s)`)
+
+// The dialler's chronometer, arriving late and saying the conversation began
+// eight seconds before the desktop was told about it.
+const trueStart = guessed.startedAt - 8000
+await req('phone.report', {
+  events: [{
+    kind: 'call',
+    call: 'ring-out',
+    state: 'active',
+    direction: 'outgoing',
+    from: '+15558001',
+    name: "Мар'яна",
+    startedAt: trueStart,
+  }],
+})
+await new Promise((resolve) => setTimeout(resolve, 300))
+const corrected = (await req('phone.history', { limit: 1 })).call
+check("the handset's own clock displaces the desktop's guess", corrected?.startedAt === trueStart,
+  `${corrected?.startedAt} vs ${trueStart}`)
+check('the call is still the one line it always was', corrected?.id === guessed.id)
+
+// And the card counting on screen is told, rather than being left to run out
+// the conversation eight seconds ahead of the phone in the room.
+const painted = outCard().length
+await new Promise((resolve) => setTimeout(resolve, 1400))
+const shown = (outCard().at(-1) || '').match(/\b(\d\d):(\d\d)\b/)
+check('the card counting on screen took the correction', shown !== null, outCard().at(-1) || 'nothing was raised')
+check(
+  'and now reads what the handset reads, not eight seconds more',
+  shown !== null && Number(shown[1]) * 60 + Number(shown[2]) >= 8,
+  shown ? shown[0] : 'no clock on the card',
+)
+check('without raising a second card to say so', outCard().length > painted, `${outCard().length} rewrite(s)`)
+
+await req('phone.report', {
+  events: [{ kind: 'call', call: 'ring-out', state: 'ended', direction: 'outgoing', from: '+15558001', name: "Мар'яна" }],
+})
+await new Promise((resolve) => setTimeout(resolve, 200))
+
 /**
  * A card that lives for the length of a conversation is a card somebody will
  * eventually swipe away, and the rewrite a second later would put it straight

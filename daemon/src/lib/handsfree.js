@@ -121,6 +121,16 @@ const POLICIES = new Set(['presence', 'ring', 'off'])
 
 const RINGING = new Set(['incoming', 'waiting'])
 const LIVE = new Set(['active', 'held', 'dialing', 'alerting'])
+/**
+ * Narrower than `LIVE`, and the difference is the whole of a call timer.
+ *
+ * A call this desktop placed is "live" from the moment it is dialled — it
+ * holds the line, it owns the audio, it is the call to pick if you ask which
+ * one there is. But nobody is talking while it rings at the far end, and a
+ * clock started there counts those seconds into the conversation. Only these
+ * two states mean somebody picked up.
+ */
+const TALKING = new Set(['active', 'held'])
 
 /** `busctl --json=short` wraps every value as { type, data }. */
 const unwrap = (value) => (value && typeof value === 'object' && 'data' in value ? value.data : value)
@@ -138,6 +148,8 @@ async function busctl(args, { timeout = 4000 } = {}) {
 /** Is the phone ringing, or is a conversation in progress? */
 export const isRinging = (call) => RINGING.has(call?.state)
 export const isLive = (call) => LIVE.has(call?.state)
+/** Has anybody actually answered? Dialling and ringing out have not. */
+export const isTalking = (call) => TALKING.has(call?.state)
 
 export class Handsfree extends EventEmitter {
   constructor() {

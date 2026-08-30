@@ -24,6 +24,13 @@ import android.telephony.TelephonyManager
  * offers an ordinary app nothing better: there is no broadcast for "dialling"
  * and no number in any of them. A call that rang before it went off-hook came
  * in; one that went off-hook out of nowhere was placed from this handset.
+ *
+ * The same silence is why a call this phone placed needs `timed`. Off-hook on
+ * an outgoing call is the moment of dialling, and nothing is ever broadcast
+ * for the moment the far end picks up — so a desktop counting from off-hook
+ * counts the ringing as conversation and runs a ring cycle ahead of the timer
+ * on the handset's own screen. `CallNotifications` reads the real answer off
+ * the dialler's card, the same place it reads the caller's name.
  */
 class PhoneStateReceiver : BroadcastReceiver() {
   companion object {
@@ -46,6 +53,10 @@ class PhoneStateReceiver : BroadcastReceiver() {
     @Volatile private var direction: String? = null
     /** When the last ringing event went out, named or not. */
     @Volatile private var announcedAt = 0L
+    /** When this handset went off-hook — the earliest a conversation can start. */
+    @Volatile private var offHookAt = 0L
+    /** The base of the dialler's own call timer, once its card shows one. */
+    @Volatile private var chronometer = 0L
     /** Whether that event carried a name, which is as good as it gets. */
     @Volatile private var namedOut = false
 
@@ -58,6 +69,14 @@ class PhoneStateReceiver : BroadcastReceiver() {
      */
     private const val ENRICH_WINDOW_MS = 5000L
 
+    /**
+     * How far the dialler's clock and the telephony broadcast are allowed to
+     * disagree before the first is disbelieved. They are two readings of the
+     * same `System.currentTimeMillis()`, taken a few hundred milliseconds
+     * apart at most; a ring cycle is never inside this.
+     */
+    private const val CLOCK_SLACK_MS = 2000L
+
     /** Whether what is held is a name, rather than a number standing in for one. */
     private fun named() = ringingName != null && !Caller.isNumber(ringingName)
 
@@ -68,7 +87,67 @@ class PhoneStateReceiver : BroadcastReceiver() {
     private fun begin(way: String?) {
       callId = java.util.UUID.randomUUID().toString()
       direction = way
+      offHookAt = 0L
+      chronometer = 0L
     }
+
+    /**
+     * When the conversation began, as the handset itself has it — or null,
+     * when nothing trustworthy has said.
+     *
+     * The dialler puts an ongoing-call card up with a running chronometer, and
+     * that chronometer's base is the moment the call connected: the number on
+     * the phone's own screen, in a field a notification listener may read. It
+     * is checked rather than believed. A conversation cannot have begun before
+     * the line opened, which is what stops the card the dialler raised while
+     * the phone was still ringing — stamped with the moment the ringing
+     * started — from being read as an answer.
+     */
+    private fun connectedAt(): Long? {
+      val at = chronometer
+      if (at <= 0L || offHookAt <= 0L) return null
+      if (at < offHookAt - CLOCK_SLACK_MS) return null
+      if (at > System.currentTimeMillis() + CLOCK_SLACK_MS) return null
+      return at
+    }
+
+    /**
+     * The dialler's card says when the talking started. Called from the
+     * notification listener, and on an outgoing call it is the only report
+     * that can say this at all.
+     *
+     * A card is reposted many times over one call, always with the same base,
+     * so only a base that is new is worth a word to the desktop. And only once
+     * the line is off-hook: before that the broadcast has not gone out yet,
+     * and the one that is about to will carry this with it.
+     */
+    @Synchronized
+    fun timed(context: Context, at: Long) {
+      if (at <= 0L || at == chronometer) return
+      chronometer = at
+      if (connectedAt() == null) return
+      if (lastState != "active") return
+      OmarchyTelephonyModule.deliver(context, "onCall", callEvent("active"))
+    }
+
+    /** One report of the call in hand, in whatever state it has reached. */
+    private fun callEvent(state: String) = mapOf(
+      "kind" to "call",
+      "at" to System.currentTimeMillis(),
+      "call" to callId,
+      "state" to state,
+      "direction" to direction,
+      "from" to ringingNumber,
+      "name" to ringingName,
+      // The handset's own clock, when it has one to give. The desktop counts
+      // from its own arrival without it, which on an outgoing call is early by
+      // however long the far end rang.
+      "startedAt" to connectedAt(),
+      // A call that goes straight from ringing to idle was never picked up —
+      // which is the one the desktop most wants to tell you about. A call this
+      // phone placed and nobody took is not a missed call on this phone.
+      "missed" to (state == "ended" && direction == "incoming" && !answered),
+    )
 
     /**
      * Who the dialler says is calling. Called from the notification listener,
@@ -101,19 +180,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
       if (System.currentTimeMillis() - announcedAt > ENRICH_WINDOW_MS) return
       announcedAt = System.currentTimeMillis()
       namedOut = named()
-      OmarchyTelephonyModule.deliver(context, "onCall", ringingEvent())
+      OmarchyTelephonyModule.deliver(context, "onCall", callEvent("ringing"))
     }
-
-    private fun ringingEvent() = mapOf(
-      "kind" to "call",
-      "at" to System.currentTimeMillis(),
-      "call" to callId,
-      "state" to "ringing",
-      "direction" to "incoming",
-      "from" to ringingNumber,
-      "name" to ringingName,
-      "missed" to false,
-    )
   }
 
   override fun onReceive(context: Context, intent: Intent) {
@@ -150,25 +218,16 @@ class PhoneStateReceiver : BroadcastReceiver() {
       // app is told that a number is being dialled, only that a line is open.
       if (callId == null) begin("outgoing")
       answered = true
+      // The floor under every claim about when the talking started. On an
+      // incoming call this is the answer itself; on an outgoing one it is the
+      // dialling, and the dialler's card supplies the rest.
+      offHookAt = System.currentTimeMillis()
     }
     // A process Android started for the IDLE of a call it never saw begin still
     // has a call to report; it just cannot say which way that one went.
     if (state == "ended" && callId == null) begin(null)
 
-    val event = mapOf(
-      "kind" to "call",
-      "at" to System.currentTimeMillis(),
-      "call" to callId,
-      "state" to state,
-      "direction" to direction,
-      "from" to ringingNumber,
-      "name" to ringingName,
-      // A call that goes straight from ringing to idle was never picked up —
-      // which is the one the desktop most wants to tell you about. A call this
-      // phone placed and nobody took is not a missed call on this phone.
-      "missed" to (state == "ended" && direction == "incoming" && !answered),
-    )
-    OmarchyTelephonyModule.deliver(context, "onCall", event)
+    OmarchyTelephonyModule.deliver(context, "onCall", callEvent(state))
 
     if (state == "ended") {
       ringingNumber = null
@@ -176,6 +235,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
       answered = false
       namedOut = false
       announcedAt = 0L
+      offHookAt = 0L
+      chronometer = 0L
       callId = null
       direction = null
     }

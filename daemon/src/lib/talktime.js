@@ -109,23 +109,33 @@ export class TalkTime {
    * progress — the same call announced down a second road, or a name arriving
    * after the number — leaves the clock where it is instead of setting it back
    * to zero. `replaces` is the ringing card's id, when there was one.
+   *
+   * `at` is the one thing a second report is allowed to change. The desktop
+   * starts counting when it is told a call is up, which on a call the handset
+   * placed is a whole ring cycle too early; the handset's own start arrives
+   * afterwards, off its notification, and the card has to be able to take it
+   * mid-count rather than carry the error to the end of the conversation.
+   * Omitted, it means "wherever the clock is now" — only a caller with an
+   * answer moves it.
    */
-  start({ key = '', who = 'unknown number', replaces = 0, at = Date.now() } = {}) {
+  start({ key = '', who = 'unknown number', replaces = 0, at = 0 } = {}) {
     if (!this.enabled) return false
+    const start = Number.isFinite(at) && at > 0 ? at : 0
     if (this.running) {
       // Same conversation: keep the clock, take whatever it has learned since.
       if (!key || !this.key || key === this.key) {
-        if (who && who !== this.who) {
-          this.who = who
-          this.paint()
-        }
+        const moved = start > 0 && start !== this.since
+        if (moved) this.since = start
+        const renamed = Boolean(who) && who !== this.who
+        if (renamed) this.who = who
+        if (moved || renamed) this.paint()
         return false
       }
       // A different call entirely — the first one is over whether or not
       // anybody said so.
       this.stop({ quiet: true })
     }
-    this.since = Number.isFinite(at) ? at : Date.now()
+    this.since = start || Date.now()
     this.who = who
     this.key = key
     this.id = replaces || 0

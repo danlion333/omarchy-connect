@@ -25,6 +25,13 @@ import android.service.notification.StatusBarNotification
  * ANCS — the desktop learns who is calling from the notification the handset
  * raises, not from the telephony stack.
  *
+ * The same card answers a second question the telephony stack will not. On a
+ * call this phone places, `PHONE_STATE` goes off-hook the moment the number is
+ * dialled and says nothing at all when the far end picks up — so a desktop
+ * counting from that broadcast counts the ringing as conversation. The card
+ * carries a running chronometer whose base is the moment of connection, which
+ * is the very number on the phone's own in-call screen.
+ *
  * This deliberately reads call notifications and nothing else. Notification
  * access is the broadest permission on the phone, and a file-sharing app that
  * asks for it should be able to say exactly what it does with it.
@@ -51,6 +58,25 @@ class CallNotifications : NotificationListenerService() {
       val intent = Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)
         .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
       context.startActivity(intent)
+    }
+
+    /**
+     * The base of the card's own call timer, when it is running one.
+     *
+     * `EXTRA_SHOW_CHRONOMETER` is the dialler saying this card counts, and
+     * `when` is what it counts from. A card that is not counting — the one up
+     * while the phone rings, the one up while a number is being dialled — has
+     * a `when` too, and it means the moment the card went up, which is not an
+     * answer to this question and is not returned.
+     */
+    private fun startedAt(notification: Notification): Long? {
+      val extras = notification.extras
+      if (!extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER, false)) return null
+      // A chronometer can also run backwards, toward `when` rather than from
+      // it. A card doing that is counting down to something, not timing a
+      // conversation that has already started.
+      if (extras.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN, false)) return null
+      return notification.`when`.takeIf { it > 0L }
     }
 
     /** `tel:+380…` on the notification's Person, when the dialler attaches one. */
@@ -91,6 +117,11 @@ class CallNotifications : NotificationListenerService() {
     val notification = sbn.notification ?: return
     if (notification.category != Notification.CATEGORY_CALL) return
     if (!ours(sbn)) return
+
+    // Before the caller, because these are two independent things this card
+    // can be carrying and a post with no name on it may still be the post that
+    // says the talking has started.
+    startedAt(notification)?.let { PhoneStateReceiver.timed(this, it) }
 
     val title = Caller.clean(notification.extras.getCharSequence(Notification.EXTRA_TITLE)?.toString())
     var number = numberFrom(notification)

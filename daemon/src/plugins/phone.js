@@ -3,7 +3,7 @@ import fs from 'node:fs'
 
 import { has, run, spawn, spawnDetached } from '../lib/exec.js'
 import { log } from '../lib/log.js'
-import { handsfree, isRinging, isLive } from '../lib/handsfree.js'
+import { handsfree, isRinging, isLive, isTalking } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
 import { talkTime } from '../lib/talktime.js'
 import { ancs } from '../lib/ancs.js'
@@ -459,6 +459,10 @@ function notify(entry) {
     ring(entry, canAct())
     return
   }
+  // A number being dialled from the handset in your hand is not news to you,
+  // and there is nothing to offer: no card, no ringtone, and above all no
+  // clock — the conversation it would be timing has not started.
+  if (entry.state === 'dialing') return
   if (entry.state === 'active') {
     // The card that was ringing becomes the card that counts — or comes off
     // the screen, if nothing is going to count on it.
@@ -556,6 +560,7 @@ function twin(entry) {
 function enrich(existing, incoming) {
   const before = caller(existing)
   const wasState = existing.state
+  const wasStart = existing.startedAt
   if (!existing.from && incoming.from) existing.from = incoming.from
   // A dialler that has not looked the caller up yet puts the number where the
   // name goes, and older builds of the app forwarded that verbatim. A real
@@ -580,9 +585,21 @@ function enrich(existing, incoming) {
     existing.direction = incoming.direction
   }
   if (!existing.call && incoming.call) existing.call = incoming.call
+  // Unlike everything above, this one overwrites. The rule elsewhere is that
+  // the first road to arrive keeps what it said; here the whole point is that
+  // the handset's own clock arrives late and is right, and the desktop's guess
+  // arrived early and is not.
+  if (incoming.startedAt) existing.startedAt = incoming.startedAt
   if (existing.seconds == null && Number.isFinite(incoming.seconds)) existing.seconds = incoming.seconds
   existing.receivedAt = Date.now()
-  return { entry: existing, named: caller(existing) !== before, advanced: existing.state !== wasState }
+  return {
+    entry: existing,
+    named: caller(existing) !== before,
+    advanced: existing.state !== wasState,
+    // The call did not move, but what the desktop believes about when it
+    // started did — and a card already counting has to be told.
+    retimed: Boolean(existing.startedAt) && existing.startedAt !== wasStart,
+  }
 }
 
 const KINDS = new Set(['call', 'sms', 'notification'])
@@ -617,7 +634,14 @@ function record(raw, device) {
     entry.body = text(raw.body, 2000) ?? ''
     counters.messages += 1
   } else {
-    entry.state = ['ringing', 'active', 'ended'].includes(raw.state) ? raw.state : null
+    entry.state = ['ringing', 'dialing', 'active', 'ended'].includes(raw.state) ? raw.state : null
+    /**
+     * When the conversation began, according to whoever was in a position to
+     * know. Only the handset is: the desktop learns a call is up when a report
+     * reaches it, which on a call this phone placed is minutes of ringing too
+     * early. Absent on every road that cannot say, and guessed at then.
+     */
+    entry.startedAt = Number.isFinite(raw.startedAt) && raw.startedAt > 0 ? raw.startedAt : null
     entry.direction = ['incoming', 'outgoing', 'missed'].includes(raw.direction) ? raw.direction : 'incoming'
     entry.missed = raw.missed === true
     entry.seconds = Number.isFinite(raw.seconds) ? raw.seconds : null
@@ -625,8 +649,8 @@ function record(raw, device) {
     entry.call = text(raw.call, 64)
     const already = twin(entry)
     if (already) {
-      const { entry: merged, named, advanced } = enrich(already, entry)
-      return { entry: merged, fresh: false, named, advanced }
+      const { entry: merged, named, advanced, retimed } = enrich(already, entry)
+      return { entry: merged, fresh: false, named, advanced, retimed }
     }
     // Once per conversation, wherever in its life the desktop caught it. It
     // used to skip anything that arrived `active` or `ended` to avoid counting
@@ -663,7 +687,7 @@ function anticipate(entry) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh, named, advanced } = record(raw, device)
+  const { entry, fresh, named, advanced, retimed } = record(raw, device)
   if (entry.kind === 'call') {
     remember(entry)
     anticipate(entry)
@@ -673,7 +697,10 @@ function ingest(raw, device = null) {
   // number" turns into a name in place rather than gaining a twin beside it.
   // A call that moves on is news too, even though its line was already there —
   // it is what takes the ringing card down and stops the ringtone.
-  if (fresh || advanced || (named && entry.state === 'ringing')) notify(entry)
+  // A clock corrected mid-conversation is news of the same shape: the card is
+  // already up and counting from the wrong second, and `notify` is what hands
+  // the timer the right one.
+  if (fresh || advanced || retimed || (named && entry.state === 'ringing')) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
   return { entry, fresh }
 }
@@ -749,14 +776,19 @@ export function liveCall() {
   if (call && (isRinging(call) || isLive(call))) {
     return {
       id: call.id,
-      state: isRinging(call) ? 'ringing' : 'active',
+      // Hands-free is the one road that knows the difference between a number
+      // being dialled and somebody answering, so it is the one road that does
+      // not have to flatten the two. The panel has words for `dialing` and
+      // `alerting` already; calling them `active` only ever lost information.
+      state: isRinging(call) ? 'ringing' : call.state,
       from: call.from ?? null,
       name: call.name ?? null,
       via: 'bluetooth',
       audio: handsfree.state.gateway?.audio ?? null,
       // When the talking started, so a panel two rooms away can count without
-      // asking again. A ringing call has not started yet and says null.
-      startedAt: isLive(call) ? activeSince || null : null,
+      // asking again. A call still ringing out has not started yet and says
+      // null — the clock belongs to the conversation, not to the attempt.
+      startedAt: isTalking(call) ? activeSince || null : null,
     }
   }
   if (!live) return null
@@ -779,14 +811,24 @@ export function liveCall() {
 
 /** One handset, one conversation: `ended` takes down whatever was offered. */
 function remember(entry) {
-  if (entry.state === 'ringing' || entry.state === 'active') live = entry
+  if (entry.state === 'ringing' || entry.state === 'dialing' || entry.state === 'active') live = entry
   else if (entry.state === 'ended') live = null
   // The clock starts on the first report that says somebody picked up, and a
   // second report of the same conversation must not set it back to zero. Only
   // the call being over stops it — a report that says nothing about the state
   // is not evidence that the talking finished.
-  if (entry.state === 'active') activeSince = activeSince || Date.now()
-  else if (entry.state === 'ended') activeSince = 0
+  //
+  // `startedAt` is the exception, and it is why the desktop's clock and the
+  // handset's used to disagree on every call this phone placed. Android tells
+  // an ordinary app that the line went off-hook, which on an outgoing call is
+  // the moment of dialling and not the moment anybody answered; the seconds of
+  // ringing in between were being counted as conversation. A report that
+  // carries the handset's own start displaces the guess, however late it comes
+  // and however long the desktop has already been counting.
+  if (entry.state === 'active') {
+    if (entry.startedAt) activeSince = entry.startedAt
+    else activeSince = activeSince || Date.now()
+  } else if (entry.state === 'ended') activeSince = 0
 }
 
 /**
@@ -1097,7 +1139,7 @@ function fromAncs(n) {
 
 /** Fold a Bluetooth call object into the same history the app feeds. */
 function fromHandsfree(call, previous) {
-  const state = isRinging(call) ? 'ringing' : isLive(call) ? 'active' : 'ended'
+  const state = isRinging(call) ? 'ringing' : isTalking(call) ? 'active' : isLive(call) ? 'dialing' : 'ended'
   // A call that was ringing and is now gone was never picked up.
   const missed = state === 'ended' && Boolean(previous) && isRinging(previous)
   return {
@@ -1107,6 +1149,11 @@ function fromHandsfree(call, previous) {
     direction: missed ? 'missed' : call.state === 'dialing' || call.state === 'alerting' ? 'outgoing' : 'incoming',
     missed,
     from: call.from,
+    // Hands-free reports the crossing itself: this event is the profile saying
+    // the call just became one somebody is talking on, so now is the answer to
+    // when that happened. A later event about a call already talking carries no
+    // start — it would only be re-stating a moment that has passed.
+    startedAt: isTalking(call) && !isTalking(previous) ? Date.now() : null,
     name: call.name,
   }
 }

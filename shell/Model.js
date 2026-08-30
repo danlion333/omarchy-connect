@@ -335,10 +335,11 @@ function iosText(ios) {
  * and this is the panel's copy of it. The bar deliberately has none: a number
  * that changes width every second does not belong in a row of fixed-width
  * icons. Empty until somebody picks up: a ringing phone has nothing to count
- * yet.
+ * yet. A call on hold is still counted: the conversation it belongs to has
+ * started, and the phone in your pocket does not reset its timer either.
  */
 function callClock(call, now) {
-  if (!isObject(call) || call.state !== "active") return ""
+  if (!isObject(call) || (call.state !== "active" && call.state !== "held")) return ""
   var start = num(call.startedAt, 0)
   if (start <= 0) return ""
   var seconds = Math.max(0, Math.floor((num(now, 0) - start) / 1000))
@@ -376,7 +377,12 @@ function callDetail(call, bt, now) {
       : "ringing · answer to take it here"
   }
   if (state === "waiting") return "call waiting · answering holds the first"
-  if (state === "held") return "on hold"
+  if (state === "held") {
+    var paused = callClock(call, now)
+    return paused === "" ? "on hold" : paused + " · on hold"
+  }
+  // Ringing at the far end, which is not a conversation and so has no clock —
+  // counting from here is exactly the error this line exists not to make.
   if (state === "dialing" || state === "alerting") return "dialling"
   if (state === "active") {
     var here = call.audio === "active" || (bt && bt.audio === "active")

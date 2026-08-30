@@ -22,6 +22,16 @@ export type CallEvent = {
   call?: string | null
   /** Live state from the broadcast; absent on entries read back from the log. */
   state?: 'ringing' | 'active' | 'ended'
+  /**
+   * When the talking started, off the dialler's own call timer.
+   *
+   * Android tells an app the line went off-hook, which on a call this phone
+   * placed is the moment of dialling, and never tells it the far end picked
+   * up. Without this the desktop counts the ringing into the conversation and
+   * runs a ring cycle ahead of the timer on the handset's screen. Null when
+   * the dialler's card is not showing a clock to read.
+   */
+  startedAt?: number | null
   from: string | null
   name: string | null
   missed: boolean
