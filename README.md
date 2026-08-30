@@ -35,7 +35,7 @@ the desktop and the app repaints in the same palette.
 | **Encryption** | X25519 key exchange, ChaCha20-Poly1305 frames, identity key pinned from the pairing QR. |
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
-| **Answering calls** | Pick up or decline from the desktop — click the ringing card to answer, right-click it to decline — and over Bluetooth the conversation comes out of your speakers, with that half needing no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
+| **Answering calls** | Pick up or decline from the desktop — click the ringing card to answer, right-click it to decline — and over Bluetooth the conversation comes out of your speakers, with that half needing no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes — and that card is how you hang up, with a button where your notifications draw buttons and the right mouse button where they do not. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. The phone tells you the moment one stops to ask you something, and the usual one-word answer can be typed straight into the notification. It carries the desktop's own status line with it: which model, how full the context is, which permission mode, which branch — and a **compact** button that appears once the conversation is running out of room. The row says what the agent is *working on* in its own words rather than which tool it last reached for, with the checklist behind it one tap away. Every skill and slash command that desktop has is a searchable list one tap from the composer, so `/security-review` costs a thumb rather than a keyboard. How much of the plan is left sits above the session list, because that is the number that decides whether starting something long is a good idea. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Agents you start** | Pick up any conversation that desktop has ever had — the CLI's own `--resume`, from a list with the titles it wrote for them — or send a new agent off with a prompt and no terminal at all, and read what it did later. A background agent's own running commentary ("exploring project state for commit + merge flow") is on the phone, and nowhere else: nothing on the desktop draws it. Behind a second switch, `omarchy-connect agent spawn on`, because starting a process is not the same decision as reading one. |
@@ -352,6 +352,19 @@ the hands-free control surface on D-Bus as `org.pipewire.Telephony`, the
 > for it. `omarchy-connect call audio` opens the link explicitly. It is a
 > separate verb rather than something `answer` does on every call, because on a
 > phone that behaves normally it is unnecessary.
+
+### Hanging up
+
+The card that counts the minutes carries the last decision a conversation has
+in it. Where the notification server draws buttons, it draws **Hang up**; where
+it draws none, right-clicking the card ends the call, and the card says so
+beside the clock. A click does nothing on purpose — reading the clock is not a
+reason to lose the call.
+
+On a server with buttons, sweeping the card away still means only "stop showing
+me this": the call carries on, the panel keeps its own clock, and the desktop
+stops insisting. Where there are no buttons that gesture is the only one left,
+so it hangs up instead.
 
 ### The link exists while a call does
 
