@@ -1252,6 +1252,90 @@ await new Promise((resolve) => setTimeout(resolve, 200))
     cards().every((line) => !/Call ended/.test(line)), cards().at(-1) || '')
 }
 
+/**
+ * The card that counts a conversation is also the way out of it, and which
+ * gesture that is depends on what the notification server draws.
+ *
+ * Where it draws none — Omarchy's own shell — the right mouse button reaches
+ * this side as the card being closed by hand, exactly as it does on the
+ * ringing card, and it means the same thing there: the person watching is
+ * finished with the call. The clock stopping while the line stayed open was
+ * the desktop agreeing to be quiet about a call it could have ended.
+ */
+{
+  const gestureBin = path.join(sandbox, 'gesture')
+  const gestureLog = path.join(gestureBin, 'notify.log')
+  fs.mkdirSync(gestureBin, { recursive: true })
+  fs.writeFileSync(
+    path.join(gestureBin, 'notify-send'),
+    ['#!/bin/sh', `printf '%s\\n' "$*" >> ${JSON.stringify(gestureLog)}`, 'case " $* " in *" -p "*) printf \'9\\n\' ;; esac', ''].join('\n'),
+    { mode: 0o755 },
+  )
+  process.env.PATH = `${gestureBin}:${process.env.PATH}`
+  const cards = () => (fs.existsSync(gestureLog) ? fs.readFileSync(gestureLog, 'utf8').split('\n').filter(Boolean) : [])
+
+  let hungUp = 0
+  const timer = new TalkTime()
+  timer.answers({ hangup: () => { hungUp += 1 }, buttons: false })
+  timer.start({ key: 'swept', who: 'Богдан' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  check('a card swept away where there are no buttons hangs up', hungUp === 1, `${hungUp} request(s)`)
+  check('and says which gesture does it, since nothing draws it',
+    cards().some((line) => /right-click to hang up/.test(line)), cards().at(0) || '')
+  check('and offers no button the server would not draw',
+    cards().every((line) => !/hangup=/.test(line)), cards().at(0) || '')
+  // Long enough that there is a total worth saying out loud: a conversation
+  // under a second is taken off the screen rather than summed up.
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  timer.stop()
+  check('and the total is not pushed at a screen somebody has just cleared',
+    cards().every((line) => !/Call ended/.test(line)), cards().at(-1) || '')
+}
+
+/**
+ * Where the server does draw buttons, the button is the way out and a sweep
+ * goes back to meaning only "stop showing me this" — the call carries on.
+ */
+{
+  const buttonBin = path.join(sandbox, 'button')
+  const buttonLog = path.join(buttonBin, 'notify.log')
+  fs.mkdirSync(buttonBin, { recursive: true })
+  fs.writeFileSync(
+    path.join(buttonBin, 'notify-send'),
+    [
+      '#!/bin/sh',
+      `printf '%s\\n' "$*" >> ${JSON.stringify(buttonLog)}`,
+      'case " $* " in *" -p "*) printf \'11\\n\' ;; esac',
+      // A pressed button prints its name; this one is pressed the moment it
+      // is drawn, which is the only part of a mouse a test can imitate.
+      'case " $* " in *"hangup=Hang up"*) printf \'hangup\\n\' ;; esac',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  )
+  process.env.PATH = `${buttonBin}:${process.env.PATH}`
+  const cards = () => (fs.existsSync(buttonLog) ? fs.readFileSync(buttonLog, 'utf8').split('\n').filter(Boolean) : [])
+
+  let hungUp = 0
+  const timer = new TalkTime()
+  timer.answers({ hangup: () => { hungUp += 1 }, buttons: true })
+  timer.start({ key: 'pressed', who: 'Соломія' })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  check('a Hang up button is drawn where there is somewhere to draw it',
+    cards().some((line) => /hangup=Hang up/.test(line)), cards().at(0) || '')
+  check('and pressing it ends the call', hungUp === 1, `${hungUp} request(s)`)
+  check('and it does not spell out a gesture nobody needs',
+    cards().every((line) => !/right-click/.test(line)), cards().at(0) || '')
+  // Long enough that there is a total worth saying out loud: a conversation
+  // under a second is taken off the screen rather than summed up.
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  timer.stop()
+  // The farewell is spawned and forgotten, so it lands a moment after `stop`.
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  check('and the card that pressed it is told how long the call was',
+    cards().some((line) => /Call ended · Соломія/.test(line)), cards().at(-1) || '')
+}
+
 // The two ways a span of seconds is written: one for a card that is counting,
 // one for a card that is telling you what it added up to.
 check('a conversation is clocked the way a handset clocks it', clock(72) === '01:12' && clock(3782) === '1:03:02',

@@ -131,6 +131,9 @@ async function readNotificationServer() {
   if (!drawsButtons) {
     log.info('notifications: this server draws no buttons — a ringing call answers on click')
   }
+  // The talking card's way out depends on the same answer: a button where one
+  // will be drawn, the right mouse button where none will be.
+  wireHangUp()
 }
 
 const counters = { messages: 0, calls: 0, missed: 0, sent: 0, answered: 0, rejected: 0, notifications: 0 }
@@ -265,6 +268,25 @@ function readCardSignal(line) {
   log.info('the ringing card was closed by hand — declining the call')
   silence()
   requestCall({ op: 'reject' }).catch((err) => log.warn(`could not reject the call: ${err.message}`))
+}
+
+/**
+ * Leave the conversation, from the card that is counting it.
+ *
+ * The ringing card's two gestures end at the moment somebody picks up, and
+ * until now the card that replaced it had none: the only way out of a call
+ * answered from the desktop was to pick the handset up after all. It is the
+ * same request the panel's own button makes, and it goes down whichever road
+ * the call came in on.
+ */
+function hangUp() {
+  log.info('hanging up from the call card')
+  return requestCall({ op: 'hangup' }).catch((err) => log.warn(`could not hang up the call: ${err.message}`))
+}
+
+/** Hand the talk timer its way out, once we know what this server draws. */
+function wireHangUp() {
+  talkTime.answers({ hangup: hangUp, buttons: drawsButtons })
 }
 
 /**
@@ -1193,6 +1215,9 @@ export default {
   start(eventBus) {
     bus = eventBus
 
+    // On the default answer for now — a server that draws buttons — so a call
+    // answered before D-Bus replies still has a way out of it.
+    wireHangUp()
     readNotificationServer().catch(() => {
       /* a server that will not say who it is keeps the default answer */
     })

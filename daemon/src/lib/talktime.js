@@ -11,9 +11,13 @@ import { has, spawn, spawnDetached } from './exec.js'
  * into a call.
  *
  * So a call that is picked up keeps a notification up for as long as it lasts,
- * counting. It is a readout and nothing more — the ringing card is the one
- * worth putting buttons on, and by the time this one appears the decision it
- * would offer has already been made.
+ * counting. And the one decision left in a conversation is when to leave it, so
+ * the card carries that too: a **Hang up** button where the server draws
+ * buttons, and where it draws none, the gesture the ringing card already uses
+ * — the right mouse button, which reaches this side as the card being closed
+ * by hand. Somebody who has just swept a call off their screen has finished
+ * with it; leaving the line open and only stopping the clock was the desktop
+ * agreeing to be quiet about a call it could have ended.
  *
  * Two habits of the notification server are what make this work at all.
  * `notify-send -p` prints the id the server gave the card, and `-r` rewrites
@@ -86,6 +90,30 @@ export class TalkTime {
     this.child = null
     /** Swiped away. The call carries on; the desktop stops insisting. */
     this.dismissed = false
+    /** Who to tell that the person watching this card is done talking. */
+    this.onHangup = null
+    /**
+     * Whether this notification server draws the buttons it is offered.
+     *
+     * It decides which gesture ends the call. Where there are buttons, the
+     * button does it and a sweep stays a sweep — a server that draws Hang up
+     * has said what a card is for. Where there are none, the sweep is the only
+     * gesture there is besides the click, and the click is left alone: a card
+     * that hangs up when it is touched is a card nobody dares touch.
+     */
+    this.buttons = true
+  }
+
+  /**
+   * Who ends the call, and whether this server can draw a button for it.
+   *
+   * Kept off `configure` on purpose: that one carries the user's switch, which
+   * comes and goes with the config file, while this is the wiring the plugin
+   * puts in once at startup and never changes.
+   */
+  answers({ hangup = null, buttons = true } = {}) {
+    this.onHangup = typeof hangup === 'function' ? hangup : null
+    this.buttons = buttons !== false
   }
 
   configure({ enabled = true } = {}) {
@@ -150,10 +178,12 @@ export class TalkTime {
   /**
    * One rewrite of the card.
    *
-   * The first one asks for two things the rest do not need: the id, which is
-   * the `-p`, and the news that the card is gone, which is the `-w`. Every
-   * tick after it is detached — a card that already has an id and a watcher
-   * needs no answer back from the server.
+   * The first one asks for three things the rest do not need: the id, which is
+   * the `-p`, the news that the card is gone, which is the `-w`, and the way
+   * out of the conversation, which is the `-A`. Every tick after it is
+   * detached — a card that already has an id and a watcher needs no answer
+   * back from the server, and a rewrite keeps the actions the card was raised
+   * with.
    */
   paint({ first = false } = {}) {
     if (!this.running || this.dismissed || !has('notify-send')) return
@@ -167,12 +197,20 @@ export class TalkTime {
       '-t', '0',
     ]
     if (this.id) args.push('-r', String(this.id))
-    args.push(`On call · ${this.who}`, clock(this.seconds))
+    // Where no button will be drawn, the gesture is spelled out beside the
+    // clock — the same courtesy the ringing card pays, and for the same
+    // reason: an undrawn button nobody is told about is not a way out.
+    const gesture = !this.buttons && this.onHangup ? ' · right-click to hang up' : ''
+    args.push(`On call · ${this.who}`, `${clock(this.seconds)}${gesture}`)
     if (!first) {
       spawnDetached('notify-send', args)
       return
     }
-    const child = spawn('notify-send', ['-p', '-w', ...args], { stdio: ['ignore', 'pipe', 'ignore'] })
+    // No `default`: a click is how a card is read, and hanging up on one is
+    // how somebody loses a call to a stray mouse. Only the named button, and
+    // only where a button will be drawn.
+    const hangup = this.buttons && this.onHangup ? ['-A', 'hangup=Hang up'] : []
+    const child = spawn('notify-send', ['-p', '-w', ...hangup, ...args], { stdio: ['ignore', 'pipe', 'ignore'] })
     child.on('error', () => {
       if (this.child === child) this.child = null
     })
@@ -186,18 +224,39 @@ export class TalkTime {
     })
     /**
      * The card is off the screen and this process was not the one that took it
-     * off, so somebody swiped it away. A rewrite a second later would put it
-     * straight back — servers raise a fresh card for an id they no longer know
-     * — which is the whole reason this waits rather than firing and forgetting.
-     * The clock keeps its own time for the panel; only the insisting stops.
+     * off. Two ways that happens, and they are told apart by whether an action
+     * was printed on the way out.
+     *
+     * The button was pressed: end the call, and let the closing card say how
+     * long it was — somebody who pressed Hang up is still reading.
+     *
+     * Nothing was printed, so the card was closed by hand. On a server that
+     * draws buttons that is a sweep and means only "stop showing me this": a
+     * rewrite a second later would put the card straight back — servers raise
+     * a fresh card for an id they no longer know — which is the whole reason
+     * this waits rather than firing and forgetting. On a server that draws
+     * none, the same gesture is the right mouse button on the only card there
+     * is, and it means the same thing the button does. Either way the clock
+     * keeps its own time for the panel; only the insisting stops.
      */
     child.on('exit', () => {
       if (this.child !== child) return
       this.child = null
-      this.dismissed = true
+      const pressed = printed.split('\n').map((line) => line.trim()).includes('hangup')
+      const ending = pressed || (!this.buttons && Boolean(this.onHangup))
+      // A card somebody swept away stays away — the total is not worth raising
+      // a fresh one they did not ask for. A button press is a conversation
+      // with the card, and gets its farewell.
+      this.dismissed = !pressed
       this.id = 0
       if (this.timer) clearInterval(this.timer)
       this.timer = null
+      if (!ending) return
+      try {
+        Promise.resolve(this.onHangup()).catch(() => {})
+      } catch {
+        /* the call was already over */
+      }
     })
     this.child = child
   }
