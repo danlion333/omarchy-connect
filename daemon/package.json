@@ -13,9 +13,10 @@
   "scripts": {
     "start": "node bin/omarchy-connect.js start",
     "pair": "node bin/omarchy-connect.js pair",
-    "test": "node test/hostname.mjs && node test/overlay.mjs && node test/wol.mjs && node test/smoke.mjs && node test/tls.mjs && node test/calls.mjs && node test/ios.mjs && node test/agents.mjs && node test/agent-status.mjs && node test/remote.mjs",
+    "test": "node test/hostname.mjs && node test/overlay.mjs && node test/wol.mjs && node test/smoke.mjs && node test/tls.mjs && node test/calls.mjs && node test/locate.mjs && node test/ios.mjs && node test/agents.mjs && node test/agent-status.mjs && node test/remote.mjs",
     "test:tls": "node test/tls.mjs",
     "test:calls": "node test/calls.mjs",
+    "test:locate": "node test/locate.mjs",
     "test:ios": "node test/ios.mjs",
     "test:agents": "node test/agents.mjs && node test/agent-status.mjs && node test/remote.mjs",
     "test:hostname": "node test/hostname.mjs",

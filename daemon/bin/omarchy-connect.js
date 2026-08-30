@@ -506,6 +506,48 @@ async function cmdSms(args) {
 }
 
 /**
+ * Make the phone say where it is.
+ *
+ * The desktop end of the oldest question in the house. The daemon holds the
+ * request open until the handset answers, so a success here means the phone is
+ * audibly ringing somewhere rather than that a message went into the dark —
+ * which matters, because the person about to go looking is about to leave this
+ * room on the strength of it.
+ *
+ * `locate stop` is the same instruction backwards, for the phone found before
+ * the minute is up by somebody who is not holding it.
+ */
+async function cmdLocate(args) {
+  const [action = 'start'] = args._
+  const op = action === 'stop' || action === 'hush' ? 'stop' : action === 'start' || action === 'ring' ? 'start' : null
+  if (!op) {
+    log.error('usage: omarchy-connect locate [stop]')
+    process.exit(1)
+  }
+  const seconds = Number(args.seconds) || undefined
+  const res = await daemonRequest('/api/locate', { method: 'POST', body: { op, seconds }, timeout: 65_000 })
+  if (!res.status) {
+    log.error(
+      res.timeout
+        ? 'the phone did not answer — it may be off, asleep or off this network'
+        : 'daemon is not running — start it with `omarchy-connect start`',
+    )
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the phone could not be reached')
+    process.exit(1)
+  }
+  if (op === 'stop') {
+    log.ok('the phone has stopped ringing')
+    return
+  }
+  const until = res.data?.locate?.until
+  const left = until ? Math.max(0, Math.round((until - Date.now()) / 1000)) : 0
+  log.ok(`the phone is ringing${left ? ` for ${left}s` : ''} — the button on its screen stops it, or run \`omarchy-connect locate stop\``)
+}
+
+/**
  * Answer, reject, hang up or place a call.
  *
  * The daemon decides which road it takes. Over Bluetooth this needs nothing on
@@ -1762,6 +1804,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} timer <on|off>             count the conversation on screen
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
+  ${bold('locate')} [stop]               ring the phone until somebody finds it
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('remote')} <status|on|off>      let the phone in from off this network
@@ -1786,6 +1829,7 @@ const commands = {
   call: cmdCall,
   ios: cmdIos,
   phone: cmdPhone,
+  locate: cmdLocate,
   agent: cmdAgent,
   remote: cmdRemote,
   config: cmdConfig,

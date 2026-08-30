@@ -46,7 +46,7 @@ class OmarchyLinkModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("OmarchyLink")
 
-    Events("onNetworkChange", "onOutbox", "onLinkReconnect")
+    Events("onNetworkChange", "onOutbox", "onLinkReconnect", "onLocateFound")
 
     /**
      * The notification buttons run in a broadcast receiver, which has no way
@@ -62,12 +62,22 @@ class OmarchyLinkModule : Module() {
           /* the runtime went away mid-broadcast; the backlog still has it */
         }
       }
+      // The phone going quiet is news for the desktop that asked it to shout,
+      // and the button that does it is a broadcast receiver away from here.
+      Locator.onFound = {
+        try {
+          this@OmarchyLinkModule.sendEvent("onLocateFound", emptyMap<String, Any?>())
+        } catch (error: Exception) {
+          /* nothing listening; the desktop's own window expires on its own */
+        }
+      }
     }
 
     OnStartObserving { watchNetwork() }
     OnStopObserving { unwatchNetwork() }
     OnDestroy {
       LinkActionReceiver.listener = null
+      Locator.onFound = null
       unwatchNetwork()
     }
 
@@ -176,6 +186,22 @@ class OmarchyLinkModule : Module() {
     Function("noteFileAlert") { token: String, name: String, note: String ->
       DesktopAlerts.fileNote(context, token, name, note)
     }
+
+    /* ── finding this phone ───────────────────────────────────────────── */
+
+    /**
+     * The desktop asking where this phone is. It answers with noise: see
+     * `Locator` for why that noise is an alarm rather than a notification.
+     */
+    Function("locate") { seconds: Int ->
+      Locator.ring(context, seconds, LinkPrefs.desktop(context))
+    }
+
+    /** The desktop calling the search off, or the app's own Stop button. */
+    Function("hush") { Locator.hush(context, found = false) }
+
+    /** Whether this phone is shouting right now. */
+    Function("isLocating") { Locator.ringing }
 
     /**
      * Work asked for from a notification while there was no socket to do it

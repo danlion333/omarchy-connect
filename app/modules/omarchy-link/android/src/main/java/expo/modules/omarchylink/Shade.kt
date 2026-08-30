@@ -38,8 +38,9 @@ object Shade {
   const val DONE = "done"
   const val FILE = "file"
   const val CLIP = "clip"
+  const val LOCATE = "locate"
 
-  private val KINDS = listOf(AGENT, DONE, FILE, CLIP)
+  private val KINDS = listOf(AGENT, DONE, FILE, CLIP, LOCATE)
 
   fun manager(context: Context): NotificationManager? =
     context.applicationContext.getSystemService(NotificationManager::class.java)

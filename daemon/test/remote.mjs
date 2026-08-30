@@ -110,6 +110,7 @@ check('sending is off', caps.send === false)
 check('answering is off', caps.answer === false)
 check('the hands-free profile is off', caps.bluetooth === false && caps.ios === false)
 check('and no history is offered', caps.history === 0)
+check('finding the phone is off — it is not in the room to be found', caps.locate === false)
 check('the app is told why, not just no', caps.remote === true)
 
 check('everything that is not telephony still works', hello.capabilities.system && hello.capabilities.clipboard)
@@ -130,7 +131,7 @@ const req = (method, params = {}) =>
     phone.send({ t: 'req', id, method, params })
   })
 
-for (const method of ['phone.report', 'phone.history', 'phone.sent', 'phone.acted']) {
+for (const method of ['phone.report', 'phone.history', 'phone.sent', 'phone.acted', 'phone.located']) {
   const res = await req(method, { events: [], limit: 1, id: 'x', ok: true })
   check(`${method} is refused`, res.ok === false && /remote link/.test(res.error || ''), res.error)
 }

@@ -148,6 +148,15 @@ Panel {
       // button wears.
       : { key: "pair", label: "Pair", icon: "󰐲", tooltip: "Show a pairing QR code" }]
     if (bridge.running) list.push({ key: "send", label: "Send", icon: "󱀹", tooltip: "Pick a file to send to the phone" })
+    // Only with a phone on the socket, and it changes its mind mid-search:
+    // a button still offering to ring a phone that is already ringing is one
+    // whose only outcome is a second minute of noise.
+    if (bridge.canLocate) {
+      list.push(bridge.phoneRinging
+        ? { key: "hush", label: "Hush", icon: "󰂛", tooltip: "Stop the phone ringing — it stops on its own after a minute" }
+        : { key: "locate", label: "Ring", icon: "󰂚",
+            tooltip: "Ring the phone until somebody finds it — loud even on silent" })
+    }
     list.push({ key: "inbox", label: "Inbox", icon: "󰷏", tooltip: "Open the folder phones drop files into" })
     return list
   }
@@ -182,6 +191,8 @@ Panel {
     else if (key === "unpair") bridge.unpair(bridge.device)
     else if (key === "send") bridge.sendFile()
     else if (key === "inbox") bridge.openInbox()
+    else if (key === "locate") bridge.ringPhone()
+    else if (key === "hush") bridge.hushPhone()
   }
 
   /* ── cursor ────────────────────────────────────────────────────────── */
@@ -422,6 +433,13 @@ Panel {
         // matched, or a page already in flight, it does nothing rather than
         // guess which way the user meant it to go.
         else if (key === "b" && root.handsfreeAction !== "") bridge.toggleHandsfree()
+        // `f` for find, and only with a phone to find. It flips to hushing
+        // for as long as the phone is shouting, so the same key ends what it
+        // started rather than starting it again.
+        else if (key === "f" && bridge.canLocate) {
+          if (bridge.phoneRinging) bridge.hushPhone()
+          else bridge.ringPhone()
+        }
       }
 
       Flickable {

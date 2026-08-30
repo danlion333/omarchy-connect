@@ -18,6 +18,14 @@ type Events = {
   onOutbox: () => void
   /** The reconnect button on the ongoing notification. */
   onLinkReconnect: () => void
+  /**
+   * Somebody picked the phone up and stopped it shouting.
+   *
+   * The desktop asked the question, so the desktop is told the answer — see
+   * `api/locate`. It arrives with no payload because there is nothing to say
+   * beyond "found".
+   */
+  onLocateFound: () => void
 }
 
 /**
@@ -59,6 +67,9 @@ declare class OmarchyLink extends NativeModule<Events> {
   drainOutbox(): Promise<OutboxEntry[]>
   canPostNotifications(): boolean
   requestNotificationPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
+  locate(seconds: number): void
+  hush(): void
+  isLocating(): boolean
   isBatteryOptimized(): boolean
   openBatterySettings(): Promise<void>
   sendDatagram(payload: string, host: string, port: number): Promise<number>
@@ -286,6 +297,45 @@ export async function drainOutbox(): Promise<OutboxEntry[]> {
     return (await linkService()?.drainOutbox()) ?? []
   } catch {
     return []
+  }
+}
+
+/* ── finding this phone ─────────────────────────────────────────────────── */
+
+/**
+ * Whether this build can be found at all.
+ *
+ * The noise is an alarm played by the native module, so the answer is no in
+ * Expo Go and on iOS — and no in an installed build older than the feature,
+ * whose module is present but has never heard of `locate`. That last case is
+ * why the function itself is checked rather than only the module.
+ */
+export function locateSupported(): boolean {
+  const native = linkService()
+  return typeof (native as unknown as { locate?: unknown } | null)?.locate === 'function'
+}
+
+/** Start shouting for `seconds`, or reset the clock on a search under way. */
+export function startLocating(seconds: number): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot ring itself')
+  native.locate(seconds)
+}
+
+/** Stop, for any reason that is not the button on the phone itself. */
+export function stopLocating(): void {
+  try {
+    linkService()?.hush()
+  } catch {
+    /* a noise we cannot stop from here still stops on its own clock */
+  }
+}
+
+export function isLocating(): boolean {
+  try {
+    return linkService()?.isLocating() ?? false
+  } catch {
+    return false
   }
 }
 

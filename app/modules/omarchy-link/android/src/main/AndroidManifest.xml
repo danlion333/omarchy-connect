@@ -19,6 +19,12 @@
   <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+  <!--
+    A phone asked to say where it is buzzes as well as rings — a handset under
+    a cushion is heard as much as it is felt. Granted at install time; nothing
+    here asks for it at runtime.
+  -->
+  <uses-permission android:name="android.permission.VIBRATE" />
 
   <application>
     <service

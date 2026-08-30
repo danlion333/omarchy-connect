@@ -69,6 +69,21 @@ Item {
   readonly property var liveCall: (phone && phone.call)
     ? phone.call
     : ((bluetooth && bluetooth.call) ? bluetooth.call : null)
+  // Whether this desktop currently believes the phone is shouting, and so
+  // whether the button offers to start a search or to call one off. It is a
+  // belief rather than a fact — the handset owns the clock and reports back
+  // when somebody silences it — which is why the daemon publishes a window
+  // rather than a flag the panel would have to trust forever.
+  readonly property var locate: (phone && phone.locate)
+    ? phone.locate
+    : ({ ringing: false, since: null, until: null })
+  readonly property bool phoneRinging: locate.ringing === true
+  // Only worth a button with a phone on the socket, and not one that arrived
+  // down a tunnel: the search travels the app's own link, there is no
+  // Bluetooth road under this one, and the daemon refuses a remote phone the
+  // whole telephony channel anyway.
+  readonly property bool canLocate: online.filter(function (d) { return d.via !== "remote" }).length > 0
+
   // Two vocabularies meet here: the hands-free profile says "incoming", the
   // mirrored events say "ringing", and both mean a phone nobody has picked up.
   readonly property bool ringing: !!liveCall
@@ -235,6 +250,23 @@ Item {
 
   function hangUp() {
     invoke(Model.command(root.status, ["call", "hangup"]), "Hanging up…")
+  }
+
+  /* ── finding the phone ────────────────────────────────────────────── */
+
+  /**
+   * Make the handset shout, or stop it.
+   *
+   * Worth waiting on, like answering: the daemon holds the request open until
+   * the phone says it is actually ringing, and somebody about to search the
+   * flat deserves to know that before they start rather than after.
+   */
+  function ringPhone() {
+    invoke(Model.command(root.status, ["locate"]), "Asking the phone to ring…")
+  }
+
+  function hushPhone() {
+    invoke(Model.command(root.status, ["locate", "stop"]), "Quieting the phone…")
   }
 
   /**

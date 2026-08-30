@@ -36,6 +36,7 @@ the desktop and the app repaints in the same palette.
 | **TLS** | Optional https + wss with a self-signed certificate the phone pins from the QR — this is what covers the file transfers too. |
 | **Messages and calls** | Incoming SMS and call state from an Android phone become desktop notifications; reply with `omarchy-connect sms`. |
 | **Answering calls** | Pick up or decline from the desktop — click the ringing card to answer, right-click it to decline — and over Bluetooth the conversation comes out of your speakers, with that half needing no app at all. The desktop raises that link when the phone rings and puts it back down when the call ends, so the handset spends the rest of the day off the hands-free profile. A ringing phone rings here too, and a call you picked up keeps a card on screen counting the minutes. |
+| **Find my phone** | Ring the handset from the desktop — the bar panel's **Ring** button or `omarchy-connect locate` — loud on the alarm stream, so it is heard through silent mode, Do Not Disturb and a sofa cushion. It stops on the button on its own screen, on `locate stop`, or on its own after a minute; the desktop says when somebody found it. Android only, and only in a real build. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. The phone tells you the moment one stops to ask you something, and the usual one-word answer can be typed straight into the notification. It carries the desktop's own status line with it: which model, how full the context is, which permission mode, which branch — and a **compact** button that appears once the conversation is running out of room. The row says what the agent is *working on* in its own words rather than which tool it last reached for, with the checklist behind it one tap away. Every skill and slash command that desktop has is a searchable list one tap from the composer, so `/security-review` costs a thumb rather than a keyboard. How much of the plan is left sits above the session list, because that is the number that decides whether starting something long is a good idea. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Agents you start** | Pick up any conversation that desktop has ever had — the CLI's own `--resume`, from a list with the titles it wrote for them — or send a new agent off with a prompt and no terminal at all, and read what it did later. A background agent's own running commentary ("exploring project state for commit + merge flow") is on the phone, and nowhere else: nothing on the desktop draws it. Behind a second switch, `omarchy-connect agent spawn on`, because starting a process is not the same decision as reading one. |
@@ -93,6 +94,7 @@ omarchy-connect call ringtone <on|off|FILE>  what a ringing phone sounds like he
 omarchy-connect call timer <on|off>         count the conversation on screen
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
+omarchy-connect locate [stop]               ring the phone until somebody finds it
 omarchy-connect agent <status|enable|spawn|run|…>  read, answer and start coding agents
 omarchy-connect tls <status|enable|…>       serve https + wss with a pinned certificate
 omarchy-connect config [key] [value]        read or change configuration
@@ -515,6 +517,46 @@ says which road it took, and warns you when it took this one.
 
 Rejecting needs Android 9, answering Android 8.
 
+## Finding the phone
+
+The other direction of "where is my desktop": the desktop already answers that
+question with a noise, and this is the phone doing the same.
+
+```bash
+omarchy-connect locate          # ring it
+omarchy-connect locate stop     # enough
+```
+
+The panel has the same pair as one button — **Ring** while the phone is quiet,
+**Hush** while it is not — and `f` on the keyboard.
+
+What the handset does with the instruction is the whole feature. It plays the
+system alarm tone, looping, on the **alarm stream**, at that stream's maximum,
+and puts the volume back where it found it afterwards. The alarm stream is the
+point: silent mode and Do Not Disturb both mute notifications and neither mutes
+alarms, which is why an alarm clock is trusted to wake you — and a "find my
+phone" that stayed quiet on a silenced phone would only ever find the phones
+nobody loses. It buzzes at the same time, because a phone in a coat pocket is
+felt before it is heard.
+
+It stops when somebody presses the card on its screen — any part of it, because
+a person holding a shouting phone wants it to stop and not to aim — when the
+desktop says `locate stop`, or on its own after a minute. That last clock is
+the handset's own: a desktop that crashes mid-search cannot leave a phone
+shouting in an empty house.
+
+The desktop waits to hear that the phone is *actually* ringing before it says
+so, which is the difference between "go and look" and "the message went into
+the dark". And when the phone goes quiet by hand, the desktop is told — a
+notification saying it was found, and the panel button turning back into
+**Ring**.
+
+Android only, and only in a real build: the noise is an alarm played by the
+app's own native module, which Expo Go does not carry and iOS does not permit.
+A phone that cannot ring itself says so rather than letting the desktop believe
+it started something. And the whole surface is off on a remote link, for the
+same reason the telephony is — see [the protocol](docs/PROTOCOL.md#what-a-remote-link-cannot-do).
+
 ## On an iPhone
 
 Everything above works on an iPhone except the parts that need to read the
@@ -911,7 +953,7 @@ holds that at a time. Only pair a phone you own. The full model is in
 ## Tests
 
 ```bash
-cd daemon && npm test                   # protocol, TLS, call control, iPhone bridge
+cd daemon && npm test                   # protocol, TLS, call control, iPhone bridge, find my phone
 node app/test/integration.mjs           # the real app client against the daemon
 ```
 
@@ -931,7 +973,8 @@ daemon/         Node.js daemon — one dependency (ws)
                 sampling, hyprland IPC, the published status file, the
                 shell-plugin installer
   src/plugins/  system, clipboard, notifications, media, desktop, share,
-                input, device telemetry, SMS and calls, coding agents
+                input, device telemetry, SMS and calls, finding the phone,
+                coding agents
   src/agents/   one adapter per coding agent — where its transcript lives and
                 how to read a line of it — plus the lifecycle hooks the desktop
                 installs into Claude Code's own settings, and the writer that
@@ -943,10 +986,11 @@ daemon/         Node.js daemon — one dependency (ws)
                 and the card that counts while one is up
 shell/          Omarchy shell plugin — the desktop client (QML)
 app/            Expo app (TypeScript)
-  modules/      local Expo module — Android SMS and call state (Kotlin)
+  modules/      local Expo modules — Android SMS and call state, and the
+                background link with its notifications and its alarm (Kotlin)
   plugins/      config plugin — trusts the desktop's certificate on Android
   src/api/      WebSocket client, channel crypto, discovery, secure storage,
-                phone telemetry, SMS/call mirroring
+                phone telemetry, SMS/call mirroring, ringing when asked
   src/ui/       the card / readout / control kit
   src/screens/  stats, remote, agents, share, setup, pairing
 docs/           protocol specification

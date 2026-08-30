@@ -28,6 +28,7 @@ import {
   summary as phoneSummary,
   requestSend as requestSms,
   requestCall,
+  requestLocate,
   trackConnections,
 } from './plugins/phone.js'
 import {
@@ -426,6 +427,33 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         try {
           const { op, id = null, number = null, value = null } = JSON.parse(body || '{}')
           const result = await requestCall({ op, id, number, value })
+          publishState()
+          json(res, 200, { ok: true, ...result })
+        } catch (err) {
+          json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * Ring the phone until somebody finds it. Loopback only, and unlike
+     * `/api/call` there is no Bluetooth road under this one: hands-free would
+     * carry the sound to this desktop, and the whole point is to make a noise
+     * where the handset is rather than where the keyboard is.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/locate') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'start', seconds } = JSON.parse(body || '{}')
+          const { outcome } = requestLocate({ op, seconds })
+          const result = await outcome
           publishState()
           json(res, 200, { ok: true, ...result })
         } catch (err) {
@@ -957,7 +985,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     if (event === 'notification') counters.notifications += 1
     // A mirrored message or a ringing phone changes what the bar panel should
     // be showing, so it is republished the same way a connection is.
-    if (event === 'phone' && ['received', 'bluetooth', 'ios'].includes(data?.action)) publishState()
+    if (event === 'phone' && ['received', 'bluetooth', 'ios', 'located'].includes(data?.action)) publishState()
     // An agent that started, finished or got stuck changes what the bar shows.
     // The blocks streaming out of an open chat do not, and there are many.
     if (event === 'agent' && data?.kind !== 'blocks') publishState()
@@ -1026,7 +1054,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     async start() {
       // The phone plugin routes call control between Bluetooth and the app,
       // and needs to know whether there is an app to route to.
-      trackConnections(() => api.connections.length)
+      // Phones this desktop could actually ask something of. A socket that
+      // arrived down a tunnel is not one of them: the `phone` channel is never
+      // fanned out to it, so counting it would leave `requestSend`,
+      // `requestCall` and `requestLocate` waiting out a minute for an answer
+      // from a handset that was never told anything.
+      trackConnections(() => [...clients].filter((c) => c.device && c.via !== 'remote').length)
       startPlugins(bus)
       await new Promise((resolve, reject) => {
         httpServer.once('error', reject)
