@@ -275,7 +275,9 @@ copied a word is worth a line at the bottom of the shade and nothing more.
   Every turn an agent takes ends idle, so notifying on all of them would be a
   reason to switch the feature off; the threshold is what makes it mean "the
   thing you walked away from is done". The card comes down by itself if that
-  agent starts working again.
+  agent starts working again. Having that session's chat open on screen is what
+  suppresses it — a chat left open behind a locked phone is not somebody
+  reading, and gets told like any other.
 - **A file arrived.** `omarchy-connect send <file>` used to put an offer up and
   wait to be discovered. Now the phone says so, and for a picture or a video
   the notification carries a **Save** that fetches the file and files it in the

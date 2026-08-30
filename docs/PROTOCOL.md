@@ -821,6 +821,12 @@ that it happened and whether it worked. The body stays one `agents.detail`
 away, fetched only when someone taps. A `result` carries the `ref` of the
 `tool` it answers, so the app draws them as one thing.
 
+`text` and `thinking` blocks are never shortened: what the agent said is the
+thing the phone was opened for, and an answer ending in `… truncated` is the
+recommendation missing. The bodies behind a chip are the ones with a cap —
+`agents.detail` returns at most 32 KiB and says `… truncated` when a log ran
+past it.
+
 One tool call is the exception, and arrives whole:
 
 ```jsonc
