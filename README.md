@@ -91,6 +91,7 @@ omarchy-connect call bond [stop]            pair a handset over Bluetooth from h
 omarchy-connect call auto <presence|ring|off>  when to hold the Bluetooth link open
 omarchy-connect call ringtone <on|off|FILE>  what a ringing phone sounds like here
 omarchy-connect call timer <on|off>         count the conversation on screen
+omarchy-connect otp <on|off|auto|test …>    copy a one-time code out of an SMS
 omarchy-connect ios <status|pair|stop>      mirror an iPhone over Bluetooth LE
 omarchy-connect phone [--limit N]           mirrored messages and calls
 omarchy-connect agent <status|enable|spawn|run|…>  read, answer and start coding agents
@@ -230,6 +231,56 @@ omarchy-connect phone            # what has been mirrored so far
 > connecting, reconnecting, the error it hit — and carries a **Reconnect**
 > button for the moment you walk back into the flat and would rather not wait
 > out the backoff.
+
+### The code in the message
+
+Most of the SMS worth mirroring are not messages at all. They are six digits
+from a bank, valid for a minute, that exist to be typed into a browser two
+centimetres from the notification showing them — and a desktop that repeats
+them and stops there has automated the reading and left the retyping, which was
+the whole job.
+
+So a mirrored message that turns out to carry a one-time code gets a card with
+a **Copy** button on it, and the button puts the code on the clipboard. On the
+Omarchy shell, which draws no buttons on notifications, the click does it and
+the card says so. Apple has shipped this for years as Security Code AutoFill;
+on Linux there was nothing.
+
+```bash
+omarchy-connect otp                  # what happens to a code today
+omarchy-connect otp auto on          # skip the button — straight to the clipboard
+omarchy-connect otp off              # leave codes where they are
+omarchy-connect otp test 'Ваш код підтвердження: 5821'
+```
+
+`auto` is the faster half of the trade and the less careful one: it overwrites
+whatever was on the clipboard without being asked, and it does so on the
+strength of a guess about what the message meant. It is off until you say
+otherwise; the button is the default because a button is a decision.
+
+Whether a message has a code in it is decided by the words around the number,
+not by the number: any four digits could be a code and most are not — an
+amount, a date, the last four of a card. The phrase list is
+[otphelper](https://github.com/jd1378/otphelper)'s, an Android app that has
+been doing this against real messages for years, and it is the reason this
+works in Ukrainian, Turkish, Chinese and Persian rather than only in English.
+It carries an ignore list too, which is what keeps *20% off with discount code
+SPRING* from quietly replacing your clipboard with a coupon.
+
+Digits are matched as `\p{Nd}` rather than `\d`, so a bank that writes ۱۲۳۴۵۶
+is understood and the code arrives as `123456`. An SMS comes with no locale
+attached and the desktop's own locale says nothing about who is texting it, so
+there is nothing else this could honestly be.
+
+`otp test` is there because the list is long, borrowed, and written in a couple
+of dozen scripts: the way to find out whether it knows your bank is to hand it
+one of your bank's messages and look, rather than to find out during the next
+login.
+
+The code goes to the clipboard and no further. It is not published back to the
+phone as a desktop copy — the clipboard sync would otherwise send the message's
+own code back down the wire it arrived on — and, like everything else
+telephonic, none of this exists on a remote link.
 
 ## Being told an agent is waiting
 
@@ -926,7 +977,7 @@ holds that at a time. Only pair a phone you own. The full model is in
 ## Tests
 
 ```bash
-cd daemon && npm test                   # protocol, TLS, call control, iPhone bridge
+cd daemon && npm test                   # protocol, TLS, call control, one-time codes, iPhone bridge
 node app/test/integration.mjs           # the real app client against the daemon
 ```
 
@@ -937,6 +988,14 @@ as far as the antenna and no further — nothing in a test can make a phone ring
 the radio would deliver and split them at every awkward boundary, and stand in
 for `notify-send` and `bluetoothctl` so a test run cannot throw a notification
 onto your screen or put your adapter on the air.
+
+The one-time-code suite is in two halves for the same reason the feature is:
+the extractor is exercised directly against messages in eight languages, which
+is the half that decides whether this works outside the English-speaking web,
+and the wiring is exercised against a running daemon with stand-ins for
+libnotify and the clipboard — including a clipboard watcher that really does
+fire, so "the copied code does not sail back to the phone" is a check that
+could fail rather than one that passes because nothing was listening.
 
 ## Layout
 

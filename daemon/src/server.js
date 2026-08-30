@@ -28,6 +28,7 @@ import {
   summary as phoneSummary,
   requestSend as requestSms,
   requestCall,
+  requestOtp,
   trackConnections,
 } from './plugins/phone.js'
 import {
@@ -430,6 +431,32 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           json(res, 200, { ok: true, ...result })
         } catch (err) {
           json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * The Copy button on a mirrored one-time code: whether there is one, and
+     * whether it presses itself. Loopback only, like everything else that
+     * writes the config — and `test` reads a message the caller supplies
+     * rather than one that arrived, so nothing private crosses this route.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/otp') {
+      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', () => {
+        try {
+          const { op = 'status', value = null } = JSON.parse(body || '{}')
+          const result = requestOtp({ op, value })
+          publishState()
+          return json(res, 200, result)
+        } catch (err) {
+          return json(res, 400, { error: err.message })
         }
       })
       return undefined

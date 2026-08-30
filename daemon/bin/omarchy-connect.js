@@ -904,6 +904,82 @@ async function cmdIos(args) {
   )
 }
 
+/** What becomes of a one-time code that arrives in a mirrored message. */
+function otpLine(state) {
+  if (!state) return dim('—')
+  if (!state.enabled) return dim('off')
+  if (!state.clipboard) return dim('no wl-copy on this machine')
+  const seen = `${state.seen} seen · ${state.copied} copied`
+  return state.autoCopy ? `straight onto the clipboard · ${seen}` : `a Copy button on the card · ${seen}`
+}
+
+/**
+ * The Copy button on a mirrored one-time code.
+ *
+ * `test` is the command that matters here. The phrase list this reads with is
+ * long, written in a couple of dozen scripts, and borrowed — so the way to
+ * find out whether it knows your bank is to hand it one of your bank's
+ * messages and look, rather than to wait for the next real one and miss it.
+ */
+async function cmdOtp(args) {
+  const [word = 'status', ...rest] = args._
+  const action = String(word).toLowerCase()
+
+  const body =
+    action === 'test'
+      ? { op: 'test', value: rest.join(' ') }
+      : action === 'auto'
+        ? { op: 'auto', value: rest[0] }
+        : action === 'on' || action === 'off'
+          ? { op: 'copy', value: action }
+          : action === 'status'
+            ? { op: 'status' }
+            : null
+
+  if (!body) {
+    log.error('usage: omarchy-connect otp <status|on|off|auto on|auto off|test MESSAGE…>')
+    process.exit(1)
+  }
+  if (body.op === 'test' && !body.value) {
+    log.error('usage: omarchy-connect otp test <message…>')
+    process.exit(1)
+  }
+  if (body.op === 'auto' && !body.value) {
+    log.error('usage: omarchy-connect otp auto <on|off>')
+    process.exit(1)
+  }
+
+  const res = await daemonRequest('/api/otp', { method: 'POST', body, timeout: 10_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'could not read that')
+    process.exit(1)
+  }
+
+  const state = res.data?.otp || {}
+  if (body.op === 'test') {
+    if (res.data.code) log.ok(`the code in that message is ${bold(res.data.code)}`)
+    // A `no` is worth explaining: half the time it is the message and half the
+    // time it is the list, and only the person holding the message can tell.
+    else log.error(`no code found — ${res.data.why}`)
+    return
+  }
+
+  log.ok(
+    !state.enabled
+      ? 'a code in a message is left where it is'
+      : state.autoCopy
+        ? 'a code in a message goes straight onto the clipboard'
+        : 'a code in a message gets a Copy button on its notification',
+  )
+  if (state.enabled && !state.clipboard) {
+    console.log(dim('  nothing on this machine can write the clipboard — install wl-clipboard'))
+  }
+}
+
 /** What the phone has mirrored over: messages and calls, newest first. */
 async function cmdPhone(args) {
   const snapshot = await liveStatus()
@@ -918,6 +994,7 @@ async function cmdPhone(args) {
       ['sent', String(phone.sent)],
       ['answered', String(phone.answered ?? 0)],
       ['notifications', String(phone.notifications ?? 0)],
+      ['codes', otpLine(phone.otp)],
       ['bluetooth', bt.connected ? bt.device || 'connected' : dim('not connected')],
       ['iphone', ios.subscribed ? ios.device || 'mirroring' : dim('not mirroring')],
     ]),
@@ -1760,6 +1837,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('call')} auto <presence|ring|off>  when to hold the Bluetooth link open
   ${bold('call')} ringtone <on|off|FILE>     what a ringing phone sounds like here
   ${bold('call')} timer <on|off>             count the conversation on screen
+  ${bold('otp')} <on|off|auto|test …>     copy a one-time code out of an SMS
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
@@ -1784,6 +1862,7 @@ const commands = {
   status: cmdStatus,
   sms: cmdSms,
   call: cmdCall,
+  otp: cmdOtp,
   ios: cmdIos,
   phone: cmdPhone,
   agent: cmdAgent,

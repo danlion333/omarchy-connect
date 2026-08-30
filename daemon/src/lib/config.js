@@ -57,6 +57,17 @@ const DEFAULTS = {
    * picked up, the way it was before.
    */
   callTimer: { enabled: true },
+  /**
+   * The one-time code inside a mirrored message.
+   *
+   * `enabled` puts a Copy button on the card of any SMS that turns out to
+   * carry a code — the thing you were reaching for the handset to read.
+   * `autoCopy` skips the button and puts the code on the clipboard the moment
+   * it arrives, which is the faster half of the trade and the less private
+   * one: it overwrites whatever was on the clipboard without being asked, so
+   * it is off until somebody says otherwise.
+   */
+  otp: { enabled: true, autoCopy: false },
   devices: [],
 }
 

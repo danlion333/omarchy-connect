@@ -7,6 +7,8 @@ import { handsfree, isRinging, isLive, isTalking } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
 import { talkTime } from '../lib/talktime.js'
 import { ancs } from '../lib/ancs.js'
+import { extractCode, explain as explainCode } from '../lib/otp.js'
+import { claim } from './clipboard.js'
 import { loadConfig, pairedDevice, saveConfig } from '../lib/config.js'
 
 /**
@@ -63,6 +65,10 @@ const SWEEP_MS = 5000
 const DEDUPE_MS = 6000
 /** Long enough to reach the desk, short enough that voicemail wins after. */
 const RING_TIMEOUT_MS = 45_000
+/** About as long as the code on it is good for. */
+const CODE_TIMEOUT_MS = 60_000
+/** How long "123456 copied" stays up in place of the card that copied it. */
+const COPIED_MS = 3000
 
 /** Newest first. Lives in memory: the phone is the real archive. */
 const history = []
@@ -88,6 +94,11 @@ let live = null
  * enough for both. Zero means nobody is talking.
  */
 let activeSince = 0
+
+/** What to do with a one-time code in a mirrored message. */
+let otp = { enabled: true, autoCopy: false }
+/** The `notify-send` processes holding open Copy buttons, if any. */
+const codeCards = new Set()
 
 /**
  * Notification servers that advertise `actions` and draw no buttons.
@@ -136,7 +147,7 @@ async function readNotificationServer() {
   wireHangUp()
 }
 
-const counters = { messages: 0, calls: 0, missed: 0, sent: 0, answered: 0, rejected: 0, notifications: 0 }
+const counters = { messages: 0, calls: 0, missed: 0, sent: 0, answered: 0, rejected: 0, notifications: 0, codes: 0, copied: 0 }
 /** ANCS notification ids for calls still on screen, so we can act on them. */
 const ringingUids = new Map()
 
@@ -458,6 +469,108 @@ function ring(entry, actionable) {
   ringer = child
 }
 
+/**
+ * Put a code on the clipboard, quietly.
+ *
+ * `claim` rather than `wl-copy`, because the clipboard plugin is watching:
+ * an unclaimed write is republished to the phone as a fresh desktop copy, and
+ * the code would go back down the wire it arrived on.
+ */
+async function copyCode(code) {
+  try {
+    await claim(code)
+    counters.copied += 1
+    return true
+  } catch (err) {
+    log.warn(`could not copy the one-time code: ${err.message}`)
+    return false
+  }
+}
+
+/**
+ * Say what became of the offer, on the card that made it.
+ *
+ * `-r` rewrites in place, so the card that held the Copy button becomes the
+ * card that says the code was taken — one notification changing its mind
+ * rather than a second one appearing under the first. A server that has
+ * already forgotten the id raises a fresh card, which is the right fallback.
+ */
+function answerCard(id, head, line) {
+  if (!id) return
+  spawnDetached('notify-send', ['-a', 'Omarchy Connect', '-r', String(id), '-t', String(COPIED_MS), head, line])
+}
+
+/**
+ * A message with a one-time code in it, and a way to take the code.
+ *
+ * This is the entire feature: the six digits you were about to pick the phone
+ * up and squint at are already on this screen, so the card they are on gets a
+ * button that puts them on the clipboard. `notify-send -A` is the same trick a
+ * ringing call uses — it holds the notification open, waits, and prints the
+ * name of whatever was clicked.
+ *
+ * `default` is registered alongside the named action for the servers that draw
+ * no buttons and only run the action a click invokes; on those the body says
+ * so, because otherwise the card looks like a plain readout of a code somebody
+ * still has to type by hand.
+ */
+function offerCode(entry, code) {
+  counters.codes += 1
+  const head = `SMS · ${caller(entry)}`
+  const message = entry.body || ''
+
+  // Nothing to click on, so the code is taken now and the card only reports
+  // it. This is the mode that costs a keystroke and the clipboard you had.
+  if (otp.autoCopy) {
+    copyCode(code).then((ok) => {
+      const note = ok ? `${message}\n${code} is on the clipboard` : message
+      spawnDetached('notify-send', ['-a', 'Omarchy Connect', head, note])
+    })
+    return
+  }
+
+  const body = drawsButtons ? message : `${message}\nclick to copy ${code}`
+  const child = spawn(
+    'notify-send',
+    [
+      '-a', 'Omarchy Connect',
+      '-p',
+      '-t', String(CODE_TIMEOUT_MS),
+      '-A', `default=Copy ${code}`,
+      '-A', `copy=Copy ${code}`,
+      head,
+      body,
+    ],
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  child.on('error', () => codeCards.delete(child))
+  child.stdout.setEncoding('utf8')
+  let printed = ''
+  let cardId = 0
+  child.stdout.on('data', (chunk) => {
+    printed += chunk
+    // `-p` prints the server's id first; the clicked action, if there is one,
+    // follows on a later line. The id is what lets the answer land on the same
+    // card rather than beside it.
+    const first = printed.split('\n', 1)[0].trim()
+    if (!cardId && /^\d+$/.test(first)) cardId = Number(first)
+  })
+  child.on('exit', () => {
+    codeCards.delete(child)
+    const clicked = printed
+      .split('\n')
+      .map((line) => line.trim())
+      .some((line) => line === 'default' || line === 'copy')
+    if (!clicked) return
+    copyCode(code).then((ok) => {
+      answerCard(cardId, head, ok ? `${code} copied` : 'could not reach the clipboard')
+    })
+  })
+  // A card waiting for a click is not a reason for the daemon to stay up.
+  child.unref()
+  codeCards.add(child)
+}
+
 function notify(entry) {
   // The sound comes first and does not depend on libnotify: a machine with no
   // `notify-send` can still be in another room from the handset, and that is
@@ -473,6 +586,13 @@ function notify(entry) {
     return
   }
   if (entry.kind === 'sms') {
+    // A message with a code in it is the one message the desktop can do
+    // something about rather than merely repeat, so it gets its own card.
+    const code = otp.enabled ? extractCode(entry.body) : null
+    if (code) {
+      offerCode(entry, code)
+      return
+    }
     spawnDetached('notify-send', ['-a', 'Omarchy Connect', `SMS · ${from}`, entry.body || ''])
     return
   }
@@ -740,7 +860,66 @@ export function summary() {
     ios: ancs.summary(),
     ringtone: ringtone.summary(),
     timer: talkTime.summary(),
+    otp: otpSummary(),
   }
+}
+
+/** What a panel or `status` should say about one-time codes. */
+export function otpSummary() {
+  return {
+    enabled: otp.enabled,
+    autoCopy: otp.autoCopy,
+    // Whether there is a clipboard to copy to at all: without `wl-copy` the
+    // button would be a button that does nothing.
+    clipboard: has('wl-copy'),
+    seen: counters.codes,
+    copied: counters.copied,
+  }
+}
+
+/**
+ * Turn the code button on or off, hand it the clipboard outright, or ask what
+ * it would make of a particular message.
+ *
+ * `test` is here because the honest answer to "will this work for my bank?" is
+ * to paste one of their messages in and look — the phrase list is long and
+ * somebody else's, and a code it fails to see is a bug report that needs the
+ * text that produced it.
+ *
+ * Written through the daemon rather than into the config behind its back: a
+ * setting the running process has not heard about is a setting that appears to
+ * have done nothing.
+ */
+export function requestOtp({ op = 'status', value = null } = {}) {
+  const action = String(op || '').toLowerCase()
+
+  if (action === 'test') {
+    const message = typeof value === 'string' ? value : ''
+    if (!message) throw new Error('a message to read is required')
+    return { ok: true, ...explainCode(message), otp: otpSummary() }
+  }
+
+  if (action !== 'status') {
+    const word = String(value || '').toLowerCase()
+    if (word !== 'on' && word !== 'off') throw new Error(`${action} is on or off`)
+    if (action !== 'copy' && action !== 'auto') throw new Error(`unknown one-time code action: ${op}`)
+    const cfg = loadConfig()
+    const settings = { enabled: true, autoCopy: false, ...(cfg.otp || {}) }
+    if (action === 'copy') {
+      settings.enabled = word === 'on'
+      // Handing the clipboard over to a switch that is off would be a setting
+      // with nothing behind it.
+      if (!settings.enabled) settings.autoCopy = false
+    } else {
+      settings.autoCopy = word === 'on'
+      if (settings.autoCopy) settings.enabled = true
+    }
+    cfg.otp = settings
+    saveConfig(cfg)
+    otp = settings
+  }
+
+  return { ok: true, otp: otpSummary() }
 }
 
 /**
@@ -1292,6 +1471,7 @@ export default {
     handsfree.configure(loadConfig().handsfree)
     ringtone.configure(loadConfig().ringtone)
     talkTime.configure(loadConfig().callTimer)
+    otp = { enabled: true, autoCopy: false, ...(loadConfig().otp || {}) }
     /**
      * The phone appearing on the network is what tells the link to go up, and
      * the socket closing is what tells it to come down again. Neither is
@@ -1356,6 +1536,15 @@ export default {
 
   stop() {
     silence()
+    // A Copy button whose daemon is gone would copy nothing when pressed.
+    for (const child of codeCards) {
+      try {
+        child.kill()
+      } catch {
+        /* already gone */
+      }
+    }
+    codeCards.clear()
     talkTime.stop({ quiet: true })
     live = null
     activeSince = 0
