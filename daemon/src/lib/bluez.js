@@ -280,6 +280,25 @@ export async function disconnectProfile(path, uuid = HFP_AG) {
 }
 
 /**
+ * And the whole device, for the connection nobody here asked for.
+ *
+ * `disconnectProfile` is the ordinary verb: the daemon raises one profile, so
+ * one profile is what it puts back down. A handset that paged this desktop on
+ * its own is a different animal — BlueZ and the phone bring up everything the
+ * bond carries, A2DP and AVRCP beside the hands-free profile, and putting down
+ * our one profile leaves the device connected by the rest. To a Bluetooth
+ * screen, and to a phone deciding where its audio lives, that phone is still
+ * attached to the desktop it was supposed to be parked from.
+ * `Device1.Disconnect` is the counterpart of the auto-connect that raised it:
+ * everything at once, bond and trust kept.
+ */
+export async function disconnectDevice(path) {
+  const res = await busctl(['call', BUS, path, DEVICE, 'Disconnect'], { timeout: 8000 })
+  if (res.ok || /not connected/i.test(res.stderr)) return { ok: true }
+  return { ok: false, error: reason(res.stderr) }
+}
+
+/**
  * `busctl` prints the D-Bus error name and message on one line, and the name
  * is noise to anyone reading a terminal: what the user can act on is "Page
  * Timeout", not `org.bluez.Error.Failed`.

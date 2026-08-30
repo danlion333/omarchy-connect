@@ -389,14 +389,21 @@ function stubbed(policy = 'presence') {
   const link = stubbed('ring')
   const dropped = []
   link.drop = async (opts = {}) => {
-    dropped.push(opts.force === true)
+    dropped.push(`force=${opts.force === true} device=${opts.device === true}`)
     link.state = { available: true, gateway: null, calls: [] }
     return true
   }
   link.apply({ available: true, gateway: { path: '/ag1', address: 'AA', audio: 'idle' }, calls: [] })
   check('a stray hands-free link is noticed', link.linger !== null)
   await new Promise((resolve) => setTimeout(resolve, 3200))
-  check('and put back down, without pretending the daemon raised it', dropped.join() === 'true', dropped.join() || 'nothing')
+  // `device` is the half that matters at login: the phone auto-connected with
+  // every profile the bond carries, and a park that only took down ours would
+  // leave the device attached by the rest.
+  check(
+    'and put back down whole — the device, without pretending the daemon raised it',
+    dropped.join() === 'force=true device=true',
+    dropped.join() || 'nothing',
+  )
   link.stop()
 }
 

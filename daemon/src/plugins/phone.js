@@ -946,7 +946,9 @@ export async function requestCall({ op, id = null, number = null, value = null }
     return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary() }
   }
   if (action === 'disconnect') {
-    await handsfree.drop({ force: true })
+    // Somebody who typed `disconnect` wants the phone off this desktop, not
+    // one profile off the phone — device-level, like the parking drops.
+    await handsfree.drop({ force: true, device: true })
     return { ok: true, via: 'bluetooth', bluetooth: handsfree.summary() }
   }
 

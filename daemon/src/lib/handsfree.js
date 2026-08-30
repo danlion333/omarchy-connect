@@ -9,6 +9,7 @@ import {
   closeToPairing,
   connectProfile,
   devices,
+  disconnectDevice,
   disconnectProfile,
   handsets,
   matchesName,
@@ -536,13 +537,15 @@ export class Handsfree extends EventEmitter {
      * call. A handset left on the profile is a handset stuck in a voice
      * codec, which is the exact behaviour `standDown` spends its life
      * undoing. So unless a call began inside the window, the link is parked:
-     * bond kept, trust kept, profile down until a ring wants it.
+     * bond kept, trust kept, the *device* down until a ring wants it — the
+     * whole device, because a freshly bonded phone celebrates by raising
+     * every profile it has, and a park that leaves those up is no park.
      */
     let parked = false
     // `this.connected` cannot answer "did it park" here: PipeWire withdraws
     // the gateway a beat after BlueZ drops the profile, so the honest answer
     // is whether the drop itself was taken, not what the mirror shows yet.
-    if (up && !this.inUse()) parked = (await this.drop({ force: true }).catch(() => false)) === true
+    if (up && !this.inUse()) parked = (await this.drop({ force: true, device: true }).catch(() => false)) === true
     return { ok: true, connected: up, parked, handset: state.handset, trusted: trusted.ok }
   }
 
@@ -580,15 +583,24 @@ export class Handsfree extends EventEmitter {
     return this.connected
   }
 
-  /** Put down a link this daemon raised. One it did not raise is not its to drop. */
-  async drop({ force = false } = {}) {
+  /**
+   * Put down a link this daemon raised. One it did not raise is not its to
+   * drop — and `device` says how far down. The profile alone is the polite
+   * default for a link that was ours: we raised one profile, we put one back.
+   * The whole device is for parking, and it exists because an auto-connecting
+   * handset raises everything the bond carries — a park that takes down our
+   * profile and leaves A2DP up is a phone still wearing the desktop, which
+   * every Bluetooth screen goes on reporting as connected.
+   */
+  async drop({ force = false, device = false } = {}) {
     this.cancelLinger()
     if (!force && !this.link.raisedBy) return false
     const handset = await this.handset().catch(() => null)
     this.link.raisedBy = null
     if (!handset) return false
-    const res = await disconnectProfile(handset.path)
+    const res = device ? await disconnectDevice(handset.path) : await disconnectProfile(handset.path)
     if (!res.ok) log.debug(`handsfree: could not drop the link: ${res.error}`)
+    else if (device) log.info(`bluetooth: disconnected ${handset.name || handset.address} — parked until a call wants it`)
     else log.info(`bluetooth: dropped the hands-free link to ${handset.name || handset.address}`)
     await this.refresh().catch(() => {})
     this.emit('link', this.link)
@@ -692,7 +704,11 @@ export class Handsfree extends EventEmitter {
           log.info('bluetooth: the handset keeps raising the hands-free link — leaving it where it is')
         }
       }
-      this.drop({ force: stray }).catch(() => {})
+      // Down at the device, not the profile. Whatever paged this desktop
+      // raised every profile the bond carries, and the whole of the `ring`
+      // policy is that outside a call the phone is *off* this machine — not
+      // off one profile and attached by the rest.
+      this.drop({ force: stray, device: true }).catch(() => {})
     }, mine === 'ring' ? LINGER_MS : STRAY_MS)
     this.linger.unref?.()
   }
