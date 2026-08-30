@@ -516,6 +516,29 @@ const waitFor = async (events, predicate, ms = 4000) => {
     }),
   )
   check('a harness injection that announces itself is believed', harness.length === 0, JSON.stringify(harness))
+
+  // What the agent *said* crosses whole. A long answer used to stop at four
+  // thousand characters with `… truncated`, which is the end of the reasoning
+  // and the recommendation gone — the two parts the phone was opened for.
+  const essay = 'x'.repeat(12_000)
+  const long = claude.parse(
+    line({ type: 'assistant', timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: essay }] } }),
+  )
+  check('a long answer is not cut short', long.length === 1 && long[0].text === essay, String(long[0]?.text?.length))
+  const pasted = claude.parse(
+    line({ type: 'user', timestamp: at, message: { role: 'user', content: essay } }),
+  )
+  check('nor is a long thing the person said', pasted.length === 1 && pasted[0].text === essay, String(pasted[0]?.text?.length))
+  // The body behind a chip is a different animal: a log nobody scrolls to the
+  // end of on a phone, and it stays capped.
+  const dump = claude.parse(
+    line({
+      type: 'user',
+      timestamp: at,
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'y'.repeat(64 * 1024) }] },
+    }),
+  )
+  check('but a huge tool result is still clamped', dump.length === 1 && dump[0].full.endsWith('… truncated'), String(dump[0]?.full?.length))
 }
 
 /* ── the gate ──────────────────────────────────────────────────────────── */

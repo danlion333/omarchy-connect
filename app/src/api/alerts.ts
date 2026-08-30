@@ -57,6 +57,18 @@ let prefs: AlertPrefs = { ...DEFAULT_ALERTS }
 let focused: string | null = null
 
 /**
+ * Open on screen, and *being looked at*.
+ *
+ * A chat screen stays mounted while the phone is in a pocket, so `focused`
+ * alone says "this news has already reached its audience" about a phone that
+ * is face-down on a table. That is precisely the case a finished-agent
+ * notification exists for: you read a little, put the phone away, and the
+ * agent worked on. So the suppression only holds while the app is actually
+ * in front of somebody.
+ */
+const reading = (id: string) => focused === id && AppState.currentState === 'active'
+
+/**
  * What each waiting session was last announced as. The value is the prompt, so
  * a reworded question can be told apart from the same one arriving twice.
  */
@@ -68,6 +80,18 @@ const workingSince = new Map<string, number>()
 
 /** Sessions with a "finished" card on screen, so it can be taken down again. */
 const finished = new Set<string>()
+
+/**
+ * Coming back to a chat that was left open is reading it again, and whatever
+ * the shade raised about that session while the phone was away has been seen
+ * by the act of returning to it.
+ */
+AppState.addEventListener('change', (state) => {
+  if (state !== 'active' || !focused) return
+  clearAlert('agent', focused)
+  clearAlert('done', focused)
+  finished.delete(focused)
+})
 
 export function setAlertPrefs(next: AlertPrefs) {
   const before = prefs
@@ -146,7 +170,7 @@ export function syncAgentAlerts(sessions: AgentSession[]) {
     const started = workingSince.get(session.id)
     workingSince.delete(session.id)
     if (started === undefined || now - started < WORTH_WAITING_FOR) continue
-    if (session.id === focused) continue
+    if (reading(session.id)) continue
     finished.add(session.id)
     notifyAgentDone({
       id: session.id,
@@ -183,7 +207,7 @@ export function syncAgentAlerts(sessions: AgentSession[]) {
     const before = announced.get(id)
     if (before === prompt) continue
     announced.set(id, prompt)
-    if (id === focused) continue
+    if (reading(id)) continue
     notifyAgentWaiting({
       id,
       agent: session.agent,

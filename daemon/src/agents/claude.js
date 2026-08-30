@@ -26,7 +26,6 @@ export const PROJECTS_DIR = path.join(HOME, '.claude', 'projects')
 export const slugFor = (cwd) => String(cwd || '').replace(/[^a-zA-Z0-9]/g, '-')
 
 const MAX_SUMMARY = 160
-const MAX_TEXT = 4000
 const MAX_FULL = 32 * 1024
 
 /** Types that are Claude talking to itself about its own state, not to us. */
@@ -51,6 +50,15 @@ const oneLine = (value, max = MAX_SUMMARY) => {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text
 }
 
+/**
+ * A cap for the bodies behind a chip — never for what was *said*.
+ *
+ * Tool output is a file, a log, a directory listing: something a phone reads
+ * the top of, and the rest of which is a scroll nobody performs. What the
+ * agent wrote is the opposite — it is the answer, and an answer that stops
+ * mid-sentence with `… truncated` is the one thing the phone was opened for,
+ * missing. So prose crosses whole and only the bodies are clamped.
+ */
 const clamp = (text, max) => {
   const value = String(text ?? '')
   return value.length > max ? `${value.slice(0, max)}\n… truncated` : value
@@ -688,7 +696,7 @@ export default {
       if (typeof content === 'string') {
         if (entry.isMeta) return []
         const text = userText(content)
-        return text ? [{ role: 'user', kind: 'text', at, text: clamp(text, MAX_TEXT) }] : []
+        return text ? [{ role: 'user', kind: 'text', at, text }] : []
       }
       const blocks = []
       for (const part of Array.isArray(content) ? content : []) {
@@ -712,7 +720,7 @@ export default {
           })
         } else if (part?.type === 'text' && !entry.isMeta) {
           const text = userText(part.text)
-          if (text) blocks.push({ role: 'user', kind: 'text', at, text: clamp(text, MAX_TEXT) })
+          if (text) blocks.push({ role: 'user', kind: 'text', at, text })
         }
       }
       return blocks
@@ -722,12 +730,12 @@ export default {
       const blocks = []
       for (const part of Array.isArray(message.content) ? message.content : []) {
         if (part?.type === 'text') {
-          if (part.text?.trim()) blocks.push({ role: 'assistant', kind: 'text', at, text: clamp(part.text, MAX_TEXT) })
+          if (part.text?.trim()) blocks.push({ role: 'assistant', kind: 'text', at, text: part.text })
         } else if (part?.type === 'thinking') {
           // The `signature` beside it is encrypted and meaningless to a reader;
           // never put it on screen. An empty `thinking` is the normal case.
           const text = typeof part.thinking === 'string' ? part.thinking.trim() : ''
-          blocks.push({ role: 'assistant', kind: 'thinking', at, text: clamp(text, MAX_TEXT) })
+          blocks.push({ role: 'assistant', kind: 'thinking', at, text })
         } else if (part?.type === 'tool_use') {
           const question = part.name === QUESTION_TOOL ? questionBlock(part.input) : null
           if (question) {
