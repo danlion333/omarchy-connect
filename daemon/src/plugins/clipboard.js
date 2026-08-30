@@ -23,6 +23,22 @@ async function readClipboard() {
   return { kind: 'text', text, truncated: false }
 }
 
+/**
+ * Put text on the clipboard as if the user had copied it.
+ *
+ * The `lastSeen` write is the whole reason this is not a bare `wlCopy`. The
+ * watcher fires on every clipboard change including ours, and a change it does
+ * not recognise is published to the phone as "the desktop copied something" —
+ * so a one-time code copied off a mirrored SMS would sail straight back to the
+ * handset it came from. Claiming the text first makes that echo silent.
+ */
+export async function claim(text) {
+  if (!has('wl-copy')) throw new Error('wl-copy not installed')
+  lastSeen = text
+  await wlCopy(text)
+  return { ok: true, bytes: Buffer.byteLength(text) }
+}
+
 export default {
   name: 'clipboard',
 
@@ -64,10 +80,7 @@ export default {
     async 'clipboard.set'({ text }) {
       if (typeof text !== 'string') throw new Error('text required')
       if (Buffer.byteLength(text) > MAX_BYTES) throw new Error('clipboard payload too large')
-      if (!has('wl-copy')) throw new Error('wl-copy not installed')
-      lastSeen = text
-      await wlCopy(text)
-      return { ok: true, bytes: Buffer.byteLength(text) }
+      return claim(text)
     },
   },
 }

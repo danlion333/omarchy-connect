@@ -528,6 +528,29 @@ answered, declined or rings out. It stops early if the handset opens the audio
 link while still ringing, because that is a phone sending its own ringing tone
 and one ring is enough.
 
+`otp` in the config is what happens to a one-time code inside a mirrored
+message: `enabled` puts a **Copy** button on the card of any SMS that turns out
+to carry one, and `autoCopy` skips the button and writes the code to the
+clipboard as it arrives. The second is off by default — it overwrites the
+clipboard unasked, on the strength of a guess about what the message meant.
+
+Whether a message carries a code is decided by the words around the number
+rather than by the number, using otphelper's phrase, ignore and cleanup lists;
+digits are matched as `\p{Nd}` and normalised to ASCII, so a message written in
+Persian digits yields the same code as one written in Arabic numerals. The code
+is written through the clipboard plugin's own `claim`, which marks it as
+already seen — otherwise the clipboard channel would publish it straight back
+to the phone that sent it.
+
+The message is flattened to single spaces before any of that runs. The matcher
+steps over the prose between the trigger word and the code with `\s*` in front
+of a run that can itself match whitespace, and two ways of consuming the same
+blank is catastrophic backtracking: a message of nothing but spaces stalled the
+daemon — call control and the socket with it — for five seconds, and the body
+of an SMS is written by anyone who knows the number. Flattening changes no
+answer, because a code is never told apart from a non-code by how many blanks
+precede it.
+
 #### ANCS — the iPhone's own notifications
 
 The hands-free reasoning above has a second half. iOS publishes no messages, no
@@ -1057,6 +1080,7 @@ machine with.
 | `POST /api/unpair` | `{ id }` | Forgets a phone **and** hangs up its socket. |
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
 | `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
+| `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
