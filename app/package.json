@@ -9,6 +9,7 @@
     "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.3.0",
     "expo": "~57.0.16",
+    "expo-audio": "~57.0.4",
     "expo-battery": "~57.0.2",
     "expo-camera": "~57.0.4",
     "expo-clipboard": "~57.0.1",

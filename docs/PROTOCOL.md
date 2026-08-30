@@ -291,6 +291,22 @@ a sleeping phone's TCP connection dies silently.
 | `hypr.workspaces` / `hypr.goto` | — / `{ id }` |
 | `hypr.windows` / `hypr.focus` / `hypr.close` | — / `{ address }` |
 
+### dictation
+
+| Method | Params | Returns |
+| --- | --- | --- |
+| `dictation.transcribe` | `{ path }` | `{ ok, text, ms }` — the words in a recording the phone uploaded. |
+
+The audio arrives the way a screenshot does — `/api/upload` with `dest: agent`,
+into the drop directory — so this method takes a path rather than bytes, and
+checks it against that directory rather than trusting it. `ffmpeg` resamples to
+the 16 kHz mono whisper reads, clamped to the length the handshake published,
+and `voxtype` reads it. Both copies are deleted before the answer goes back,
+on every road out: a recording is a way of typing, not a file anybody meant to
+keep. Gated on the same switch as agent control, because the bytes cannot reach
+the desktop any other way. The capability is `{ available, maxSeconds }` and is
+false on a desktop without `voxtype` or `ffmpeg`.
+
 ### device
 
 The return leg of the stats stream: the desktop tells the phone about itself

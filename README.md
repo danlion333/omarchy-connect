@@ -39,6 +39,7 @@ the desktop and the app repaints in the same palette.
 | **Find my phone** | Ring the handset from the desktop — the bar panel's **Ring** button or `omarchy-connect locate` — loud on the alarm stream, so it is heard through silent mode, Do Not Disturb and a sofa cushion. It stops on the button on its own screen, on `locate stop`, or on its own after a minute; the desktop says when somebody found it. Android only, and only in a real build. |
 | **iPhone bridge** | An iPhone mirrors its messages, calls and app notifications to the desktop over Bluetooth Low Energy, with nothing installed on the phone. |
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. The phone tells you the moment one stops to ask you something, and the usual one-word answer can be typed straight into the notification. It carries the desktop's own status line with it: which model, how full the context is, which permission mode, which branch — and a **compact** button that appears once the conversation is running out of room. The row says what the agent is *working on* in its own words rather than which tool it last reached for, with the checklist behind it one tap away. Every skill and slash command that desktop has is a searchable list one tap from the composer, so `/security-review` costs a thumb rather than a keyboard. How much of the plan is left sits above the session list, because that is the number that decides whether starting something long is a good idea. Off by default, and switched on from the desktop — the panel or the CLI. |
+| **Dictation** | Speak your answer instead of typing it, and let the desktop do the listening. The recording crosses to the machine you are already talking to, `voxtype` reads it there with a large Whisper model on the GPU — primed with the vocabulary these conversations are actually made of, so `hyprctl` and `cherry-pick` survive — and the words land in the composer for you to fix a name and press send. Nothing goes to a keyboard vendor, and nothing is kept: the audio is deleted the moment it has been read. |
 | **Agents you start** | Pick up any conversation that desktop has ever had — the CLI's own `--resume`, from a list with the titles it wrote for them — or send a new agent off with a prompt and no terminal at all, and read what it did later. A background agent's own running commentary ("exploring project state for commit + merge flow") is on the phone, and nowhere else: nothing on the desktop draws it. Behind a second switch, `omarchy-connect agent spawn on`, because starting a process is not the same decision as reading one. |
 | **Phone notifications** | One ongoing line saying whether this phone can currently see its desktop — the KDE Connect habit — with a reconnect button on it while it cannot. Then four things it will tell you about: an agent waiting on a question (with a reply box on the notification), an agent that finished something long, a file the desktop sent (with **Save** straight to the gallery), and whatever the desktop last copied (silent, with **Copy**). Each has its own switch. |
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
@@ -809,6 +810,23 @@ and raises no notification: a screenshot attached to a question is scaffolding
 for that question, not a file you meant to keep. Pick it while you write the
 caption and it is already across by the time you press send.
 
+You can also **talk to it**. The microphone beside the composer records on the
+phone and the transcription happens here, on the desktop, in `voxtype` — the
+same push-to-talk tool the keyboard shortcut uses, with the same large Whisper
+model on the same GPU and the same initial prompt full of this project's own
+vocabulary. That is the whole reason the sound makes the trip: a phone's own
+voice keyboard hears "hyper control" and "cherry pick" as two words each, and
+sends the audio to somebody else's server on the way to getting them wrong.
+This road goes between the two machines that already have an encrypted link to
+each other. The audio rides the door a screenshot rides, behind the same
+switch, and is deleted as soon as it has been read — a recording is a way of
+typing, not a file anybody meant to keep. What comes back lands in the text
+field rather than in the conversation, because whisper mishears a name every so
+often and the repair for that is a cursor. Tap to start, tap to send it across,
+hold to throw the take away. The button appears only if the desktop has
+`voxtype` and `ffmpeg`; without them the phone does not offer something that
+could only fail.
+
 **Read this before you enable it.** Reading an agent is reading everything it
 saw: your source, the output of every command it ran, any secret that crossed a
 tool result. Writing to one is arbitrary code execution — the agent runs what
@@ -858,6 +876,7 @@ handshake and the app greys out whatever is missing.
 | Scroll wheel (`input.scroll`) | `ydotool` (`pacman -S ydotool`). Without it, scrolling falls back to arrow keys and says so. |
 | Notification history (`notifications.*`, protocol only) | Omarchy's notification history in `~/.local/state/omarchy/` |
 | Screenshot, themes, OSD | the `omarchy-*` helpers |
+| Dictating to an agent | `voxtype` ([voxtype.io](https://voxtype.io)) and `ffmpeg`. The phone hides the microphone unless the desktop reports both. |
 | Pairing QR | `qrencode` |
 | Browsing for a file to send (`send --pick`) | the XDG desktop portal (`xdg-desktop-portal` plus a backend) — the file chooser a browser opens. Without one, pass the path: `omarchy-connect send <file>`. |
 | Waking it from the phone | a wired card set to wake the machine — `omarchy-connect wake` says whether yours is, and prints the command |
@@ -1019,7 +1038,7 @@ holds that at a time. Only pair a phone you own. The full model is in
 ## Tests
 
 ```bash
-cd daemon && npm test                   # protocol, TLS, call control, one-time codes, iPhone bridge, find my phone
+cd daemon && npm test                   # protocol, TLS, call control, one-time codes, iPhone bridge, find my phone, dictation
 node app/test/integration.mjs           # the real app client against the daemon
 ```
 

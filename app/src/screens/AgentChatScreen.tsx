@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native'
 import { Feather } from '@expo/vector-icons'
+import { useAudioRecorder } from 'expo-audio'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection } from '../state/ConnectionContext'
@@ -21,6 +22,7 @@ import { focusAgent } from '../api/alerts'
 import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } from '../api/client'
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
+import * as dictate from '../api/dictate'
 import { Body, Button, Caps, Chip, Meter } from '../ui/kit'
 import { StatusLine, inPane } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
@@ -1205,12 +1207,25 @@ function Composer({
   const [acknowledged, setAcknowledged] = useState(false)
   const [shots, setShots] = useState<Attachment[]>([])
   const [sources, setSources] = useState(false)
+  /**
+   * Dictation, in the two states it is visible in: holding the microphone
+   * open, and waiting for the desktop to say what it heard. They are separate
+   * because only the first one can be cancelled — once the sound is across,
+   * the transcription is a second and a half and there is nothing to abandon.
+   */
+  const recorder = useAudioRecorder(dictate.RECORDING)
+  const [listening, setListening] = useState(false)
+  const [hearing, setHearing] = useState(false)
+  const [held, setHeld] = useState(0)
 
   const needsWarning = session.writable === 'wtype' && !acknowledged
   const canAttach = (hello?.capabilities?.agents as { attach?: boolean } | undefined)?.attach === true
   const ready = shots.filter((shot) => shot.path)
   const settling = shots.some((shot) => !shot.path && !shot.error)
   const canCommand = (hello?.capabilities?.agents as { commands?: boolean } | undefined)?.commands === true
+  const speech = hello?.capabilities?.dictation as { available?: boolean; maxSeconds?: number } | undefined
+  const canDictate = speech?.available === true
+  const maxHold = speech?.maxSeconds ?? 300
   const crowded = canCommand && (session.vitals?.context?.percent ?? 0) >= 66
 
   const guard = useCallback(
@@ -1282,6 +1297,81 @@ function Composer({
     },
     [client],
   )
+
+  /**
+   * Hold the microphone open until the next tap.
+   *
+   * A press-and-hold button would be the phone habit, but the thing being
+   * dictated here is a paragraph about a bug rather than "on my way" — a
+   * thumb that has to stay down for forty seconds cannot scroll back up the
+   * transcript to check what the agent actually asked.
+   */
+  const listen = useCallback(async () => {
+    setError(null)
+    try {
+      await dictate.ready()
+      await recorder.prepareToRecordAsync(dictate.RECORDING)
+      recorder.record()
+      setHeld(0)
+      setListening(true)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [recorder])
+
+  /**
+   * Stop, and either send the sound off to be read or drop it on the floor.
+   *
+   * The text lands in the field rather than in the conversation. Whisper gets
+   * a name wrong every so often, and the repair for that is a cursor — a
+   * dictation that sent itself would make the only fix "say it all again".
+   * What is already typed is kept: dictating is another way of writing into
+   * this field, not a replacement for what it holds.
+   */
+  const heard = useCallback(
+    async (keep: boolean) => {
+      setListening(false)
+      let uri: string | null = null
+      try {
+        uri = await dictate.finish(recorder)
+      } catch (err) {
+        setError((err as Error).message)
+        return
+      }
+      if (!keep || !uri || !client) return
+      setHearing(true)
+      try {
+        const said = await dictate.transcribe(client, call, uri)
+        if (said) setText(text.trim() ? `${text.trim()} ${said}` : said)
+        else setError('the desktop heard nothing in that')
+      } catch (err) {
+        setError((err as Error).message)
+      } finally {
+        setHearing(false)
+      }
+    },
+    [call, client, recorder, setText, text],
+  )
+
+  /**
+   * The counter, and the stop the desktop would otherwise have to enforce.
+   *
+   * `voxtype` publishes how much audio it will read in one go; a recording
+   * left running past that would be truncated on the desktop with nothing on
+   * this screen having said so. Ending it here means the last thing said made
+   * it in.
+   */
+  useEffect(() => {
+    if (!listening) return undefined
+    const timer = setInterval(() => {
+      setHeld((was) => {
+        const now = was + 1
+        if (now >= maxHold) void heard(true)
+        return now
+      })
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [heard, listening, maxHold])
 
   const press = useCallback(
     (key: string) => void guard(() => call('agents.key', { id: session.id, key })),
@@ -1526,6 +1616,43 @@ function Composer({
             <Feather name="paperclip" size={16} color={sources ? palette.accent : palette.muted} />
           </Pressable>
         ) : null}
+        {/* Speak instead of typing, with the desktop doing the listening —
+            its Whisper model knows what hyprctl and cherry-pick are, and the
+            recording never leaves the two machines that already talk to each
+            other. Tap to open the microphone, tap again to send the sound
+            across; hold to throw the take away. */}
+        {canDictate ? (
+          <Pressable
+            onPress={() => void (listening ? heard(true) : listen())}
+            onLongPress={() => void (listening ? heard(false) : null)}
+            disabled={hearing}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              paddingHorizontal: space.md,
+              paddingVertical: space.md,
+              justifyContent: 'center',
+              alignItems: 'center',
+              minWidth: 44,
+              backgroundColor: pressed || listening ? palette.selection : palette.darker_background,
+              borderColor: listening ? palette.red : palette.lighter_background,
+              borderWidth: 1,
+              borderRadius: radius.sm,
+              opacity: hearing ? 0.6 : 1,
+            })}
+          >
+            {hearing ? (
+              <ActivityIndicator size="small" color={palette.accent} />
+            ) : listening ? (
+              /* The count is the only honest reassurance a microphone can
+                 give: nothing else on screen proves it is still open. */
+              <Text style={{ color: palette.red, fontFamily: font.medium, fontSize: size.micro }}>
+                {`${Math.floor(held / 60)}:${String(held % 60).padStart(2, '0')}`}
+              </Text>
+            ) : (
+              <Feather name="mic" size={16} color={palette.muted} />
+            )}
+          </Pressable>
+        ) : null}
         <TextInput
           value={text}
           onChangeText={setText}
@@ -1577,11 +1704,15 @@ function Composer({
           while you are typing and the screen is down to a few lines. */}
       {keyboard ? null : (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
-          {shots.length
-            ? 'the desktop keeps the picture and hands the agent its path'
-            : inPane(session)
-              ? `${session.writable} ${session.pane}`
-              : 'the desktop types this — focus moves for a moment'}
+          {listening
+            ? 'listening — tap to transcribe on the desktop, hold to discard'
+            : hearing
+              ? 'the desktop is reading it back'
+              : shots.length
+                ? 'the desktop keeps the picture and hands the agent its path'
+                : inPane(session)
+                  ? `${session.writable} ${session.pane}`
+                  : 'the desktop types this — focus moves for a moment'}
         </Text>
       )}
     </View>
