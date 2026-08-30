@@ -27,6 +27,7 @@ class LinkActionReceiver : BroadcastReceiver() {
     const val ACTION_COPY = "expo.modules.omarchylink.COPY"
     const val ACTION_DISMISS = "expo.modules.omarchylink.DISMISS"
     const val ACTION_RECONNECT = "expo.modules.omarchylink.RECONNECT"
+    const val ACTION_FOUND = "expo.modules.omarchylink.FOUND"
     const val EXTRA_KIND = "kind"
     const val EXTRA_KEY = "key"
     const val EXTRA_TEXT = "text"
@@ -54,6 +55,13 @@ class LinkActionReceiver : BroadcastReceiver() {
         val kind = intent.getStringExtra(EXTRA_KIND) ?: return
         Shade.cancel(context, kind, key ?: return)
       }
+      /**
+       * Somebody is holding the phone the desktop was looking for. This one
+       * needs no runtime and no socket: the noise is native, so stopping it is
+       * native too, and the desktop is told afterwards if there is anything
+       * left alive to tell it.
+       */
+      ACTION_FOUND -> Locator.hush(context, found = true)
       ACTION_RECONNECT -> {
         LinkPrefs.setStatus(context, "connecting")
         // The tap is what un-parks the link: JavaScript is told to dial

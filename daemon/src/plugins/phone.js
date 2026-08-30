@@ -69,6 +69,17 @@ const RING_TIMEOUT_MS = 45_000
 const CODE_TIMEOUT_MS = 60_000
 /** How long "123456 copied" stays up in place of the card that copied it. */
 const COPIED_MS = 3000
+/**
+ * How long a phone asked to say where it is keeps saying it.
+ *
+ * Long enough to lift every cushion in the room, short enough that a phone
+ * left ringing in a bag on a train is not still ringing when it gets there.
+ * The phone runs the same clock and stops on its own, so a desktop that dies
+ * mid-search does not leave a handset shouting.
+ */
+const LOCATE_SECONDS = 60
+const LOCATE_MIN = 5
+const LOCATE_MAX = 300
 
 /** Newest first. Lives in memory: the phone is the real archive. */
 const history = []
@@ -99,6 +110,17 @@ let activeSince = 0
 let otp = { enabled: true, autoCopy: false }
 /** The `notify-send` processes holding open Copy buttons, if any. */
 const codeCards = new Set()
+
+/**
+ * The search under way, if any: `{ since, until }`.
+ *
+ * Held here so the bar panel can offer *Hush* instead of *Ring* while the
+ * phone is shouting, and so the desktop stops claiming it is when the window
+ * runs out. It is a belief about the handset rather than a fact — the phone
+ * owns the real clock — which is why the phone silencing itself reports back.
+ */
+let locating = null
+let locateTimer = null
 
 /**
  * Notification servers that advertise `actions` and draw no buttons.
@@ -861,6 +883,7 @@ export function summary() {
     ringtone: ringtone.summary(),
     timer: talkTime.summary(),
     otp: otpSummary(),
+    locate: locateSummary(),
   }
 }
 
@@ -940,6 +963,87 @@ export function requestSend({ to, body }) {
     pending.set(id, { resolve, reject, expiresAt: Date.now() + PENDING_TTL })
   })
   bus.emit('event', 'phone', { action: 'send', id, to: number, body: message })
+  return { id, outcome }
+}
+
+/* ── finding the handset ────────────────────────────────────────────────── */
+
+/**
+ * What the desktop currently believes the handset is doing.
+ *
+ * Expiry is read rather than scheduled: the timer below is a convenience for
+ * the panel, and a daemon that missed it — suspended, throttled — must still
+ * not tell anyone a phone is ringing a quarter of an hour later.
+ */
+export function locateSummary() {
+  if (locating && locating.until <= Date.now()) locating = null
+  return locating
+    ? { ringing: true, since: locating.since, until: locating.until }
+    : { ringing: false, since: null, until: null }
+}
+
+/** The desktop's own copy of the phone's clock, and the panel's cue to redraw. */
+function ringingUntil(seconds) {
+  if (locateTimer) clearTimeout(locateTimer)
+  locating = { since: Date.now(), until: Date.now() + seconds * 1000 }
+  locateTimer = setTimeout(() => {
+    locating = null
+    locateTimer = null
+    bus?.emit('event', 'phone', { action: 'located', ringing: false })
+  }, seconds * 1000)
+  locateTimer.unref?.()
+  bus?.emit('event', 'phone', { action: 'located', ringing: true, until: locating.until })
+}
+
+/**
+ * The search is over, one way or another.
+ *
+ * `found` is the good ending — somebody has the phone in their hand and has
+ * pressed the button on it — and is worth saying out loud on the desktop,
+ * because whoever started the search walked away from this screen to do it.
+ */
+function hush(found = false) {
+  if (locateTimer) clearTimeout(locateTimer)
+  locateTimer = null
+  const wasRinging = Boolean(locating)
+  locating = null
+  // Only for a search this desktop believed was under way. A stray report
+  // from a phone whose window has already run out is the truth arriving late,
+  // not news, and a notification for it would be a card about nothing.
+  if (!wasRinging) return
+  if (found && has('notify-send')) {
+    spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'Phone found', 'The handset was picked up and silenced.'])
+  }
+  bus?.emit('event', 'phone', { action: 'located', ringing: false, found })
+}
+
+/**
+ * Ask the paired phone to make itself heard, or to stop.
+ *
+ * The desktop cannot find a phone down the back of the sofa; only the phone
+ * can, and only by being loud. So this is the same handshake `requestSend`
+ * uses — an instruction and a promise that settles when the handset answers,
+ * so `omarchy-connect locate` says the phone *is* ringing rather than that it
+ * was asked to.
+ *
+ * There is no Bluetooth road here and there should not be: hands-free carries
+ * audio to *this* machine, and a phone that is lost needs to be loud where it
+ * is. The app is the only road, which is also why this refuses honestly when
+ * no app is on the socket instead of pretending.
+ */
+export function requestLocate({ op = 'start', seconds = LOCATE_SECONDS } = {}) {
+  if (!bus) throw new Error('daemon is not running')
+  const action = String(op || 'start').toLowerCase()
+  if (!['start', 'stop'].includes(action)) throw new Error(`unknown locate action: ${op}`)
+  if (!appCanAct()) throw new Error('no phone is connected — open the app on the handset')
+  const window = Math.min(Math.max(Math.round(Number(seconds) || LOCATE_SECONDS), LOCATE_MIN), LOCATE_MAX)
+
+  sweep()
+  const id = crypto.randomUUID()
+  const outcome = new Promise((resolve, reject) => {
+    pending.set(id, { resolve, reject, expiresAt: Date.now() + PENDING_TTL, locate: { op: action, seconds: window } })
+  })
+  bus.emit('event', 'phone', { action: 'locate', id, op: action, seconds: window })
   return { id, outcome }
 }
 
@@ -1375,7 +1479,16 @@ export default {
    */
   capabilities(ctx = {}) {
     if (ctx.remote) {
-      return { mirror: false, send: false, history: 0, answer: false, bluetooth: false, ios: false, remote: true }
+      return {
+        mirror: false,
+        send: false,
+        history: 0,
+        answer: false,
+        locate: false,
+        bluetooth: false,
+        ios: false,
+        remote: true,
+      }
     }
     return {
       mirror: true,
@@ -1384,6 +1497,10 @@ export default {
       // The app only needs to know whether the desktop will ever ask it to
       // answer something; whether Bluetooth is up is the desktop's business.
       answer: true,
+      // Whether this desktop knows how to ask the phone to shout. A build of
+      // the app older than the feature simply never answers, and the request
+      // times out saying so.
+      locate: true,
       bluetooth: handsfree.state.available,
       // What an iPhone's own notifications are reaching us through. The app
       // cannot supply any of this and does not have to try.
@@ -1545,6 +1662,9 @@ export default {
       }
     }
     codeCards.clear()
+    if (locateTimer) clearTimeout(locateTimer)
+    locateTimer = null
+    locating = null
     talkTime.stop({ quiet: true })
     live = null
     activeSince = 0
@@ -1592,6 +1712,29 @@ export default {
       } else {
         entry.reject(new Error(error || 'the phone could not send it'))
       }
+      return { ok: true }
+    },
+
+    /**
+     * The phone's answer to a `locate` instruction — and, later, the phone
+     * saying it has been found.
+     *
+     * The second one arrives with no request behind it, which is the point:
+     * the desktop asked a question and the answer came from whoever walked
+     * into the next room, not from the socket that asked.
+     */
+    'phone.located'({ id, ok, error, found = false } = {}) {
+      if (found) hush(true)
+      const entry = pending.get(id)
+      if (!entry) return found ? { ok: true } : { ok: false, error: 'nothing was waiting for that' }
+      pending.delete(id)
+      if (!ok) {
+        entry.reject(new Error(error || 'the phone could not ring'))
+        return { ok: true }
+      }
+      if (entry.locate?.op === 'start') ringingUntil(entry.locate.seconds)
+      else hush(false)
+      entry.resolve({ ok: true, locate: locateSummary() })
       return { ok: true }
     },
 

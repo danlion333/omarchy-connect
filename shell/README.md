@@ -222,6 +222,11 @@ drops it if it is already up — and with no handset bonded at all it makes the
 bond instead, which is the state the row used to have nothing but a sentence
 for. It does nothing while a page or a pairing window is already under way.
 
+`f` finds the phone: the handset rings at alarm volume until somebody picks it
+up, and the same key hushes it again for as long as it is ringing. Like the
+others it does nothing when there is no phone on the socket, because that is
+the one case where nothing on this desktop could reach it.
+
 The agent switch has no letter of its own, deliberately: every letter on this
 panel is one keystroke away from something, and widening what leaves this
 machine is not a thing to hand to a mistyped key. It is reached by opening

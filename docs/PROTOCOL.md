@@ -240,7 +240,7 @@ least one phone is subscribed.
 | `notification` | Omarchy writes a new notification to its history. |
 | `theme` | The active Omarchy theme changes. |
 | `file` | A file arrived from a phone, or the desktop offered one. |
-| `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`). |
+| `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`) or to say where it is (`action: "locate"`). |
 | `agent` | A coding agent appeared, changed state, or said something new. |
 | `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
 
@@ -330,6 +330,7 @@ iPhone announcing itself down two Bluetooth roads at once.
 | `phone.history` | `{ limit }` | `{ items, counters, call, bluetooth, ios }` |
 | `phone.sent` | `{ id, ok, error }` | `{ ok }` |
 | `phone.acted` | `{ id, ok, error }` | `{ ok }` |
+| `phone.located` | `{ id, ok, error, found }` | `{ ok }` |
 
 An event is either
 
@@ -369,7 +370,37 @@ out rather than that it was asked for.
 `{ action: "call", id, op }` and waits. It is only ever sent when neither
 Bluetooth road is open — see below.
 
-The plugin's capabilities are `{ mirror, send, history, answer, bluetooth, ios }`.
+#### Find my phone
+
+`POST /api/locate` emits `{ action: "locate", id, op: "start" | "stop",
+seconds }` and holds the response open until `phone.located` comes back, so
+`omarchy-connect locate` reports a phone that *is* ringing rather than one that
+was asked to. The window is 5–300 seconds and defaults to 60.
+
+The app answers by playing the system alarm tone on the **alarm stream**,
+looping, at that stream's maximum, with the volume restored afterwards. That
+stream is chosen because silent mode and Do Not Disturb both mute notifications
+and neither mutes alarms — a search that stayed quiet on a silenced phone would
+only ever find the phones nobody loses. It buzzes alongside, and puts up an
+ongoing high-importance card whose every surface stops it.
+
+The handset owns the clock. It stops after the window it was given whatever the
+desktop does next, so a daemon that dies mid-search cannot leave a phone
+shouting in an empty house; the desktop expires its own copy of that window at
+the same moment.
+
+`phone.located` travels twice for one search. With an `id` it is the answer to
+an instruction — `ok: false` for a build that cannot ring itself, which is
+Expo Go and every iPhone. With `found: true` and no `id` it is a person: the
+button on the ringing phone was pressed, which is the answer to the question
+the desktop asked, and the desktop says so and stops claiming the phone rings.
+
+There is no Bluetooth road under this one, and that is deliberate: hands-free
+carries audio to *this* machine, and a phone that is lost has to be loud where
+it is. The app is the only road, so a desktop with no phone on the socket
+refuses rather than pretending.
+
+The plugin's capabilities are `{ mirror, send, history, answer, locate, bluetooth, ios }`.
 `bluetooth` and `ios` describe the desktop's two Bluetooth links rather than
 anything the app can supply, and both settle a moment after startup: probing
 the buses is asynchronous, so the daemon republishes the status file when each
@@ -1043,7 +1074,10 @@ as `remote`, and every `phone.*` method refuses it with `not available on a
 remote link`. The `phone` event channel is not fanned out to it at all.
 
 That covers mirroring, sending, call history, answering and rejecting, the
-hands-free profile and the iPhone bridge. It is deliberate rather than
+hands-free profile, the iPhone bridge — and finding the phone, which falls
+under the same roof for the same reason: a search is somebody about to walk
+into the next room, and a handset shouting a hundred miles away is noise in a
+house nobody is standing in. It is deliberate rather than
 incidental: hands-free is a Bluetooth link to a handset in this room, a
 ringing card is a call someone here can pick up, and mirroring a text message
 to a desktop the phone is nowhere near is carrying private mail down a tunnel
@@ -1087,6 +1121,7 @@ machine with.
 | `POST /api/sms` | `{ to, body }` | Asks the phone to send an SMS; answers when it confirms. |
 | `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
+| `POST /api/locate` | `{ op, seconds? }` | `op` is `start` or `stop`. Rings the paired phone until somebody finds it. Answers `{ ok, locate }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |

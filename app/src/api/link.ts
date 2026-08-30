@@ -25,6 +25,7 @@ import { orderCandidates } from '../lib/retry'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
+import { startLocateResponder } from './locate'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -241,6 +242,11 @@ class Link {
     // listens for `hello` itself, which is when it drains whatever the
     // native receiver wrote down while the app was closed.
     const stopMirror = startPhoneMirror(client)
+    // Separate from the mirror on purpose: being findable is not telephony.
+    // It needs no SMS permission, no call log and no Android build that has
+    // any of them — only the alarm the link module can play — so it must not
+    // be switched off by the same `null` that turns mirroring into a no-op.
+    const stopLocating = startLocateResponder(client)
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -300,6 +306,7 @@ class Link {
     return () => {
       stopReporting?.()
       stopMirror()
+      stopLocating()
       offs.forEach((off) => off())
     }
   }
