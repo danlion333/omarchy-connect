@@ -178,6 +178,49 @@ rather than pretending to understand a conversation it cannot parse. Worth
 having as an explicit "raw" toggle on adapter-backed sessions too, for the
 moments when the TUI shows something the transcript does not.
 
+### The words before the file has them
+
+Reading a transcript is late by exactly one message, and the length of a
+message is the length of the wait. Claude Code appends an assistant entry only
+once the turn is complete — the record it writes carries `stop_reason` and a
+token count, and there is no partial entry anywhere in the file — so a phone
+tailing it sits through the whole answer in silence and then receives it in one
+piece. On the desktop the same answer arrives a word at a time. Nothing about
+that is a transport problem: `fs.watch` pushes the moment the line lands, and
+the line lands at the end.
+
+There is no hook for it either. Claude Code's hooks fire at the boundaries of a
+turn — `UserPromptSubmit`, `Stop`, `Notification` — and none of them fires per
+token, because none of them is about tokens.
+
+So the words, while they are arriving, exist in exactly one place: the terminal
+drawing them. The pane is already readable — it is what `agents.screen` and the
+raw-screen toggle are — and while a session is `working`, is open on somebody's
+phone, and lives in a multiplexer pane, it is read twice a second beside the
+file. `adapter.draft(screen)` turns what is there into the sentence in flight,
+and it goes to the phone as a `draft` frame: `append` when the paragraph simply
+grew, which is nearly always, and a full `text` when a rewrap broke the prefix.
+
+The parsing is a guess about somebody else's redraw and is treated as one. It
+finds the last bullet on the screen, refuses the ones that are calls rather than
+sentences — `Read(SKILL.md)` looks exactly like prose until its output lands
+under it — stops at the composer, the spinner and the elbow of a tool run, and
+undoes the terminal's own wrapping so a phone can wrap it again at its own
+width. It goes blind when a long message scrolls its bullet off the top, and it
+will occasionally be briefly wrong about a line.
+
+All of that is affordable because nothing is built on a draft. It carries no
+`seq`, nothing expands out of it, and it lives about a second: the `blocks`
+frame that delivers the same words parsed retires it, and the daemon holds the
+retired text so the pane — which goes on showing a finished message — cannot
+send it back a second time. Being briefly wrong costs a redraw. Being slow cost
+the whole point of watching.
+
+What this does not do is invent a screen where there is none. A session on the
+`wtype` road has no pane to read, so its conversation arrives a message at a
+time exactly as it did before, and a desktop nobody has a chat open on reads no
+panes at all.
+
 ## Writing
 
 ### Primary: tmux
@@ -319,7 +362,7 @@ keep working.
 { "t": "req", "id": 17, "method": "agents.attach","params": { "id": "claude:2fe…", "paths": ["…/shot.png"], "text": "?" } }  // shipped
 { "t": "req", "id": 18, "method": "agents.spawn", "params": { "agent": "claude", "cwd": "…", "prompt": "…" } }
 
-{ "t": "ev", "event": "agent", "data": { "id": "…", "kind": "blocks" | "state" | "session", … } }
+{ "t": "ev", "event": "agent", "data": { "id": "…", "kind": "blocks" | "draft" | "state" | "session", … } }
 ```
 
 Two things the shipped surface added to this sketch. `agents.close` exists
@@ -541,6 +584,16 @@ that does not need a phone. Three things came out of it worth writing down:
   proof: `pane.send_input` is one request where tmux is `send-keys` then
   `send-keys Enter`, and the gap between those two writes is a real gap that a
   phone's connection can drop into.
+
+**Stage 2⅞ — the sentence in flight. Done.** `draftOf` in `agents/claude.js`,
+the draft pump in the agents plugin, the `draft` frame, and a line of the chat
+screen that is deliberately not a block. Described above under *The words
+before the file has them*. The thing worth writing down is that this is the
+first place the feature reads a screen in order to render a conversation rather
+than to show somebody a terminal, and it only survives contact with a TUI
+nobody here owns because the reading is disposable: every draft is replaced by
+the parsed record within a second, so a misread is a flicker rather than a lie
+that stays on the phone.
 
 **Stage 3 — breadth.** Codex adapter, Gemini adapter, `capture-pane` raw mode
 for everything else.

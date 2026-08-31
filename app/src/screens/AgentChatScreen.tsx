@@ -62,6 +62,15 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
    */
   const [skills, setSkills] = useState(false)
   const [draft, setDraft] = useState('')
+  /**
+   * What the agent is saying right now, before the transcript has it.
+   *
+   * Held apart from `blocks` on purpose: this is not a block and must never be
+   * mistaken for one. It carries no `seq`, nothing can be expanded out of it,
+   * and it is thrown away rather than reconciled the moment the real thing
+   * arrives underneath it.
+   */
+  const [live, setLive] = useState('')
   const scroller = useRef<ScrollView | null>(null)
   const atBottom = useRef(true)
   const keyboard = useKeyboardOpen()
@@ -81,6 +90,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     setLoading(true)
     setBlocks([])
     setExpanded({})
+    setLive('')
     call<{ blocks: AgentBlock[] }>('agents.open', { id: session.id, limit: 120 })
       .then((res) => {
         if (!live) return
@@ -100,7 +110,16 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   useEffect(() => {
     if (!client) return
     return client.on('ev:agent', (data: AgentEvent) => {
-      if (data.kind !== 'blocks' || data.id !== session.id) return
+      if (data.kind !== 'draft' && data.kind !== 'blocks') return
+      if (data.id !== session.id) return
+      if (data.kind === 'draft') {
+        setLive((prev) => (data.append !== undefined ? prev + data.append : data.text || ''))
+        return
+      }
+      // The record arriving is the end of the guess about it. The desktop says
+      // so as well, and either message is enough — whichever lands first wins,
+      // and the words are on screen once either way.
+      setLive('')
       setBlocks((prev) => (data.reset ? data.blocks : [...prev, ...data.blocks]))
     })
   }, [client, session.id])
@@ -108,7 +127,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   /* Follow the conversation, unless the reader has scrolled up to look at something. */
   useEffect(() => {
     if (atBottom.current) requestAnimationFrame(() => scroller.current?.scrollToEnd({ animated: true }))
-  }, [blocks])
+  }, [blocks, live])
 
   /* The keyboard eats half the screen; the tail has to come with it. */
   useEffect(() => {
@@ -265,6 +284,8 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
             />
           ),
         )}
+
+        {live ? <LiveText text={live} /> : null}
 
         {session.state === 'working' ? <Working /> : null}
 
@@ -549,6 +570,33 @@ function Pulse({ tone, on, size: dot = 8 }: { tone: string; on?: boolean; size?:
 }
 
 /** The agent is mid-turn and has not said anything yet. */
+/**
+ * The answer as it is being typed, one poll behind the desktop's own screen.
+ *
+ * Deliberately plainer than the block that replaces it. The terminal has
+ * already spent the markdown — the bold is bold, the asterisks are gone — so
+ * running it back through the renderer would only invent structure that is not
+ * there. It is set in the same body type as the real thing so the swap is not
+ * a jolt, and dimmed a shade, because a draft that looked exactly like the
+ * record would be a phone quietly claiming the file says something it does not
+ * say yet.
+ */
+function LiveText({ text }: { text: string }) {
+  const { palette } = useConnection()
+  return (
+    <Text
+      style={{
+        color: alpha(palette.foreground, 0.75),
+        fontFamily: font.regular,
+        fontSize: size.body,
+        lineHeight: 20,
+      }}
+    >
+      {text}
+    </Text>
+  )
+}
+
 function Working() {
   const { palette } = useConnection()
   return (

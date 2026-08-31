@@ -931,13 +931,14 @@ reference-counted discipline the stats sampler uses, capped at four transcripts
 tailed at once. `state` changes stream for every session, because that is what
 drives the badge. A phone that disconnects releases everything it had open.
 
-The three `agent` event frames:
+The `agent` event frames:
 
 ```jsonc
 { "t": "ev", "event": "agent", "data": { "kind": "session", "id": "claude:2fe…", "removed": false, "session": { … } } }
 { "t": "ev", "event": "agent", "data": { "kind": "state",   "id": "claude:2fe…", "state": "waiting",
                                          "prompt": "Allow Bash?", "preview": "…", "lastActivity": 1756100420000 } }
 { "t": "ev", "event": "agent", "data": { "kind": "blocks",  "id": "claude:2fe…", "blocks": [ … ], "cursor": 148 } }
+{ "t": "ev", "event": "agent", "data": { "kind": "draft",   "id": "claude:2fe…", "append": " ще кілька слів" } }
 { "t": "ev", "event": "agent", "data": { "kind": "control", "enabled": true, "adapters": ["claude"], "write": "tmux" } }
 { "t": "ev", "event": "agent", "data": { "kind": "limits",  "limits": { "limits": [ … ], "stale": false } } }
 ```
@@ -950,6 +951,29 @@ under the daemon, or a block already sent has moved. A question carried ahead of
 the transcript by a hook moves exactly once: down behind the words of the turn
 it was held back with, when that turn lands. It keeps its `seq` through the
 move, so an `agents.answer` already in flight still names it.
+
+A `draft` frame is the sentence the agent is in the middle of writing, and it
+is the one frame here that does not come from a file. Claude Code appends an
+assistant entry only once the message is finished — the record carries
+`stop_reason` and a token count — so a reader tailing the transcript waits out
+the whole answer and then receives it in one piece, however long it took. The
+terminal has the words as they arrive, because the terminal is what is drawing
+them, so while a session is `working`, is open on a phone, and lives in a
+multiplexer pane, the desktop reads that pane twice a second beside the file
+and sends what the adapter finds there.
+
+It is provisional by construction and is marked as one all the way to the
+screen. `append` is the draft the reader already has plus a few more words —
+the shape it takes nearly every time, and the reason this costs words rather
+than paragraphs — `text` replaces it outright when a rewrap breaks the prefix,
+and `text: ""` retires it. A draft is always retired: either explicitly, or by
+the `blocks` frame that delivers the same words parsed, which the reader should
+treat as the end of the draft whichever arrives first. Nothing is ever built on
+a draft — it carries no `seq`, nothing expands out of it, and a reader that
+ignores the frame entirely sees exactly what it saw before drafts existed.
+
+A session with no pane sends none: the compositor road has no screen to read,
+and its conversation arrives a message at a time as it always did.
 
 A `control` frame is the desktop turning reading on or off under a live link —
 the switch on its panel, or the CLI. `capabilities.agents.enabled` was answered

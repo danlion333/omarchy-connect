@@ -465,6 +465,130 @@ export function vitals(file, cwd = null) {
   return value
 }
 
+/* ── the sentence being written right now ──────────────────────────────── */
+
+/**
+ * What Claude Code draws in front of the things it says and does. A line that
+ * starts with one is the head of a message; everything under it is indented.
+ */
+const SAID = /^●[  ]/u
+/** The elbow under a call, holding what the tool gave back. */
+const RESULT = /^\s*⎿/u
+/** The person's own turn, and the composer they are typing the next one into. */
+const TYPED = /^\s*❯/u
+/** A horizontal rule: the composer's frame, and the end of the conversation. */
+const RULE = /^\s*[─━┄┈╌╭╮╰╯│]{8,}/u
+/**
+ * The spinner and the epitaph it leaves behind — "Pollinating…", "Worked for
+ * 1m 30s". Status about the turn, drawn in the same column as the turn.
+ */
+const SPINNER = /^[·✻✽✳✢✶∗*][  ]/u
+
+/**
+ * A call, drawn in the same column as a sentence: `Read(SKILL.md)`. Until its
+ * output lands there is no elbow under it to tell it apart from prose, and a
+ * phone would be shown the name of a tool as though the agent had said it.
+ */
+const CALL = /^[A-Z][A-Za-z]*\(/u
+
+/** A draft is a paragraph in flight, not a document; the file carries the rest. */
+const MAX_DRAFT = 4096
+/** A wrapped line stops this far short of the edge and still counts as full. */
+const WRAP_SLACK = 12
+/** What a new list item or heading looks like, so unwrapping leaves it alone. */
+const LIST = /^\s*(?:[-*+•]\s|\d+[.)]\s|#{1,6}\s|>\s|\|)/u
+
+/**
+ * The prose the agent is in the middle of writing, read off its own terminal.
+ *
+ * The transcript cannot answer this and never will: Claude Code appends an
+ * assistant entry only once the message is finished — the record it writes
+ * carries `stop_reason` and a token count — so a phone tailing the file waits
+ * out the whole answer and then receives it in one piece. The terminal is the
+ * only place the words exist while they are arriving, because the terminal is
+ * where they are being drawn.
+ *
+ * So this reads a screen, which is a different kind of truth from a file and
+ * is treated as one. It is a guess about somebody else's redraw: it can pick
+ * up a line that turns out to be a tool's title, and it goes blind the moment
+ * a long message scrolls its own bullet off the top of the pane. That is
+ * affordable only because nothing here is kept — the draft is provisional by
+ * construction, and the transcript replaces it with the real thing a moment
+ * later. Being briefly wrong costs a redraw; being slow cost the whole point
+ * of watching.
+ *
+ * Returns `null` when the last thing on screen is not the agent talking — a
+ * tool call, a prompt, an empty pane — which is most of the time.
+ */
+export function draftOf(screen) {
+  const lines = String(screen || '').split('\n')
+  let start = -1
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    if (SAID.test(lines[i])) {
+      start = i
+      break
+    }
+    // A bullet with an elbow already under it is a call that has answered, and
+    // hunting further up the screen for prose would find a paragraph the file
+    // delivered minutes ago.
+    if (RESULT.test(lines[i])) return null
+  }
+  if (start < 0) return null
+  // `● Bash(ls)` — a call, not a sentence, whether or not it has answered yet.
+  if (RESULT.test(lines[start + 1] || '')) return null
+  const head = lines[start].replace(SAID, '')
+  if (CALL.test(head)) return null
+
+  const kept = [head]
+  for (let i = start + 1; i < lines.length; i += 1) {
+    const line = lines[i]
+    if (RESULT.test(line) || TYPED.test(line) || RULE.test(line) || SPINNER.test(line)) break
+    // A title with an elbow under it belongs to the tool it names.
+    if (line.trim() && RESULT.test(lines[i + 1] || '')) break
+    // Back at column zero without a bullet: the chrome under the conversation.
+    if (line.trim() && !/^\s/.test(line)) break
+    kept.push(line)
+  }
+  while (kept.length && !kept[kept.length - 1].trim()) kept.pop()
+  if (!kept.length || !kept.join('').trim()) return null
+
+  // The pane's own width, taken from the widest thing drawn in it — the rules
+  // around the composer are exactly that wide. It is what says whether a line
+  // ended because the sentence did or because the terminal ran out of room.
+  const width = lines.reduce((max, line) => Math.max(max, line.length), 0)
+  return unwrap(kept, width).slice(0, MAX_DRAFT)
+}
+
+/**
+ * The screen's line breaks undone, because a phone is not this wide.
+ *
+ * A pane wraps at its own edge and the phone would then wrap the wrap, leaving
+ * a paragraph in ragged half-lines. A line that stopped short of the edge
+ * stopped because the text did, so that break is the author's and is kept; one
+ * that ran to the edge is the terminal's and is joined away. A bullet or a
+ * heading starts a line whatever the line above it did — a list rewrapped into
+ * a paragraph is a list destroyed.
+ */
+function unwrap(lines, width) {
+  const indents = lines.slice(1).filter((line) => line.trim()).map((line) => line.match(/^\s*/)[0].length)
+  const dedent = indents.length ? Math.min(...indents) : 0
+  const out = []
+  for (const [i, raw] of lines.entries()) {
+    const line = i ? raw.slice(dedent) : raw
+    const previous = out[out.length - 1]
+    const wrapped =
+      i > 0 &&
+      previous?.trim() &&
+      line.trim() &&
+      !LIST.test(line) &&
+      width > 20 &&
+      lines[i - 1].length >= width - WRAP_SLACK
+    if (wrapped) out[out.length - 1] = `${previous.replace(/\s+$/, '')} ${line.trim()}`
+    else out.push(line)
+  }
+  return out.join('\n').trim()
+}
+
 export default {
   id: 'claude',
   label: 'Claude Code',
@@ -591,6 +715,17 @@ export default {
    */
   question(tool, input) {
     return String(tool || '') === QUESTION_TOOL ? questionBlock(input) : null
+  },
+
+  /**
+   * The sentence in flight, read off the pane rather than off the file.
+   *
+   * Optional on an adapter, and the plugin treats a missing one as an agent
+   * whose conversation simply arrives a message at a time — which is what
+   * every session did before this existed.
+   */
+  draft(screen) {
+    return draftOf(screen)
   },
 
   /**

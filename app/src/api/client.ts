@@ -327,6 +327,12 @@ export type AgentEvent =
   | { kind: 'session'; id: string; removed: boolean; session: AgentSession | null }
   | { kind: 'state'; id: string; state: AgentState; prompt: string | null; preview: string; lastActivity: number }
   | { kind: 'blocks'; id: string; blocks: AgentBlock[]; cursor: number; reset?: boolean }
+  // The sentence the agent is in the middle of writing, read off its terminal
+  // because the transcript will not carry it until it is finished. `append` is
+  // the same draft plus a few more words — the shape it takes nearly every
+  // time — and `text` replaces it outright, with `''` meaning the real block
+  // has landed and the draft is over.
+  | { kind: 'draft'; id: string; text?: string; append?: string }
   // The desktop turning reading on or off under a live link — the switch on
   // its panel, or the CLI. `hello` answered this question once at connect
   // time; this is how the answer changes without reconnecting.

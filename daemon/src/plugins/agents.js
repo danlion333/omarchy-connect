@@ -60,6 +60,17 @@ const OPEN_LIMIT = 4
 const SCAN_MS = 8000
 /** Backstop for the tail: `fs.watch` misses writes on some filesystems. */
 const POLL_MS = 2000
+/**
+ * How often the pane is read while an agent is writing and a phone is reading.
+ *
+ * Fast enough to look like typing and slow enough to be free: it costs one
+ * socket round trip to herdr, or one `capture-pane`, and only for a session
+ * that is open on somebody's phone *and* mid-answer. A desktop with nothing
+ * being read does none of them.
+ */
+const DRAFT_MS = 400
+/** Rows of pane to read for a draft. A paragraph in flight is never taller. */
+const DRAFT_LINES = 40
 /** A scan-discovered session whose transcript moved this recently is working. */
 const ACTIVE_MS = 20_000
 /**
@@ -104,6 +115,7 @@ const sessions = new Map()
 let bus = null
 let scanTimer = null
 let pollTimer = null
+let draftTimer = null
 
 const enabled = () => loadConfig().agents?.enabled === true
 const spawnAllowed = () => loadConfig().agents?.spawn === true
@@ -271,6 +283,8 @@ function setState(entry, state, { prompt = null } = {}) {
   if (entry.state === state && entry.prompt === prompt) return false
   entry.state = state
   entry.prompt = state === 'waiting' ? prompt : null
+  // Nothing is being written any more, so nothing half-written is true.
+  if (state !== 'working') clearDraft(entry)
   emitState(entry)
   return true
 }
@@ -339,6 +353,11 @@ function upsert(fields) {
     openedAt: 0,
     watcher: null,
     writeChain: null,
+    // The unfinished sentence as the phone last saw it, the one it has already
+    // been shown and must not be shown again, and a read in flight.
+    draft: '',
+    draftHeld: '',
+    drafting: false,
   }
   sessions.set(entry.id, entry)
   return { entry, created: true }
@@ -569,6 +588,8 @@ function drain(entry) {
   entry.offset = result.offset
   if (!result.text) return
   const fresh = ingest(entry, result.text)
+  // The file caught up. Whatever the screen was showing, this is the record.
+  if (fresh.length) clearDraft(entry, { hold: true })
   // A move is not something an appending phone can be told about a block at a
   // time, so a batch that reordered anything is sent as the whole list.
   const moved = entry.reordered
@@ -597,6 +618,87 @@ function closeTail(entry) {
   entry.watcher = null
 }
 
+/* ── the sentence being written right now ──────────────────────────────── */
+
+/**
+ * Reading the pane while the file is still holding its breath.
+ *
+ * A transcript is the honest record and it is also a late one: Claude Code
+ * writes an assistant entry only once the message is complete, so a phone
+ * tailing the file sits through the whole answer and then receives it whole.
+ * On the desktop the same answer arrives a word at a time, because the words
+ * are being drawn as they come off the wire — and the pane is the only place
+ * they exist until the file catches up.
+ *
+ * So while an agent is answering and somebody is reading it, the pane is read
+ * beside the file and what the adapter finds there is sent as a draft. It is
+ * marked as one all the way to the screen and it lives about a second: the
+ * moment the transcript delivers the real block the draft is dropped, and what
+ * the reader is left with is the parsed, canonical thing rather than a
+ * screenshot of a terminal.
+ *
+ * The conditions are the whole design. A draft is only taken for a session
+ * that a phone has open, that is `working`, and that lives in a multiplexer
+ * pane — the compositor road has no screen to read. So a desktop nobody is
+ * watching pays nothing, and a session the daemon cannot see the terminal of
+ * behaves exactly as it did before: the conversation arrives a message at a
+ * time, which is late but never wrong.
+ */
+const draftable = (entry) =>
+  entry.opens > 0 &&
+  entry.state === 'working' &&
+  typeof entry.adapter?.draft === 'function' &&
+  writer.isPane(entry.writable) &&
+  Boolean(entry.pane)
+
+/**
+ * Take the draft off the screen and send what is new about it.
+ *
+ * A growing paragraph is almost always the last one plus a few more words, so
+ * the common case goes down the wire as those words rather than as the
+ * paragraph — the phone is on somebody's data plan and this fires twice a
+ * second. A rewrap breaks the prefix and costs one full send, which is what
+ * the fallback is for.
+ */
+async function pumpDraft(entry) {
+  if (entry.drafting) return
+  entry.drafting = true
+  try {
+    const screen = await writer.screen(entry, DRAFT_LINES)
+    // A pane read is not instant and a turn can end inside one.
+    if (!draftable(entry)) return
+    const text = entry.adapter.draft(screen) || ''
+    if (!text || text === entry.draft) return
+    // The words the file has already delivered, still sitting on the screen
+    // where they were drawn. Sending them again would double the message.
+    if (entry.draftHeld && text.startsWith(entry.draftHeld)) return
+    const grew = entry.draft && text.startsWith(entry.draft)
+    emit(grew ? { kind: 'draft', id: entry.id, append: text.slice(entry.draft.length) } : { kind: 'draft', id: entry.id, text })
+    entry.draft = text
+  } catch {
+    // The pane closed, the server went away, tmux was slow. None of it is
+    // news: the transcript is still carrying the conversation.
+  } finally {
+    entry.drafting = false
+  }
+}
+
+/**
+ * Drop the draft, because the real thing has arrived — or because there is no
+ * longer a turn for it to belong to.
+ *
+ * `hold` is what stops the same words coming straight back: the pane goes on
+ * showing a finished message for as long as it is on screen, and the next read
+ * would find it there and send it a second time, under the block the file just
+ * delivered.
+ */
+function clearDraft(entry, { hold = false } = {}) {
+  entry.draftHeld = hold ? entry.draft || entry.draftHeld : ''
+  if (!entry.draft) return
+  entry.draft = ''
+  if (entry.opens > 0) emit({ kind: 'draft', id: entry.id, text: '' })
+}
+
 /** Only the sessions a phone is actually reading are tailed. */
 function openedSessions() {
   return [...sessions.values()].filter((e) => e.opens > 0)
@@ -611,6 +713,8 @@ function release(entry) {
   entry.loaded = false
   entry.offset = 0
   entry.seq = 0
+  entry.draft = ''
+  entry.draftHeld = ''
 }
 
 /* ── discovery: the process scan ───────────────────────────────────────── */
@@ -1169,6 +1273,19 @@ function watch() {
   }, POLL_MS)
   pollTimer.unref?.()
 
+  // The pane, beside the file, for the seconds when the file has nothing to
+  // say and the terminal has everything. Its own timer rather than a division
+  // of the poll above: they are watching two different things at two very
+  // different speeds, and a read of somebody's screen must never be the reason
+  // a transcript is tailed five times a second.
+  draftTimer = setInterval(() => {
+    if (!bus?.hasSubscribers('agent')) return
+    for (const entry of sessions.values()) {
+      if (draftable(entry)) void pumpDraft(entry)
+    }
+  }, DRAFT_MS)
+  draftTimer.unref?.()
+
   sweep()
   void resurvey()
   log.info("agent control is on — phones can read and answer this desktop's coding agents")
@@ -1178,8 +1295,10 @@ function watch() {
 function unwatch() {
   clearInterval(scanTimer)
   clearInterval(pollTimer)
+  clearInterval(draftTimer)
   scanTimer = null
   pollTimer = null
+  draftTimer = null
   for (const entry of sessions.values()) closeTail(entry)
   sessions.clear()
   recencies.clear()
