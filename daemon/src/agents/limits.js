@@ -69,7 +69,7 @@ const resetAt = (value) => {
  * is the one at seventy percent — and the old fields are the fallback for a
  * CLI too old to have written it.
  */
-function rowsFrom(utilization) {
+function rowsFrom(utilization, asOf) {
   const rows = []
   const seen = new Set()
 
@@ -92,6 +92,7 @@ function rowsFrom(utilization) {
       severity: String(limit.severity || 'normal'),
       // Which window the CLI says you are actually spending against now.
       active: limit.is_active === true,
+      asOf,
     })
   }
 
@@ -107,12 +108,24 @@ function rowsFrom(utilization) {
         resetsAt: resetAt(window.resets_at),
         severity: used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal',
         active: false,
+        asOf,
       })
     }
   }
 
-  return rows.sort((a, b) => b.percent - a.percent)
+  return rows
 }
+
+/**
+ * Whether a row still describes the window you are in.
+ *
+ * A percentage belongs to the window it was measured in, and a snapshot taken
+ * before that window turned over is not a small error — it is a number for a
+ * week that has ended. The desktop's cache can sit untouched for days, so this
+ * happens routinely: a Friday session at 8% still reading "8%, resets now" on
+ * a Monday phone, which is the one thing worse than saying nothing.
+ */
+const current = (row) => !(row.resetsAt && row.resetsAt <= Date.now() && row.asOf < row.resetsAt)
 
 /** Extra usage, when the account has any and it is switched on. */
 function spendFrom(utilization) {
@@ -163,12 +176,15 @@ export function absorb(rateLimits) {
       resetsAt: Number.isFinite(resets) && resets > 0 ? resets * 1000 : null,
       severity: used >= 90 ? 'critical' : used >= 75 ? 'warning' : 'normal',
       active: false,
+      asOf: Date.now(),
     })
   }
   if (!rows.length) return false
-  const print = JSON.stringify(rows)
-  const moved = !overlay || JSON.stringify(overlay.rows) !== print
-  overlay = { at: Date.now(), rows }
+  // The timestamp moves on every update by construction; only the numbers
+  // themselves are worth waking a phone for.
+  const print = JSON.stringify(rows.map((r) => [r.kind, r.percent, r.resetsAt]))
+  const moved = !overlay || overlay.print !== print
+  overlay = { at: Date.now(), print, rows }
   return moved
 }
 
@@ -183,18 +199,38 @@ export function absorb(rateLimits) {
  */
 function merged(base) {
   if (!overlay || Date.now() - overlay.at > STALE_MS) return base
-  if (!base) return { fetchedAt: overlay.at, stale: false, limits: [...overlay.rows.map((r) => ({ ...r }))], spend: null }
+  const fresh = overlay.rows.map((row) => ({ ...row }))
+  if (!base) return { fetchedAt: overlay.at, limits: fresh, spend: null }
   if (overlay.at <= base.fetchedAt) return base
   const rows = base.limits.map((row) => {
-    const fresh = overlay.rows.find((o) => o.label === row.label)
-    return fresh
-      ? { ...row, percent: fresh.percent, resetsAt: fresh.resetsAt ?? row.resetsAt, severity: fresh.severity }
+    const now = fresh.find((o) => o.label === row.label)
+    return now
+      ? { ...row, percent: now.percent, resetsAt: now.resetsAt ?? row.resetsAt, severity: now.severity, asOf: now.asOf }
       : { ...row }
   })
-  for (const fresh of overlay.rows) {
-    if (!rows.some((row) => row.label === fresh.label)) rows.push({ ...fresh })
+  for (const row of fresh) {
+    if (!rows.some((seen) => seen.label === row.label)) rows.push(row)
   }
-  return { ...base, fetchedAt: overlay.at, stale: false, limits: rows.sort((a, b) => b.percent - a.percent) }
+  return { ...base, fetchedAt: overlay.at, limits: rows }
+}
+
+/**
+ * Sort, drop what the clock has overtaken, and say whether anything left is
+ * old — which is a per-row question now that half the rows can be refreshed
+ * and half cannot. The status line publishes the two unscoped windows and
+ * nothing else, so a per-model weekly row keeps the age of the last cache
+ * write however busy the desktop is, and sitting beside a live figure without
+ * saying so is exactly how a stale number gets believed.
+ */
+function finish(value) {
+  if (!value) return null
+  const now = Date.now()
+  const limits = value.limits
+    .map((row) => ({ ...row, stale: row.asOf > 0 && now - row.asOf > STALE_MS }))
+    .filter(current)
+    .sort((a, b) => b.percent - a.percent)
+  if (!limits.length) return null
+  return { ...value, limits, stale: limits.some((row) => row.stale) }
 }
 
 /**
@@ -204,7 +240,7 @@ function merged(base) {
  * the file behind it is rewritten by the CLI a few times an hour.
  */
 export function read() {
-  return merged(readCache())
+  return finish(merged(readCache()))
 }
 
 function readCache() {
@@ -229,15 +265,10 @@ function readCache() {
     return null
   }
 
-  const rows = utilization ? rowsFrom(utilization) : []
-  const value = rows.length
-    ? {
-        fetchedAt,
-        stale: fetchedAt > 0 && Date.now() - fetchedAt > STALE_MS,
-        limits: rows,
-        spend: spendFrom(utilization),
-      }
-    : null
+  const rows = utilization ? rowsFrom(utilization, fetchedAt) : []
+  // Deliberately unjudged: what counts as expired or stale depends on the
+  // clock, and this value is memoised against the file's mtime for hours.
+  const value = rows.length ? { fetchedAt, limits: rows, spend: spendFrom(utilization) } : null
 
   cache.at = stat.mtimeMs
   cache.value = value

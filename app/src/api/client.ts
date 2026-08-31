@@ -183,11 +183,15 @@ export type AgentLimit = {
   severity: string
   /** The window the desktop says it is actually spending against now. */
   active: boolean
+  /** When this figure was measured. Rows age at different rates. */
+  asOf?: number
+  /** Old enough that it is history rather than status. */
+  stale?: boolean
 }
 
 export type AgentLimits = {
   fetchedAt: number
-  /** Whether the CLI's cache is old enough that the numbers are history. */
+  /** Whether any row is old enough to be history rather than status. */
   stale: boolean
   limits: AgentLimit[]
   spend: { used: number | null; limit: number | null; currency: string; percent: number | null } | null

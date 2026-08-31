@@ -185,6 +185,47 @@ check('extra usage that is switched off is not a row', usageNow?.spend === null)
 check('a fresh answer is not stale', usageNow?.stale === false)
 check('the worst window is the one a badge would use', limits.worst()?.percent === 73)
 
+// A desktop nobody has opened for days: the CLI never rewrote its cache, so
+// every figure in it belongs to a week that has since turned over.
+const daysAgo = Date.now() - 3 * 86_400_000
+write(
+  path.join(sandbox, '.claude.json'),
+  JSON.stringify({
+    cachedUsageUtilization: {
+      fetchedAtMs: daysAgo,
+      utilization: {
+        limits: [
+          // Its window ended two days ago — the percentage is a fact about a
+          // week nobody is in any more.
+          { kind: 'session', group: 'session', percent: 8, severity: 'normal', resets_at: new Date(daysAgo + 3_600_000).toISOString(), is_active: false },
+          { kind: 'weekly_all', group: 'weekly', percent: 73, severity: 'normal', resets_at: new Date(Date.now() + 18 * 3_600_000).toISOString(), is_active: true },
+          { kind: 'weekly_scoped', group: 'weekly', percent: 70, severity: 'normal', resets_at: new Date(Date.now() + 18 * 3_600_000).toISOString(), scope: { model: { display_name: 'Fable' } }, is_active: false },
+        ],
+      },
+    },
+  }),
+)
+
+const usageOld = limits.read()
+check('a window that has already turned over is not shown at all', !usageOld?.limits?.some((l) => l.kind === 'session'))
+check('the rows that survive say they are old', usageOld?.limits?.every((l) => l.stale === true))
+check('and carry when they were measured', usageOld?.limits?.[0]?.asOf === daysAgo, String(usageOld?.limits?.[0]?.asOf))
+
+// One status line update from a session starting up — the only realtime
+// source there is, and it knows about the account-wide windows only.
+limits.absorb({
+  five_hour: { used_percentage: 1, resets_at: Math.round((Date.now() + 4 * 3_600_000) / 1000) },
+  seven_day: { used_percentage: 96, resets_at: Math.round((Date.now() + 18 * 3_600_000) / 1000) },
+})
+const usageLive = limits.read()
+const row = (label) => usageLive?.limits?.find((l) => l.label === label)
+
+check('a status line refreshes the account-wide week', row('week')?.percent === 96, String(row('week')?.percent))
+check('and brings the session window back with it', row('session')?.percent === 1, String(row('session')?.percent))
+check('the refreshed rows are no longer old', row('week')?.stale === false && row('session')?.stale === false)
+check('but a per-model row it cannot refresh still says it is', row('week · Fable')?.stale === true)
+check('so the card as a whole is still flagged', usageLive?.stale === true)
+
 /* ── background agents ─────────────────────────────────────────────────── */
 
 const jobs = await import('../src/agents/jobs.js')

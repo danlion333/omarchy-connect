@@ -1351,6 +1351,14 @@ function resetWord(at) {
   return `${date.toLocaleDateString([], { weekday: 'short' })} ${time}`
 }
 
+/** How old a figure is, for the rows the status line cannot refresh. */
+function ageWord(at) {
+  const hours = (Date.now() - at) / 3_600_000
+  if (hours < 1) return null
+  if (hours < 48) return `${Math.round(hours)}h old`
+  return `${Math.round(hours / 24)}d old`
+}
+
 // The hooks themselves — where they live, what they say, how they are written
 // — belong beside the adapter they serve: the panel reports whether they are
 // installed, and the daemon publishes that in the status file.
@@ -1795,11 +1803,23 @@ async function cmdAgent(args) {
         // an escape sequence counts as characters that are never drawn.
         usage.limits.map((limit) => [
           limit.label + (limit.active ? ' ←' : ''),
-          `${limit.percent}%${limit.resetsAt ? `   resets ${resetWord(limit.resetsAt)}` : ''}`,
+          // Age beats reset time when there is one: a figure from before the
+          // weekend says more about itself than the day it turns over does.
+          `${limit.percent}%${
+            (limit.stale && limit.asOf ? `   ${ageWord(limit.asOf)}` : '') ||
+            (limit.resetsAt ? `   resets ${resetWord(limit.resetsAt)}` : '')
+          }`,
         ]),
       ),
     )
-    if (usage.stale) console.log(dim('\n  from the CLI\'s cache — start a session to refresh it\n'))
+    if (usage.stale) {
+      // Only the two unscoped windows ride the status line, so on a busy
+      // desktop the stale rows are the per-model ones and the note has to say
+      // *which* rows it is about rather than disown the whole card.
+      const old = usage.limits.filter((limit) => limit.stale).map((limit) => limit.label)
+      const all = old.length === usage.limits.length
+      console.log(dim(`\n  ${all ? 'these are' : `${old.join(', ')} — `}from the CLI's cache; a session here refreshes it\n`))
+    }
   }
   if (!agents.enabled) {
     console.log(

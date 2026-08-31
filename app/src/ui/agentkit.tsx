@@ -50,9 +50,11 @@ export function tokens(n: number | null | undefined): string {
 /**
  * When a usage window turns over, as a gap rather than a date.
  *
- * "resets 06:00 on Tuesday" makes you do the arithmetic; "4d" and "38m" are
- * the answer to the question actually being asked, which is whether waiting
- * is an option.
+ * "resets 06:00 on Tuesday" makes you do the arithmetic; "4d 6h" and "38m"
+ * are the answer to the question actually being asked, which is whether
+ * waiting is an option. Days alone are not: the difference between "3d" that
+ * means three days and "3d" that means three and a half is a whole evening,
+ * and it is the evening you were deciding about.
  */
 export function until(at: number | null | undefined): string | null {
   if (!at) return null
@@ -62,7 +64,25 @@ export function until(at: number | null | undefined): string | null {
   if (minutes < 60) return `${minutes}m`
   const hours = ms / 3_600_000
   if (hours < 48) return `${Math.round(hours)}h`
-  return `${Math.round(hours / 24)}d`
+  const days = Math.floor(hours / 24)
+  const rest = Math.round(hours - days * 24)
+  // 24 hours of remainder is another day, not "3d 24h".
+  return rest === 24 ? `${days + 1}d` : rest ? `${days}d ${rest}h` : `${days}d`
+}
+
+/**
+ * How old a figure is, for the ones nothing on the desktop is refreshing.
+ *
+ * The mirror image of `until`, and needed for the same reason: a percentage
+ * measured last Friday is not the plan's state, it is a memory of it, and the
+ * only honest way to show one is beside its age.
+ */
+export function since(at: number | null | undefined): string | null {
+  if (!at) return null
+  const hours = (Date.now() - at) / 3_600_000
+  if (hours < 1) return null
+  if (hours < 48) return `${Math.round(hours)}h old`
+  return `${Math.round(hours / 24)}d old`
 }
 
 /** Green until it matters, then orange, then red. */
@@ -169,7 +189,10 @@ export function Badge({ label, tone }: { label: string; tone: string }) {
 export function LimitRow({ limit }: { limit: AgentLimit }) {
   const { palette } = useConnection()
   const tone = fillTone(palette, limit.percent)
-  const gap = until(limit.resetsAt)
+  // A stale row's own age is the more useful of the two facts, and printing
+  // both would crowd a line that has a percentage to fit as well.
+  const age = limit.stale ? since(limit.asOf) : null
+  const gap = age ? null : until(limit.resetsAt)
   return (
     <View style={{ gap: 4 }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
@@ -184,14 +207,24 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
         >
           {limit.label}
         </Text>
-        {gap ? (
-          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>resets in {gap}</Text>
+        {gap || age ? (
+          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+            {age ?? `resets in ${gap}`}
+          </Text>
         ) : null}
-        <Text style={{ color: tone, fontFamily: font.medium, fontSize: size.label, minWidth: 34, textAlign: 'right' }}>
+        <Text
+          style={{
+            color: age ? palette.muted : tone,
+            fontFamily: font.medium,
+            fontSize: size.label,
+            minWidth: 34,
+            textAlign: 'right',
+          }}
+        >
           {limit.percent}%
         </Text>
       </View>
-      <Meter fraction={limit.percent / 100} tone={tone} height={4} />
+      <Meter fraction={limit.percent / 100} tone={age ? palette.muted : tone} height={4} />
     </View>
   )
 }
@@ -206,6 +239,11 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
 export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
   const { palette } = useConnection()
   if (!limits?.limits?.length) return null
+  // The desktop refreshes the account-wide windows off every turn of every
+  // session, but per-model rows only when the CLI rewrites its cache — so on
+  // one card some rows are live and others are days old, and the note below
+  // has to name the old ones rather than cast doubt on all of them.
+  const stale = limits.limits.filter((limit) => limit.stale).map((limit) => limit.label)
   return (
     <View style={{ gap: space.md }}>
       {limits.limits.map((limit) => (
@@ -216,9 +254,10 @@ export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
           extra usage: {limits.spend.used?.toFixed(2)} of {limits.spend.limit.toFixed(2)} {limits.spend.currency}
         </Text>
       ) : null}
-      {limits.stale ? (
+      {stale.length ? (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          from the desktop's cache — it refreshes when a session runs there
+          {stale.length === limits.limits.length ? 'these are' : `${stale.join(', ')} — `}from the desktop's cache, which
+          only a session running there refreshes
         </Text>
       ) : null}
     </View>

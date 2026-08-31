@@ -461,6 +461,9 @@ function agentsPressure(value) {
   for (var i = 0; i < value.limits.length; i += 1) {
     var limit = value.limits[i]
     if (!isObject(limit)) continue
+    // A figure from days ago is not pressure, it is a memory of pressure, and
+    // the bar has no room to say which it is showing.
+    if (limit.stale === true) continue
     if (worst === null || num(limit.percent, 0) > num(worst.percent, 0)) worst = limit
   }
   if (worst === null || num(worst.percent, 0) < 75) return ""

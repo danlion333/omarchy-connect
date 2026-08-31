@@ -1402,7 +1402,9 @@ let limitsPrint = ''
 
 function announceLimits() {
   const value = limits.read()
-  const print = value ? value.limits.map((l) => `${l.kind}:${l.percent}`).join(',') : ''
+  // Ageing counts as news: a row that has crossed into stale draws itself
+  // differently on the phone, and nothing else would tell it.
+  const print = value ? value.limits.map((l) => `${l.kind}:${l.percent}:${l.stale ? 'old' : ''}`).join(',') : ''
   if (print === limitsPrint) return
   limitsPrint = print
   emit({ kind: 'limits', limits: value })
