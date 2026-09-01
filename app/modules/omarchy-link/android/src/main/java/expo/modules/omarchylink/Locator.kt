@@ -78,6 +78,7 @@ object Locator {
   fun ring(context: Context, seconds: Int, desktop: String?) {
     val app = context.applicationContext
     handler.removeCallbacksAndMessages(null)
+    val extending = ringing
     ringing = true
 
     raiseAlarmVolume(app)
@@ -85,7 +86,12 @@ object Locator {
     startVibration(app)
     show(app, desktop)
 
-    handler.postDelayed({ hush(app, found = false) }, seconds.coerceIn(5, 300) * 1000L)
+    val window = seconds.coerceIn(5, 300)
+    // The window as clamped, not as asked for: a desktop that asked for an
+    // hour and a phone that will shout for five minutes disagree about when
+    // silence is a bug, and only one of them is right.
+    Trace.evt("locate.ring", "seconds" to window, "asked" to seconds, "extending" to extending)
+    handler.postDelayed({ hush(app, found = false) }, window * 1000L)
   }
 
   /**
@@ -116,11 +122,17 @@ object Locator {
     restoreAlarmVolume(app)
     Shade.cancel(app, Shade.LOCATE, KEY)
 
+    // Three endings look identical from the desktop and are three different
+    // stories: somebody found the phone, the phone's own clock ran out, or
+    // this was a stop for a search that had already ended.
+    Trace.evt("locate.hush", "found" to found, "wasRinging" to wasRinging)
+
     if (found && wasRinging) {
       try {
         onFound?.invoke()
       } catch (error: Exception) {
         /* no runtime to tell; the desktop's own window expires on its own */
+        Trace.warn("locate.found.unreported", "error" to error.javaClass.simpleName)
       }
     }
   }
@@ -148,7 +160,10 @@ object Locator {
       }
     } catch (error: Exception) {
       // A tone that will not play leaves the vibration and the notification,
-      // which on a phone under a cushion is still two thirds of the answer.
+      // which on a phone under a cushion is still two thirds of the answer —
+      // but a search reported as ringing that made no sound is a bug worth
+      // being able to name afterwards.
+      Trace.fail("locate.sound.failed", error)
       player = null
     }
   }

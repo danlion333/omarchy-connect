@@ -35,26 +35,42 @@ object Outbox {
     val list = read(context)
     list.put(JSONObject(mapOf("kind" to kind, "id" to id, "text" to text)))
     // Drop from the front: the oldest unsent thing is the one worth losing.
-    while (list.length() > LIMIT) list.remove(0)
+    while (list.length() > LIMIT) {
+      list.remove(0)
+      // Something asked for by a person holding the phone is being thrown
+      // away. Rare enough to be a bug when it happens, silent enough to never
+      // be found without this.
+      Trace.warn("outbox.overflow", "limit" to LIMIT)
+    }
     prefs(context).edit().putString(KEY, list.toString()).apply()
+    Trace.evt("outbox.add", "kind" to kind, "id" to Trace.mark(id), "queued" to list.length())
   }
 
   @Synchronized
   fun drain(context: Context): List<Map<String, Any?>> {
     val list = read(context)
     prefs(context).edit().remove(KEY).apply()
-    return (0 until list.length()).mapNotNull { index ->
+    val work = (0 until list.length()).mapNotNull { index ->
       val item = list.optJSONObject(index) ?: return@mapNotNull null
       val kind = item.optString("kind").ifBlank { return@mapNotNull null }
       val id = item.optString("id").ifBlank { return@mapNotNull null }
       mapOf("kind" to kind, "id" to id, "text" to item.optString("text"))
     }
+    // A drain of nothing is the ordinary case and says nothing; a drain that
+    // carried something is the moment the outbox justified its existence, and
+    // the gap between it and the `outbox.add` that filled it is how long the
+    // phone spent unable to speak.
+    if (work.isNotEmpty()) Trace.evt("outbox.drain", "count" to work.size)
+    return work
   }
 
   private fun read(context: Context): JSONArray =
     try {
       JSONArray(prefs(context).getString(KEY, "[]") ?: "[]")
     } catch (error: Exception) {
+      // Unreadable means everything queued is already lost, so this is the
+      // only notice that will ever be given of it.
+      Trace.warn("outbox.unreadable", "error" to error.javaClass.simpleName)
       JSONArray()
     }
 }

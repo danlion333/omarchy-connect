@@ -37,16 +37,27 @@ class LinkActionReceiver : BroadcastReceiver() {
     var listener: ((String, Map<String, Any?>) -> Unit)? = null
 
     private fun emit(event: String, payload: Map<String, Any?>) {
+      val target = listener
+      if (target == null) {
+        // Not an error — the outbox is the whole plan for this case — but the
+        // difference between "nobody was listening" and "somebody was and it
+        // threw" is the difference between two very different bugs.
+        Trace.detail("emit.parked", "event" to event)
+        return
+      }
       try {
-        listener?.invoke(event, payload)
+        target.invoke(event, payload)
+        Trace.detail("emit", "event" to event)
       } catch (error: Exception) {
         /* the runtime went away between the broadcast and the send */
+        Trace.warn("emit.failed", "event" to event, "error" to error.javaClass.simpleName)
       }
     }
   }
 
   override fun onReceive(context: Context, intent: Intent) {
     val key = intent.getStringExtra(EXTRA_KEY)
+    Trace.evt("action", "name" to intent.action?.substringAfterLast('.'), "key" to Trace.mark(key))
     when (intent.action) {
       ACTION_REPLY -> reply(context, intent, key ?: return)
       ACTION_SAVE -> save(context, intent, key ?: return)
@@ -77,11 +88,17 @@ class LinkActionReceiver : BroadcastReceiver() {
 
   private fun reply(context: Context, intent: Intent, session: String) {
     val text = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(AgentAlerts.REPLY_KEY)?.toString()?.trim()
-    if (text.isNullOrEmpty()) return
+    if (text.isNullOrEmpty()) {
+      Trace.detail("reply.empty", "session" to Trace.mark(session))
+      return
+    }
 
     // Written down before anything else: from here on the answer is safe even
     // if this process is killed on the next line.
     Outbox.add(context, "reply", session, text)
+    // The length and not the words: an answer typed into a notification is as
+    // private as anything this app carries.
+    Trace.evt("reply.queued", "session" to Trace.mark(session), "chars" to Trace.len(text))
     // The shade should stop offering a text box for an answer already given.
     AgentAlerts.note(context, session, "sending: $text", LinkPrefs.desktop(context))
     wake(context)
@@ -94,6 +111,7 @@ class LinkActionReceiver : BroadcastReceiver() {
     // so this is the JavaScript side's job — the receiver only records that it
     // was asked for.
     Outbox.add(context, "save", token, name)
+    Trace.evt("save.queued", "token" to Trace.mark(token))
     DesktopAlerts.fileNote(context, token, name, "saving to your gallery…")
     wake(context)
     emit("onOutbox", emptyMap())
@@ -112,9 +130,11 @@ class LinkActionReceiver : BroadcastReceiver() {
     try {
       val manager = context.getSystemService(ClipboardManager::class.java) ?: return
       manager.setPrimaryClip(ClipData.newPlainText("Omarchy Connect", text))
+      Trace.evt("clipboard.write", "chars" to Trace.len(text))
       DesktopAlerts.clipboardCopied(context, text)
     } catch (error: Exception) {
       /* an OEM that refuses this is not worth a crash in a receiver */
+      Trace.fail("clipboard.write.failed", error)
     }
   }
 
@@ -127,11 +147,15 @@ class LinkActionReceiver : BroadcastReceiver() {
    * and goes out when they next open the app.
    */
   private fun wake(context: Context) {
-    if (!LinkPrefs.isEnabled(context)) return
+    if (!LinkPrefs.isEnabled(context)) {
+      Trace.detail("wake.skipped", "reason" to "link-disabled")
+      return
+    }
     try {
       LinkService.start(context)
     } catch (error: Exception) {
       /* Android 12 background-start rules; the outbox is the fallback */
+      Trace.warn("wake.refused", "error" to error.javaClass.simpleName)
     }
   }
 }
