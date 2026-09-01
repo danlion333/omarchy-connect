@@ -1,0 +1,118 @@
+# The repository's first automated opinion about itself.
+#
+# Everything here already existed as something a person ran by hand and read
+# with their eyes. That is a fine way to check a change and a poor way to build
+# anything on top of, because the result lives in a terminal that scrolls away
+# and in a memory of having run it. What follows is the same work, run by
+# something that does not forget, leaving a `test-report.json` behind that can
+# be read by whatever comes next.
+#
+# Two jobs, and the split is deliberate. `tests` is the fast one: it needs
+# nothing but Node and it is where nearly every regression will actually be
+# caught. `android` is slow and needs an SDK, and it exists because until now
+# nothing at all checked the 2,600 lines of Kotlin in `app/modules` — not a
+# test, not a linter, not even a compiler. A typo in there reached a phone or
+# it reached nobody.
+
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  # So the slow half can be tried on its own without pushing a commit to ask.
+  workflow_dispatch:
+
+# A second push to the same branch makes the first one's answer stale rather
+# than interesting.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: tests and types
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # `daemon/package.json` asks for >=20; this is what the work is done
+          # on locally, and the app's suites lean on Node's own type stripping
+          # to import `.ts` directly, which is only unflagged from 22.18.
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            daemon/package-lock.json
+            app/package-lock.json
+
+      - name: install daemon
+        working-directory: daemon
+        run: npm ci
+
+      - name: install app
+        working-directory: app
+        run: npm ci
+
+      # The whole point of the runner: every suite runs, including the ones
+      # after the first failure. A red build here names everything that is
+      # broken, not the first thing that was.
+      - name: test
+        run: node tools/run-tests.mjs
+
+      - name: typecheck
+        working-directory: app
+        run: npm run typecheck
+
+      # Kept whether the run passed or failed — a report is only worth writing
+      # down on the days it has something to say.
+      - name: report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report
+          path: test-report.json
+          if-no-files-found: warn
+
+  android:
+    name: kotlin compiles
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: install app
+        working-directory: app
+        run: npm ci
+
+      # This is a managed Expo project: there is no `android/` directory in the
+      # repository, it is generated. `--no-install` because npm ci above has
+      # already done that half.
+      - name: prebuild
+        working-directory: app
+        run: npx expo prebuild --platform android --no-install
+
+      # Compiling and not assembling. An APK takes far longer and answers a
+      # question nobody asked here — what is wanted is whether the Kotlin in
+      # `modules/omarchy-link` and `modules/omarchy-telephony` is still valid
+      # Kotlin, and that is the compile task.
+      - name: compile
+        working-directory: app/android
+        run: ./gradlew compileDebugKotlin --no-daemon --stacktrace
