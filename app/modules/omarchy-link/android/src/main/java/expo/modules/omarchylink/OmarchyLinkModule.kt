@@ -40,13 +40,46 @@ class OmarchyLinkModule : Module() {
 
   private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
+  /**
+   * A share that arrived while the app was already up.
+   *
+   * Kept here rather than read back off the activity because nothing in the
+   * React or Expo activity chain calls `setIntent` for a new intent — the
+   * activity would still be holding whatever launched it, which for a warm
+   * share is the launcher icon.
+   */
+  private var pendingShare: Intent? = null
+
   /** A magic packet is 102 bytes; nothing this sends has any business being large. */
   private val MAX_DATAGRAM = 1024
 
   override fun definition() = ModuleDefinition {
     Name("OmarchyLink")
 
-    Events("onNetworkChange", "onOutbox", "onLinkReconnect", "onLocateFound")
+    Events("onNetworkChange", "onOutbox", "onLinkReconnect", "onLocateFound", "onShareIntent")
+
+    /**
+     * Somebody shared to this app while it was already running.
+     *
+     * A cold-started share is on the activity's own intent and JavaScript
+     * finds it by asking; this is the other half, where the activity is
+     * already up and Android hands the share over as a new intent. Only the
+     * news is sent — the payload is fetched with `takeShareIntent`, whose
+     * copying is too slow to do on the way past.
+     */
+    OnNewIntent { intent ->
+      if (ShareIntake.isShare(intent)) {
+        Trace.evt("share.newIntent")
+        pendingShare = intent
+        try {
+          this@OmarchyLinkModule.sendEvent("onShareIntent", emptyMap<String, Any?>())
+        } catch (error: Exception) {
+          // Nothing listening yet; the intent is still on the activity and the
+          // next `takeShareIntent` will find it there.
+          Trace.warn("share.send.failed", "error" to error.javaClass.simpleName)
+        }
+      }
+    }
 
     /**
      * The notification buttons run in a broadcast receiver, which has no way
@@ -83,6 +116,7 @@ class OmarchyLinkModule : Module() {
       Trace.evt("runtime.down", "service" to LinkService.running, "locating" to Locator.ringing)
       LinkActionReceiver.listener = null
       Locator.onFound = null
+      pendingShare = null
       unwatchNetwork()
     }
 
@@ -214,6 +248,28 @@ class OmarchyLinkModule : Module() {
      * service. Drained on every connect; see `Outbox`.
      */
     AsyncFunction("drainOutbox") { Outbox.drain(context) }
+
+    /**
+     * The share waiting on the activity, or `null` when there is none.
+     *
+     * Taking it spends it, so a second call — the app being resumed, a screen
+     * remounting — comes back empty rather than sending the same photo twice.
+     * The bytes are copied out of the sharing app's provider inside this call,
+     * which is why it is asynchronous: a video shared from the gallery is a
+     * real copy and has no business on the JS thread.
+     */
+    AsyncFunction("takeShareIntent") {
+      val intent = pendingShare
+        ?: appContext.currentActivity?.intent?.takeIf { ShareIntake.isShare(it) }
+      if (intent == null) {
+        null
+      } else {
+        val payload = ShareIntake.read(context, intent)
+        ShareIntake.spend(intent)
+        pendingShare = null
+        payload
+      }
+    }
 
     /**
      * The service runs without this — Android 13 only withholds the
