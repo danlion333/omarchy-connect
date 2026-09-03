@@ -1108,7 +1108,8 @@ Adapters for the other coding agents — Codex, Gemini CLI — and a raw
 the platforms that cannot pin a certificate (iOS and Expo Go), so TLS is not
 the only way to close that gap; a real scroll wheel without
 depending on `ydotool`; replying to a mirrored message from the desktop
-notification itself rather than from the CLI.
+notification itself, now that the panel's own *From the phone* card can answer
+one without a terminal.
 
 The one gap that is not on this list is sending a message from an iPhone. It is
 not a matter of effort — iOS exposes no way to do it, to anyone.

@@ -36,6 +36,17 @@ Panel {
   // this panel can open, so the switch asks first. Nothing else here does.
   property bool agentConfirmOpen: false
 
+  // Answering a mirrored message happens in the row that carried it: the
+  // number of the message being answered, and the half-typed answer itself.
+  // Both live up here rather than in the delegate because the list is rebuilt
+  // from the status file whenever anything about the phone changes, and a
+  // draft that vanished because the battery level ticked over would be a
+  // panel nobody types into twice. `replyFocused` is what tells the key
+  // catcher to keep its hands off the letters while somebody is using them.
+  property string replyTo: ""
+  property string replyDraft: ""
+  property bool replyFocused: false
+
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -276,6 +287,44 @@ Panel {
     if (bridge.paired) bridge.unpair(bridge.device)
   }
 
+  /* ── answering a message ───────────────────────────────────────────── */
+
+  /**
+   * Open the field under a message, or shut the one that is already open.
+   *
+   * One at a time, and a new one starts empty: two drafts on screen at once
+   * would be two Enters that mean different things, and carrying the text
+   * from one conversation into the next is how a message ends up with the
+   * wrong person.
+   */
+  function toggleReply(number) {
+    if (number === "") return
+    if (replyTo === number) { cancelReply(); return }
+    replyTo = number
+    replyDraft = ""
+  }
+
+  function cancelReply() {
+    replyTo = ""
+    replyDraft = ""
+    replyFocused = false
+    if (opened) Qt.callLater(function () { keyCatcher.forceActiveFocus() })
+  }
+
+  /**
+   * Enter. The field shuts on the way out rather than on the way back: the
+   * daemon holds an SMS open until the handset confirms it, which is seconds
+   * with a phone on a slow network, and a field that sat there full and
+   * unresponsive would read as a keystroke that did nothing. What the send
+   * actually did shows up where every other action's outcome does — the
+   * status line under the header, and the error line when it failed.
+   */
+  function sendReply(number) {
+    var body = replyDraft
+    cancelReply()
+    bridge.sendSms(number, body)
+  }
+
   function setCursor(section) {
     cursorActive = true
     focusSection = section
@@ -298,6 +347,9 @@ Panel {
 
   onOpenedChanged: {
     agentConfirmOpen = false
+    replyTo = ""
+    replyDraft = ""
+    replyFocused = false
     detailsOpen = false
     settingsOpen = false
     if (!opened) return
@@ -407,6 +459,10 @@ Panel {
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      // While somebody is typing an answer, every key belongs to the field.
+      // `j` and `k` are a cursor here and two letters there, and the panel's
+      // single-key actions would otherwise turn a reply into a pairing.
+      blocked: root.replyFocused
       // A question on screen owns the keyboard until it is answered: the
       // cursor, the letter keys and Esc all mean something about the question
       // rather than about the panel behind it.
@@ -856,15 +912,72 @@ Panel {
               Repeater {
                 model: bridge.phoneRecent.slice(0, 4)
 
-                delegate: ListRow {
+                // The line, and under a message this desktop could answer,
+                // the field that answers it. A row whose sender has no number
+                // — an app's own notification, an iPhone message that came
+                // down the low-energy road as a name and a sentence — is a
+                // plain line and nothing else, which is `phoneReplyTo`'s
+                // whole job.
+                delegate: Column {
+                  id: phoneEntry
                   required property var modelData
                   readonly property bool missed: modelData.missed === true
+                  readonly property string replyTo: Model.phoneReplyTo(modelData)
+                  readonly property bool replying: replyTo !== "" && root.replyTo === replyTo
 
-                  glyph: Model.phoneGlyph(modelData)
-                  glyphColor: missed ? root.urgent : root.dim
-                  title: Model.phoneWho(modelData)
-                  titleColor: missed ? root.urgent : root.foreground
-                  detail: Model.phoneDetail(modelData, root.now)
+                  width: parent.width
+                  spacing: Style.space(4)
+
+                  // The row is a layout, so the click target cannot be
+                  // anchored inside it — it goes over the top instead, in an
+                  // item the layout does not manage.
+                  Item {
+                    width: parent.width
+                    height: phoneRow.implicitHeight
+
+                    ListRow {
+                      id: phoneRow
+                      glyph: Model.phoneGlyph(phoneEntry.modelData)
+                      glyphColor: phoneEntry.missed ? root.urgent : root.dim
+                      title: Model.phoneWho(phoneEntry.modelData)
+                      titleColor: phoneEntry.missed ? root.urgent : root.foreground
+                      detail: Model.phoneDetail(phoneEntry.modelData, root.now)
+                    }
+
+                    MouseArea {
+                      anchors.fill: parent
+                      enabled: phoneEntry.replyTo !== ""
+                      hoverEnabled: enabled
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: root.toggleReply(phoneEntry.replyTo)
+                    }
+                  }
+
+                  // Indented to where the names start, so the field reads as
+                  // belonging to the line above it rather than to the list.
+                  TextField {
+                    visible: phoneEntry.replying
+                    x: root.iconCell + Style.space(8)
+                    width: parent.width - x
+                    placeholderText: "Reply to " + Model.phoneWho(phoneEntry.modelData)
+                    foreground: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    horizontalPadding: Style.spacing.controlGap
+                    verticalPadding: Style.spacing.controlPaddingY
+
+                    // The draft lives on the panel, not here: this delegate is
+                    // thrown away and rebuilt every time the status file moves.
+                    onVisibleChanged: {
+                      if (!visible) return
+                      text = root.replyDraft
+                      Qt.callLater(forceActiveFocus)
+                    }
+                    onTextChanged: if (phoneEntry.replying) root.replyDraft = text
+                    onActiveFocusChanged: root.replyFocused = activeFocus
+                    onAccepted: root.sendReply(phoneEntry.replyTo)
+                    Keys.onEscapePressed: root.cancelReply()
+                  }
                 }
               }
             }

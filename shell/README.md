@@ -86,6 +86,17 @@ it is drawn.
   list: an Android build over the LAN, the hands-free link, and an iPhone's own
   notifications over low energy. Hidden entirely until something arrives, which
   in Expo Go with no Bluetooth paired is never.
+
+  A message can be answered where it landed: click the row and a field opens
+  under it, Enter sends, Esc puts it away. It is the same `omarchy-connect sms`
+  the terminal has, run the same way every other action on this panel is run,
+  so the phone confirming the send is what clears the line and a refusal
+  arrives as a sentence rather than as silence. Only a row with somebody to
+  answer gets the field: an app's own notification is the app talking, a
+  missed call is a call rather than a message, and an iPhone's message comes
+  down the low-energy road as a name and a sentence with no number anywhere in
+  it — so all three stay plain lines. While the field has the keyboard the
+  panel's single-key actions stand down, because `s` in a reply is a letter.
 - **Recent transfers** — the last few files across the link, either direction.
 - **Actions** — Pair *or* Unpair, then Send and Inbox. Three, and all three are
   things you came here to do. The first slot is the way in while the desktop is
@@ -228,6 +239,10 @@ panel is harmless. `b` raises the hands-free link to the matched handset, or
 drops it if it is already up — and with no handset bonded at all it makes the
 bond instead, which is the state the row used to have nothing but a sentence
 for. It does nothing while a page or a pairing window is already under way.
+
+A reply field open on a message owns the keyboard for as long as it is
+focused: every letter goes into the message, Enter sends it and Esc shuts it
+without sending. Nothing else on the panel answers to a key until it is closed.
 
 `f` finds the phone: the handset rings at alarm volume until somebody picks it
 up, and the same key hushes it again for as long as it is ringing. Like the
