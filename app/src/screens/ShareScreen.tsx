@@ -150,9 +150,16 @@ export function ShareScreen() {
   const pullClipboard = useCallback(async () => {
     setBusy('pull')
     try {
-      const res = await call<{ text: string; kind: string }>('clipboard.get')
+      const res = await call<{ text: string | null; kind: string; token?: string | null }>('clipboard.get')
       if (res.kind !== 'text' || !res.text) {
-        report('the desktop clipboard holds no text')
+        // A picture is not a paste buffer this phone can be handed, but it is
+        // already a row above — the event that announced it carries the same
+        // offer this answer does.
+        report(
+          res.kind === 'binary'
+            ? 'the desktop copied a picture — tap it above'
+            : 'the desktop clipboard holds no text',
+        )
         return
       }
       await Clipboard.setStringAsync(res.text)
@@ -248,6 +255,15 @@ export function ShareScreen() {
    */
   const offers = useMemo<Offer[]>(() => {
     const seen = new Map<string, Offer>()
+    // A picture copied on the desktop is an offer like any other — the daemon
+    // spools the bytes and registers them in the same table — so it belongs in
+    // the same card, where it gets the same thumbnail, the same Save and the
+    // same viewer instead of a second half-built version of all three.
+    for (const entry of clipboard) {
+      if (entry.token && entry.name && !seen.has(entry.token)) {
+        seen.set(entry.token, { token: entry.token, name: entry.name, size: entry.size ?? 0, at: entry.at })
+      }
+    }
     for (const file of files) {
       if (file.direction === 'out' && file.token && !seen.has(file.token)) {
         seen.set(file.token, { token: file.token, name: file.name, size: file.size, at: file.at })
@@ -257,7 +273,7 @@ export function ShareScreen() {
       if (!seen.has(offer.token)) seen.set(offer.token, { token: offer.token, name: offer.name, size: offer.size })
     }
     return [...seen.values()]
-  }, [files, standing])
+  }, [clipboard, files, standing])
 
   /**
    * One download per offer, however many buttons ask for it. The promise is
@@ -381,20 +397,37 @@ export function ShareScreen() {
         {clipboard.length ? (
           <View style={{ marginBottom: space.md }}>
             {clipboard.map((entry, i) => (
-              <View key={`${entry.at}-${i}`}>
+              <View key={`${entry.token ?? entry.text}-${entry.at}-${i}`}>
                 {i ? <Divider style={{ marginVertical: 0 }} /> : null}
-                <ListRow
-                  title={preview(entry.text)}
-                  subtitle={clock(entry.at)}
-                  onPress={() => copyEntry(entry.text)}
-                  right={
-                    <Feather
-                      name={copied === entry.text ? 'check' : 'copy'}
-                      size={15}
-                      color={copied === entry.text ? palette.green : palette.muted}
-                    />
-                  }
-                />
+                {typeof entry.text === 'string' ? (
+                  <ListRow
+                    title={preview(entry.text)}
+                    subtitle={clock(entry.at)}
+                    onPress={() => copyEntry(entry.text as string)}
+                    right={
+                      <Feather
+                        name={copied === entry.text ? 'check' : 'copy'}
+                        size={15}
+                        color={copied === entry.text ? palette.green : palette.muted}
+                      />
+                    }
+                  />
+                ) : (
+                  // A copied picture: there is nothing to put in a paste
+                  // buffer, so the row opens it instead. The bytes come down
+                  // the offer the event carried, which is the same fetch the
+                  // files card below would do.
+                  <ListRow
+                    title={entry.name || entry.mime || 'image'}
+                    subtitle={`${clock(entry.at)}${entry.size ? ` · ${bytes(entry.size)}` : ''}`}
+                    onPress={() =>
+                      entry.token
+                        ? openOffer({ token: entry.token, name: entry.name || 'clipboard', size: entry.size ?? 0 })
+                        : undefined
+                    }
+                    right={<Feather name="image" size={15} color={palette.muted} />}
+                  />
+                )}
               </View>
             ))}
           </View>

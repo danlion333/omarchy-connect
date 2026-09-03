@@ -256,13 +256,25 @@ itself without waiting for the next tick.
 | Event | Fires when |
 | --- | --- |
 | `stats` | Every second — CPU, memory, disk, battery, network, latency. |
-| `clipboard` | The desktop clipboard changes (text only, ≤256 KB). |
+| `clipboard` | The desktop clipboard changes: text (≤256 KB) as `{ kind: "text", text }`, or a copied picture as `{ kind: "binary", mime, text: null, token, name, size }` — the token is a standing file offer, fetched over `/api/download/<token>` like any other. |
 | `notification` | Omarchy writes a new notification to its history. |
 | `theme` | The active Omarchy theme changes. |
 | `file` | A file arrived from a phone, or the desktop offered one. |
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`) or to say where it is (`action: "locate"`). |
 | `agent` | A coding agent appeared, changed state, or said something new. |
 | `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
+
+A binary clipboard — a screenshot, above all — does not travel on the event
+itself. The bytes are spooled to `~/.cache/omarchy-connect/clipboard` and
+handed to the same offer table `omarchy-connect send` uses, so what the phone
+receives is a token and the picture comes down `/api/download/<token>` behind
+a one-use ticket, exactly like a file the desktop offered on purpose. Nothing
+new is opened for it, and the picture arrives as something the phone can
+already preview, save to the gallery or hand to a coding agent through
+`agents.attach`. The ceiling is 32 MB and the spool is swept — an hour of the
+offer's own lifetime, twenty files — because a copied screenshot is scaffolding
+for the next question, not a file anybody meant to keep. Phone → desktop stays
+text: `clipboard.set` takes `{ text }` and nothing else.
 
 The `phone` channel is never delivered to a socket the desktop classed as
 `remote`: a call the desktop is asking a handset to answer has no business
@@ -301,7 +313,7 @@ a sleeping phone's TCP connection dies silently.
 
 | Method | Params |
 | --- | --- |
-| `clipboard.get` / `clipboard.set` | — / `{ text }` |
+| `clipboard.get` / `clipboard.set` | — / `{ text }` — `get` answers with the same shape as the `clipboard` event, so a copied picture comes back as an offer (`token: null` when the desktop is holding one it will not carry: over 32 MB, or unreadable). `set` is text only. |
 | `notifications.list` | `{ limit }` — the Omarchy notification history |
 | `notifications.send` | `{ summary, body, urgency }` — phone → desktop notification |
 | `share.text` | `{ text, action: "clipboard" \| "file" }` |
