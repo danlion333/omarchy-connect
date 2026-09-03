@@ -227,6 +227,10 @@ omarchy-connect phone            # what has been mirrored so far
 > message is forwarded as it lands. With it off, Android still starts the app's
 > process for the broadcast and the native receiver writes the message into a
 > small on-device backlog, which the app forwards the next time it is opened.
+> That backlog stays on the phone — the app is built with Android's automatic
+> cloud backup off, so a held message is never copied to anyone's Drive, and it
+> is not taken out of the phone's own storage until a desktop has said it will
+> take it.
 >
 > The background link costs a permanent, silent notification — that is the
 > price Android charges for a process that stays alive, and it is the switch
