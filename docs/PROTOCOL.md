@@ -538,8 +538,22 @@ or 1234". So the agent reads bluetoothctl's prompts and answers them instead
 of leaving them hanging: a PIN request gets `0000` and the code is surfaced as
 `link.bonding.pin` so every screen can say "type 0000 on the phone", and the
 yes/no family — confirm this passkey, accept this pairing, authorize this
-service — gets yes, because a question arriving inside a window the user
-opened on purpose is the consent.
+service — is answered yes only for the handset the window was opened for.
+
+Only for that one, because a discoverable window is thirty seconds of an
+invitation the whole room can read, and an agent that says yes to every
+question that arrives during one bonds with whoever asks first. bluetoothctl's
+prompts do not say whose question it is — "Confirm passkey %06u (yes/no):",
+"Accept pairing (yes/no):", no address anywhere — so the subject is taken from
+BlueZ's own tree at the moment of the question: the devices this desktop is
+`Connected` to and has not `Paired` with are the ones mid-pairing, and the
+answer is yes only when every one of them is the expected handset, by the same
+name match used everywhere else or by the address this desktop just paged
+itself. Anything else — nothing mid-pairing, or a stranger in there alongside
+the phone — is a no and a line in the log; the window pages again on its own,
+so a wrong no costs a retry where a wrong yes costs a bond. With no LAN
+pairing there is no name to expect, and there the window is still the consent,
+which is the same reason that state waits to be chosen rather than choosing.
 
 The scan runs inside that same process for a reason worth writing down:
 `SetDiscoveryFilter` is remembered per D-Bus client and forgotten when the

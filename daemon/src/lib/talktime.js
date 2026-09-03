@@ -1,4 +1,4 @@
-import { has, spawn, spawnDetached } from './exec.js'
+import { has, spawn, spawnDetached, notifyArgs } from './exec.js'
 
 /**
  * The card that stays on screen while you are talking.
@@ -187,7 +187,7 @@ export class TalkTime {
    */
   paint({ first = false } = {}) {
     if (!this.running || this.dismissed || !has('notify-send')) return
-    const args = [
+    const flags = [
       '-a', 'Omarchy Connect',
       // Below a message and well below a ringing phone. This card interrupts
       // nobody: whoever is reading it is already in the conversation it is
@@ -196,12 +196,14 @@ export class TalkTime {
       // It lives exactly as long as the call does, and is taken down by hand.
       '-t', '0',
     ]
-    if (this.id) args.push('-r', String(this.id))
+    if (this.id) flags.push('-r', String(this.id))
     // Where no button will be drawn, the gesture is spelled out beside the
     // clock — the same courtesy the ringing card pays, and for the same
     // reason: an undrawn button nobody is told about is not a way out.
     const gesture = !this.buttons && this.onHangup ? ' · right-click to hang up' : ''
-    args.push(`On call · ${this.who}`, `${clock(this.seconds)}${gesture}`)
+    // `who` is a name out of the handset's address book, so the card's text is
+    // fenced off from the flags above it.
+    const args = notifyArgs(flags, `On call · ${this.who}`, `${clock(this.seconds)}${gesture}`)
     if (!first) {
       spawnDetached('notify-send', args)
       return
@@ -300,9 +302,9 @@ export class TalkTime {
       this.close(id)
       return { seconds, who }
     }
-    const args = ['-a', 'Omarchy Connect', '-u', 'low', '-t', String(FAREWELL_MS)]
-    if (id) args.push('-r', String(id))
-    args.push(`Call ended · ${who}`, `lasted ${spoken(seconds)}`)
+    const flags = ['-a', 'Omarchy Connect', '-u', 'low', '-t', String(FAREWELL_MS)]
+    if (id) flags.push('-r', String(id))
+    const args = notifyArgs(flags, `Call ended · ${who}`, `lasted ${spoken(seconds)}`)
     spawnDetached('notify-send', args)
     return { seconds, who }
   }

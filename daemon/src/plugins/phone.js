@@ -1,7 +1,7 @@
 import crypto from 'node:crypto'
 import fs from 'node:fs'
 
-import { has, run, spawn, spawnDetached } from '../lib/exec.js'
+import { has, run, spawn, spawnDetached, notifyArgs } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 import { handsfree, isRinging, isLive, isTalking } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
@@ -430,27 +430,29 @@ function ring(entry, actionable) {
   if (!actionable) {
     // Detached, so its stdout is gone and a first notification's id is unknown
     // — a replacement of one we already have an id for still works.
-    spawnDetached('notify-send', [...common, title, body])
+    spawnDetached('notify-send', notifyArgs(common, title, body))
     ringingId = replaces
     return
   }
   const child = spawn(
     'notify-send',
-    [
-      ...common,
-      '-p',
-      '-t', String(RING_TIMEOUT_MS),
-      // `default` is the action a notification invokes when it is clicked
-      // rather than one it draws a button for, and it is the only one some
-      // servers implement at all. Registering it alongside the named pair is
-      // what makes one notification work on both kinds: buttons where there
-      // are buttons, click-to-answer where there are not.
-      '-A', 'default=Answer',
-      '-A', 'answer=Answer',
-      '-A', 'reject=Decline',
+    notifyArgs(
+      [
+        ...common,
+        '-p',
+        '-t', String(RING_TIMEOUT_MS),
+        // `default` is the action a notification invokes when it is clicked
+        // rather than one it draws a button for, and it is the only one some
+        // servers implement at all. Registering it alongside the named pair is
+        // what makes one notification work on both kinds: buttons where there
+        // are buttons, click-to-answer where there are not.
+        '-A', 'default=Answer',
+        '-A', 'answer=Answer',
+        '-A', 'reject=Decline',
+      ],
       title,
       body,
-    ],
+    ),
     { stdio: ['ignore', 'pipe', 'ignore'] },
   )
   child.on('error', () => {
@@ -519,7 +521,7 @@ async function copyCode(code) {
  */
 function answerCard(id, head, line) {
   if (!id) return
-  spawnDetached('notify-send', ['-a', 'Omarchy Connect', '-r', String(id), '-t', String(COPIED_MS), head, line])
+  spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect', '-r', String(id), '-t', String(COPIED_MS)], head, line))
 }
 
 /**
@@ -546,7 +548,7 @@ function offerCode(entry, code) {
   if (otp.autoCopy) {
     copyCode(code).then((ok) => {
       const note = ok ? `${message}\n${code} is on the clipboard` : message
-      spawnDetached('notify-send', ['-a', 'Omarchy Connect', head, note])
+      spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], head, note))
     })
     return
   }
@@ -554,15 +556,17 @@ function offerCode(entry, code) {
   const body = drawsButtons ? message : `${message}\nclick to copy ${code}`
   const child = spawn(
     'notify-send',
-    [
-      '-a', 'Omarchy Connect',
-      '-p',
-      '-t', String(CODE_TIMEOUT_MS),
-      '-A', `default=Copy ${code}`,
-      '-A', `copy=Copy ${code}`,
+    notifyArgs(
+      [
+        '-a', 'Omarchy Connect',
+        '-p',
+        '-t', String(CODE_TIMEOUT_MS),
+        '-A', `default=Copy ${code}`,
+        '-A', `copy=Copy ${code}`,
+      ],
       head,
       body,
-    ],
+    ),
     { stdio: ['ignore', 'pipe', 'ignore'] },
   )
   child.on('error', () => codeCards.delete(child))
@@ -604,7 +608,7 @@ function notify(entry) {
     // The phone already decided this was worth interrupting someone over, so
     // it is repeated at the urgency the phone gave it and no higher.
     const head = [entry.appName || entry.app, entry.title].filter(Boolean).join(' · ')
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', head || 'Phone', entry.body || ''])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], head || 'Phone', entry.body || ''))
     return
   }
   if (entry.kind === 'sms') {
@@ -615,7 +619,7 @@ function notify(entry) {
       offerCode(entry, code)
       return
     }
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', `SMS · ${from}`, entry.body || ''])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], `SMS · ${from}`, entry.body || ''))
     return
   }
   if (entry.state === 'ringing') {
@@ -643,7 +647,7 @@ function notify(entry) {
   silence()
   if (entry.state === 'ended') talkTime.stop()
   if (entry.missed) {
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', '-u', 'critical', 'Missed call', from])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect', '-u', 'critical'], 'Missed call', from))
   }
 }
 
@@ -1012,7 +1016,7 @@ function hush(found = false) {
   // not news, and a notification for it would be a card about nothing.
   if (!wasRinging) return
   if (found && has('notify-send')) {
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'Phone found', 'The handset was picked up and silenced.'])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'Phone found', 'The handset was picked up and silenced.'))
   }
   bus?.emit('event', 'phone', { action: 'located', ringing: false, found })
 }

@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { OMARCHY_NOTIFICATIONS } from '../lib/paths.js'
-import { run, has } from '../lib/exec.js'
+import { run, has, notifyArgs } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 
 let watcher = null
@@ -82,11 +82,9 @@ export default {
     async 'notifications.send'({ summary, body, urgency }) {
       if (!summary) throw new Error('summary required')
       if (!has('notify-send')) throw new Error('notify-send not installed')
-      const args = ['-a', 'Omarchy Connect']
-      if (urgency) args.push('-u', String(urgency))
-      args.push(String(summary))
-      if (body) args.push(String(body))
-      const res = await run('notify-send', args)
+      const flags = ['-a', 'Omarchy Connect']
+      if (urgency) flags.push('-u', String(urgency))
+      const res = await run('notify-send', notifyArgs(flags, summary, body || null))
       if (!res.ok) throw new Error(res.stderr || 'notify-send failed')
       return { ok: true }
     },

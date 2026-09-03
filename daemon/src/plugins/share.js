@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { XDG_DOWNLOAD } from '../lib/paths.js'
-import { has, spawnDetached, wlCopy } from '../lib/exec.js'
+import { has, spawnDetached, wlCopy, notifyArgs } from '../lib/exec.js'
 import { log } from '../lib/log.js'
 
 export const INBOX = path.join(XDG_DOWNLOAD, 'Omarchy Connect')
@@ -132,7 +132,7 @@ export function inboxPathFor(name) {
 export function announceReceivedFile(filePath, { open = false } = {}) {
   const name = path.basename(filePath)
   if (has('notify-send')) {
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'File received', name])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'File received', name))
   }
   if (open && has('xdg-open')) spawnDetached('xdg-open', [filePath])
   log.ok('received file:', filePath)
@@ -152,7 +152,7 @@ export default {
         if (!has('wl-copy')) throw new Error('wl-copy not installed')
         await wlCopy(text)
         if (has('notify-send')) {
-          spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'Copied from phone', text.slice(0, 120)])
+          spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'Copied from phone', text.slice(0, 120)))
         }
         return { ok: true, action }
       }

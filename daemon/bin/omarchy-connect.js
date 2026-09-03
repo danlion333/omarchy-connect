@@ -16,7 +16,7 @@ import * as wol from '../src/lib/wol.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
-import { run, has, spawn, spawnDetached } from '../src/lib/exec.js'
+import { run, has, spawn, spawnDetached, notifyArgs } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
 import { installCrashGuard } from '../src/lib/guard.js'
 import * as sys from '../src/lib/sys.js'
@@ -409,7 +409,7 @@ async function cmdSend(args) {
   // lands nowhere. Say it again where it can be seen.
   if (!process.stdout.isTTY && has('notify-send')) {
     const missed = body.recipients === 0 ? ' — no phone is connected' : ''
-    spawnDetached('notify-send', ['-a', 'Omarchy Connect', 'Sent to phone', `${body.name}${missed}`])
+    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'Sent to phone', `${body.name}${missed}`))
   }
 }
 
