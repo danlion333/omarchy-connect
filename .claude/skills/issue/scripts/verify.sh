@@ -63,7 +63,10 @@ fi
 hdr "the phone dials the worktree daemon"
 adb shell am force-stop $PKG
 adb shell am start -n $PKG/.MainActivity >/dev/null 2>&1
-since_mark="$(date -u +%Y-%m-%d\ %H:%M:%S)"
+# Local time, because that is the only thing `journalctl --since` reads. A UTC
+# stamp east of Greenwich names a moment in the future, and the window that
+# asks whether the phone dialled then matches nothing however long it waits.
+since_mark="$(date +%Y-%m-%d\ %H:%M:%S)"
 ok=""
 for _ in $(seq 1 30); do
   sleep 1
