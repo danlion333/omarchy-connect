@@ -26,6 +26,7 @@
     },
     "android": {
       "package": "dev.omarchy.connect",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#101010",
         "foregroundImage": "./assets/android-icon-foreground.png",

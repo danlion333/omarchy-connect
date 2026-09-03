@@ -1,4 +1,5 @@
 import { telephony, type TelephonyEvent } from '../../modules/omarchy-telephony'
+import { MirrorQueue, mirrorAccepted } from '../lib/mirror-queue'
 import type { ConnectClient } from './client'
 
 /**
@@ -116,34 +117,41 @@ export function startPhoneMirror(client: ConnectClient): () => void {
   if (!native) return () => {}
 
   let stopped = false
-  const queue: TelephonyEvent[] = []
+  const queue = new MirrorQueue<TelephonyEvent>()
   let flushing = false
+  // A desktop that answered `unknown method` will answer it again, so the
+  // events stay queued and nothing is sent until the next `hello` says the
+  // other end has changed its mind.
+  let refused = false
 
   const flush = async () => {
-    if (flushing || stopped || !queue.length) return
+    if (flushing || stopped || !queue.size) return
     if (client.status !== 'connected') return
-    // A desktop running an older daemon has no `phone.report` to call. Holding
-    // the events back rather than sending them is what stops the queue from
-    // growing forever against a method that will never exist.
-    if (!(client.hello?.capabilities?.phone as any)?.mirror) return
+    // A desktop running an older daemon has no `phone.report` to call, and a
+    // remote link is refused telephony on purpose. Holding the events back
+    // rather than sending them is what stops the queue from growing forever
+    // against a method that will never exist.
+    if (refused || !mirrorAccepted(client.hello)) return
     flushing = true
     // Taken out of the queue in one go, and put back if the desktop was not
-    // there to take them — a dropped socket must not lose a message.
-    const batch = queue.splice(0, BATCH)
+    // there to take them — a dropped socket must not lose a message, and
+    // neither must a desktop that turns out not to speak this at all.
+    const batch = queue.take(BATCH)
     try {
       await client.call('phone.report', { events: batch })
     } catch (err) {
       // A refused method will be refused again; anything else is the socket
-      // having a bad moment and is worth another try.
-      const permanent = /unknown method/i.test((err as Error).message)
-      if (!permanent) queue.unshift(...batch)
+      // having a bad moment and is worth another try. Either way the events go
+      // back where they came from.
+      queue.putBack(batch)
+      if (/unknown method/i.test((err as Error).message)) refused = true
     } finally {
       flushing = false
     }
   }
 
   const push = (event: TelephonyEvent) => {
-    queue.push(event)
+    queue.add(event)
     // A ringing phone is the least forgiving thing this app carries: the
     // desktop is useful for the twenty seconds the call lasts and useless
     // after. If the socket died while the phone was asleep, waiting out the
@@ -159,9 +167,16 @@ export function startPhoneMirror(client: ConnectClient): () => void {
     // Reconnecting is the moment to catch up: both with what the queue could
     // not deliver and with what arrived while the app was closed.
     client.on('hello', async () => {
+      refused = false
+      // The backlog only leaves its native storage once the desktop has said
+      // it will take it. `drainBacklog` empties SharedPreferences, so draining
+      // it for a desktop that refuses telephony — an old daemon, or a remote
+      // link — would move an overnight message into a JavaScript array that
+      // the next process death throws away.
+      if (!mirrorAccepted(client.hello)) return
       try {
         const backlog = await native.drainBacklog()
-        if (backlog.length) queue.push(...backlog)
+        if (backlog.length) queue.add(...backlog)
       } catch {
         /* a backlog we cannot read is not worth failing the connection over */
       }
