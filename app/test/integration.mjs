@@ -4,6 +4,7 @@
  * assumptions. Node strips the TypeScript types for us.
  */
 import { spawn } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { setTimeout as sleep } from 'node:timers/promises'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -20,6 +21,12 @@ const check = (name, ok, detail = '') => {
 }
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-test-'))
+// Set on this process too, not only on the daemon below: the impostor test at
+// the end loads the daemon's own crypto in here, and that reads the identity
+// key out of the config directory this points at. Pointing it at the sandbox
+// is what makes the fake desktop hold the same key as the real one — and it
+// keeps a test run from ever opening the config of the daemon you use.
+process.env.XDG_CONFIG_HOME = sandbox
 const daemon = spawn(process.execPath, ['daemon/bin/omarchy-connect.js', 'start', '--port', String(PORT)], {
   cwd: new URL('../..', import.meta.url).pathname,
   // The status file the desktop client reads is real state — without moving it
@@ -172,6 +179,110 @@ const pinned = await new Promise((resolve) => {
 })
 check('a desktop with the wrong identity key is refused', pinned)
 impostor.close()
+
+/* ── a text frame is nobody ─────────────────────────── */
+
+// The link is plain TCP unless somebody turns TLS on, so a neighbour who can
+// spoof their way onto the wire can push a frame at the phone. Every frame the
+// desktop sends after the key exchange is encrypted, which makes a *text*
+// frame proof of an impostor rather than a message — and it used to be parsed
+// as trusted: an `ev:phone` that sends an SMS from this handset, a `hello.ok`
+// that rewrites the addresses and the wake record the phone remembers.
+//
+// The fake desktop below is the real server-side handshake (the daemon's own
+// `accept`, reading the same identity key out of the sandbox) with one thing
+// changed: where the encrypted `hello.ok` belongs, it sends text.
+{
+  // React Native has no WebSocket server and the app has no need of one; the
+  // daemon next door already depends on the library, so borrow it from there.
+  const require = createRequire(new URL('../../daemon/package.json', import.meta.url))
+  const { WebSocketServer } = require('ws')
+  const { accept } = await import('../../daemon/src/lib/crypto.js')
+
+  const FAKE = PORT + 1
+  const forgedHello = JSON.stringify({
+    t: 'hello.ok',
+    protocol: 2,
+    secure: true,
+    endpoints: [{ host: '198.51.100.7', port: 9, kind: 'lan' }],
+    wake: { supported: true, mac: 'de:ad:be:ef:00:01' },
+  })
+  const forgedSms = JSON.stringify({
+    t: 'ev',
+    event: 'phone',
+    data: { action: 'send', to: '+15550100', body: 'sent by nobody' },
+  })
+
+  // 'before' injects the frame in place of the handshake reply; 'after'
+  // completes the handshake honestly and injects once the channel is up.
+  let when = 'before'
+  const wss = new WebSocketServer({ port: FAKE, path: '/ws' })
+  wss.on('connection', (ws) => {
+    if (when === 'before') return ws.send(forgedHello)
+    let handshaken = false
+    ws.on('message', (data) => {
+      if (handshaken) return
+      handshaken = true
+      try {
+        const { reply } = accept(Buffer.from(data))
+        ws.send(reply, { binary: true })
+        ws.send(forgedSms)
+      } catch {
+        ws.close()
+      }
+    })
+  })
+  await new Promise((resolve) => wss.on('listening', resolve))
+
+  const inject = async (phase) => {
+    when = phase
+    const victim = new ConnectClient({
+      host: '127.0.0.1',
+      port: FAKE,
+      token: client.token,
+      publicKey: info.publicKey,
+      device: { id: 'integration-test', name: 'Test Phone', platform: 'android', model: 'node' },
+    })
+    const seen = []
+    for (const name of ['hello', 'ev', 'ev:phone', 'paired', 'server-error', 'latency']) {
+      victim.on(name, () => seen.push(name))
+    }
+    await new Promise((resolve) => {
+      victim.on('status', ({ status }) => {
+        if (status === 'error') resolve()
+      })
+      setTimeout(resolve, 6000)
+      victim.connect()
+    })
+    // Read the outcome before closing: `close()` is the user hanging up, and
+    // it puts the client back to idle with no error to report.
+    const outcome = { seen, status: victim.status, error: victim.lastError, hello: victim.hello,
+      endpoints: victim.endpoints, token: victim.token }
+    victim.close()
+    return outcome
+  }
+
+  const early = await inject('before')
+  check('a text frame instead of the handshake reply is refused',
+    early.status === 'error' && /unencrypted/.test(early.error || ''),
+    `${early.status} · ${early.error}`)
+  check('and nothing in it reaches a listener', early.seen.length === 0, early.seen.join(' '))
+
+  const late = await inject('after')
+  check('a text frame after a real key exchange is refused too',
+    late.status === 'error' && /unencrypted/.test(late.error || ''),
+    `${late.status} · ${late.error}`)
+  check('and no `ev:phone` is emitted for `phone.ts` to send an SMS from',
+    late.seen.length === 0, late.seen.join(' '))
+  // `link.ts` writes the pairing from what `hello.ok` carries, so nothing that
+  // arrived in the clear may be the source of that write.
+  check('the remembered pairing is untouched by either',
+    early.hello === null && late.hello === null &&
+      early.endpoints.length === 0 && late.endpoints.length === 0 &&
+      early.token === client.token && late.token === client.token)
+
+  wss.close()
+}
 
 /* ── the network the client asks about rather than remembers ─────────── */
 

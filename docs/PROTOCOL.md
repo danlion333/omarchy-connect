@@ -51,6 +51,12 @@ Three properties follow, and each is exercised by the test suites:
 A socket that opens with a text frame instead of a key exchange is refused with
 close code `4005` unless `requireEncryption` is turned off in the config.
 
+The phone holds the mirror image of that rule, and holds it unconditionally: it
+always opens with a key exchange, so every frame it can legitimately be sent is
+binary. A text frame arriving on the phone's socket — before the handshake or
+long after it — is discarded unread and the socket is closed with `4005`. The
+phone never parses a frame it has not decrypted.
+
 ## Transport
 
 | Path | Method | Auth | Purpose |
