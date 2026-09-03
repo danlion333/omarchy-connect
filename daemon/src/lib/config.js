@@ -71,7 +71,96 @@ const DEFAULTS = {
   devices: [],
 }
 
+/**
+ * What this process last read, what it last saw on disk, and which file that
+ * was.
+ *
+ * The cache used to be the whole story: first read wins, forever. That is
+ * wrong in both directions here, because this config file has more than one
+ * writer. The daemon holds it open for days; the CLI and the panel write it
+ * from processes that live for a second. So a daemon that never looks at the
+ * disk again never hears `agent spawn on`, and a daemon that writes its whole
+ * remembered object back on the next pairing puts `tls: false` over the `true`
+ * the CLI had just written.
+ *
+ * The fix is two halves of the same idea — the disk is the truth, and this
+ * process only owns the fields it changed itself:
+ *
+ * - `stamp` says which version of the file `cache` came from, so a read after
+ *   somebody else's write re-reads instead of answering from memory.
+ * - `baseline` is a deep copy of that same version, untouched by anything this
+ *   process has done since, so a write can tell *what this process changed*
+ *   from *what it merely remembers* and put only the former onto whatever is
+ *   on disk at that moment.
+ */
 let cache = null
+let baseline = null
+let stamp = null
+
+/** Which version of the file is on disk — a rename gives each write a new inode. */
+function diskStamp() {
+  try {
+    const s = fs.statSync(CONFIG_FILE)
+    return `${s.ino}:${s.mtimeMs}:${s.size}`
+  } catch {
+    return null
+  }
+}
+
+const clone = (value) => (value === undefined ? value : JSON.parse(JSON.stringify(value)))
+const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v)
+const same = (a, b) => JSON.stringify(a) === JSON.stringify(b)
+
+/** A key this process removed, which a merge has to remove rather than ignore. */
+const REMOVED = Symbol('removed')
+
+/**
+ * What changed between the config this process read and the one it is writing.
+ *
+ * Objects are walked so that two processes can each own a different field of
+ * `agents` without either erasing the other's. Arrays are compared whole and
+ * replaced whole: `devices` is a set of one by policy, and merging two pairing
+ * lists element by element would be inventing a rule nobody asked for.
+ */
+function changesBetween(before, after) {
+  const out = {}
+  for (const key of Object.keys(after)) {
+    const a = before[key]
+    const b = after[key]
+    if (isObject(a) && isObject(b)) {
+      const inner = changesBetween(a, b)
+      if (Object.keys(inner).length) out[key] = inner
+    } else if (!(key in before) || !same(a, b)) {
+      out[key] = clone(b)
+    }
+  }
+  for (const key of Object.keys(before)) if (!(key in after)) out[key] = REMOVED
+  return out
+}
+
+/** Those changes, onto whatever is on disk now. */
+function applyChanges(target, changes) {
+  for (const [key, value] of Object.entries(changes)) {
+    if (value === REMOVED) delete target[key]
+    else if (isObject(value) && isObject(target[key])) applyChanges(target[key], value)
+    else target[key] = clone(value)
+  }
+  return target
+}
+
+/**
+ * The cache keeps its identity across a reload.
+ *
+ * Several callers read the config once and hold the object — the server keeps
+ * the one it started from — and handing them a replacement object would leave
+ * them reading a snapshot again. So a new version is poured into the object
+ * that is already out there.
+ */
+function adopt(target, source) {
+  if (!target) return source
+  for (const key of Object.keys(target)) if (!(key in source)) delete target[key]
+  return Object.assign(target, source)
+}
 
 /**
  * The desktop pairs one phone at a time.
@@ -93,15 +182,41 @@ function keepOnePhone(cfg) {
   return true
 }
 
+/**
+ * The config, from memory when the file has not moved and from disk when it
+ * has.
+ *
+ * The `stat` on every call is the price of a switch that works on a running
+ * daemon: a few microseconds against a config read, and nothing at all
+ * against the syscalls the request that asked for it already made.
+ */
 export function loadConfig() {
-  if (cache) return cache
+  const at = diskStamp()
+  if (cache && at !== null && at === stamp) return cache
+  let raw = null
   try {
-    const raw = fs.readFileSync(CONFIG_FILE, 'utf8')
-    cache = { ...DEFAULTS, ...JSON.parse(raw) }
-    if (keepOnePhone(cache)) saveConfig(cache)
+    raw = fs.readFileSync(CONFIG_FILE, 'utf8')
   } catch (err) {
     if (err.code !== 'ENOENT') log.warn('config unreadable, starting fresh:', err.message)
-    cache = { ...DEFAULTS }
+  }
+  let parsed = null
+  if (raw !== null) {
+    try {
+      parsed = JSON.parse(raw)
+    } catch (err) {
+      log.warn('config unreadable, starting fresh:', err.message)
+    }
+  }
+  if (parsed && isObject(parsed)) {
+    cache = adopt(cache, { ...DEFAULTS, ...parsed })
+    baseline = clone(cache)
+    stamp = at
+    if (keepOnePhone(cache)) saveConfig(cache)
+  } else {
+    // Nothing readable behind us, so there is nothing to merge with either:
+    // this is the one write that is allowed to be the whole object.
+    cache = adopt(cache, { ...DEFAULTS })
+    baseline = null
     saveConfig(cache)
   }
   return cache
@@ -112,13 +227,54 @@ export function pairedDevice() {
   return loadConfig().devices[0] || null
 }
 
+/**
+ * Write the config, keeping every field this process did not touch.
+ *
+ * `next` is not written as it stands. What is written is the disk's current
+ * contents with this process's own changes laid over it, which is what makes
+ * `omarchy-connect tls enable` survive the daemon's next pairing write and
+ * the daemon's `otp` write survive the CLI's `tls` one. A save that changed
+ * nothing writes nothing, so reading the config never bumps its mtime for
+ * everybody else.
+ *
+ * What is left is the window between reading the disk here and the rename
+ * below — two writes that overlap inside those few microseconds still end
+ * with one of them winning whole. Closing that needs a lock file, and a lock
+ * file needs an answer for a daemon killed while holding it; the writers here
+ * are a long-lived daemon and a handful of one-second commands, and this is
+ * the race that was actually losing people's settings.
+ */
 export function saveConfig(next = cache) {
-  cache = next
+  const changes = baseline ? changesBetween(baseline, next) : null
+  const onDisk = changes ? readFileConfig() : null
+
+  if (changes && onDisk && Object.keys(changes).length === 0) {
+    // Nothing of ours to write. Leaving the file alone also leaves the cache
+    // pointing at the version it was read from, so the next read notices any
+    // newer one.
+    cache = adopt(cache, next === cache ? next : { ...next })
+    return cache
+  }
+
+  const merged = changes ? applyChanges({ ...DEFAULTS, ...(onDisk || {}) }, changes) : clone(next)
   fs.mkdirSync(CONFIG_DIR, { recursive: true, mode: 0o700 })
   const tmp = `${CONFIG_FILE}.${process.pid}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 })
+  fs.writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n', { mode: 0o600 })
   fs.renameSync(tmp, CONFIG_FILE)
-  return next
+  cache = adopt(cache, merged)
+  baseline = clone(cache)
+  stamp = diskStamp()
+  return cache
+}
+
+/** The file as it stands, or null when it is absent or not readable JSON. */
+function readFileConfig() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'))
+    return isObject(parsed) ? parsed : null
+  } catch {
+    return null
+  }
 }
 
 export function updateConfig(mutator) {

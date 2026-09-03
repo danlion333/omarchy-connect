@@ -1248,10 +1248,11 @@ session before the call returns. `omarchy-connect agent enable` posts here
 first and only falls back to editing the config when no daemon answers.
 
 `unpair` goes through the daemon rather than editing the config file directly
-because the running process holds a cached config and possibly an open
-connection to that phone; a config edit alone would leave both in place until
-the next restart. The CLI falls back to editing the file when no daemon
-answers.
+because the running process may hold an open connection to that phone. The
+config half lands either way — a write is merged into the file and the daemon
+re-reads it the moment it changes — but only the daemon can drop the socket,
+and a phone whose pairing is gone and whose link is not is a phone still being
+answered. The CLI falls back to editing the file when no daemon answers.
 
 ## Desktop status file
 
