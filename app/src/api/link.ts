@@ -70,7 +70,21 @@ import { FALLBACK_PALETTE, type Palette } from '../theme'
  * arrived. The state outlived nothing; now it outlives the screen.
  */
 
-export type ClipboardEvent = { text: string; at: number; source: string }
+/**
+ * What the desktop copied. `text` is null when it copied a picture instead —
+ * the bytes are not on the event, they are a standing file offer, and `token`
+ * is what fetches them over the same download road as any other offer.
+ */
+export type ClipboardEvent = {
+  text: string | null
+  at: number
+  source: string
+  kind?: 'text' | 'binary'
+  mime?: string
+  token?: string | null
+  name?: string
+  size?: number
+}
 export type FileEvent = { direction: 'in' | 'out'; name: string; size: number; token?: string; at?: number }
 
 export type LinkState = {
@@ -379,8 +393,14 @@ class Link {
         this.setAgents(reduceAgents(this.state.agents, data))
       }),
       client.on('ev:clipboard', (data: ClipboardEvent) => {
+        // A picture with nothing fetchable behind it is the desktop saying
+        // it is holding one it will not carry; there is nothing the phone
+        // could show for it and nothing it could fetch, so it is dropped.
+        if (data.kind === 'binary' && !data.token) return
         this.patch({ clipboard: remember(this.state.clipboard, data) })
-        alertClipboard(data.text)
+        // The notification offers **Copy**, which only means something for
+        // text. A copied screenshot is announced by the offer it made.
+        if (typeof data.text === 'string') alertClipboard(data.text)
       }),
       client.on('ev:file', (data: FileEvent) => {
         this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) })

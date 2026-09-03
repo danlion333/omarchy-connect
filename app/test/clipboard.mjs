@@ -41,6 +41,29 @@ check('it moves to the head instead', again[0].text === 'first')
 check('with the time it was copied again', again[0].at === 30)
 check('and the other entry is kept', again[1].text === 'second')
 
+/* ── a copied picture is identified by its offer, not its text ──────────── */
+
+const picture = (token, at) => ({
+  text: null,
+  at,
+  source: 'desktop',
+  kind: 'binary',
+  mime: 'image/png',
+  token,
+  name: `${token}.png`,
+  size: 70,
+})
+
+const shots = remember(remember([], picture('aaa', 40)), picture('bbb', 50))
+check('two different pictures are two rows', shots.length === 2 && shots[0].token === 'bbb')
+check('and neither of them evicted the other', shots[1].token === 'aaa')
+
+const repeat = remember(shots, picture('aaa', 60))
+check('the same picture copied again is moved, not doubled', repeat.length === 2 && repeat[0].token === 'aaa')
+
+const mixed = remember(remember([], event('some text', 70)), picture('ccc', 80))
+check('a picture does not push text out', mixed.length === 2 && mixed[1].text === 'some text')
+
 /* ── the screen reads it off the status slice ───────────────────────────── */
 
 const state = {

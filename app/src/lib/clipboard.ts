@@ -32,7 +32,15 @@ export const MAX_CLIPBOARD_EVENTS = 20
  * deliberately copied something they had copied before — and two identical
  * rows would be two ways to do one thing, pushing something they cannot get
  * back any more off the end of the buffer.
+ *
+ * A copied picture carries no text at all, so what identifies it is its offer
+ * token — the desktop hands the same token back for the same bytes. Keying on
+ * `text` alone would make every picture look like every other picture and let
+ * one screenshot evict the last.
  */
+const identity = (event: ClipboardEvent) => event.token ?? event.text
+
 export function remember(history: ClipboardEvent[], event: ClipboardEvent): ClipboardEvent[] {
-  return [event, ...history.filter((old) => old.text !== event.text)].slice(0, MAX_CLIPBOARD_EVENTS)
+  const key = identity(event)
+  return [event, ...history.filter((old) => identity(old) !== key)].slice(0, MAX_CLIPBOARD_EVENTS)
 }

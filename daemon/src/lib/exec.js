@@ -92,3 +92,57 @@ export function spawnDetached(bin, args = [], opts = {}) {
 }
 
 export { spawn }
+
+/**
+ * Run a command and keep its stdout as bytes, up to a ceiling.
+ *
+ * `run` is no use for a picture: it decodes stdout as UTF-8 and trims the
+ * ends, which turns a PNG into mojibake with its header chewed off. And what
+ * sits on a clipboard is not always small — a RAW photo, a frame of video, a
+ * whole PDF — so this reads as a stream and gives up the moment the ceiling
+ * is passed, rather than buffering however much a compositor is willing to
+ * hand over into a daemon that is meant to idle at a few megabytes.
+ *
+ * Never throws, like `run`: the answer is `{ ok, bytes, tooLarge, error }`.
+ */
+export function capture(bin, args = [], { limit = 8 * 1024 * 1024, timeout = 10000 } = {}) {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: ['ignore', 'pipe', 'ignore'] })
+    const chunks = []
+    let size = 0
+    let tooLarge = false
+    let settled = false
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL')
+      finish({ ok: false, bytes: null, tooLarge: false, error: 'timed out' })
+    }, timeout)
+    child.on('error', (err) => finish({ ok: false, bytes: null, tooLarge: false, error: err.message }))
+    child.stdout.on('data', (chunk) => {
+      size += chunk.length
+      if (size > limit) {
+        // The bytes already held are dropped here and not at the end: the
+        // point of a ceiling is that the process never holds more than it.
+        tooLarge = true
+        chunks.length = 0
+        child.kill('SIGKILL')
+        return
+      }
+      chunks.push(chunk)
+    })
+    child.on('close', (code) => {
+      if (tooLarge) return finish({ ok: false, bytes: null, tooLarge: true, error: 'larger than the limit' })
+      return finish({
+        ok: code === 0,
+        bytes: Buffer.concat(chunks),
+        tooLarge: false,
+        error: code === 0 ? null : `exited with ${code}`,
+      })
+    })
+  })
+}
