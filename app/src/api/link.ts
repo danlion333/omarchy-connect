@@ -23,6 +23,7 @@ import {
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
 import { orderCandidates } from '../lib/retry'
 import { reduceAgents } from '../lib/agents'
+import { remember } from '../lib/clipboard'
 import { merged } from '../lib/state'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
@@ -100,7 +101,12 @@ export type LinkState = {
    * working.
    */
   agentJobs: AgentJob[]
-  clipboard: ClipboardEvent | null
+  /**
+   * What the desktop has copied, newest first — a history and not a slot, so
+   * the phone can still reach the URL that the next copy overwrote. Capped by
+   * `MAX_CLIPBOARD_EVENTS`; `remember` decides what stays.
+   */
+  clipboard: ClipboardEvent[]
   files: FileEvent[]
   latencyMs: number | null
   relocating: boolean
@@ -126,7 +132,7 @@ const INITIAL: LinkState = {
   agents: [],
   agentLimits: null,
   agentJobs: [],
-  clipboard: null,
+  clipboard: [],
   files: [],
   latencyMs: null,
   relocating: false,
@@ -373,7 +379,7 @@ class Link {
         this.setAgents(reduceAgents(this.state.agents, data))
       }),
       client.on('ev:clipboard', (data: ClipboardEvent) => {
-        this.patch({ clipboard: data })
+        this.patch({ clipboard: remember(this.state.clipboard, data) })
         alertClipboard(data.text)
       }),
       client.on('ev:file', (data: FileEvent) => {

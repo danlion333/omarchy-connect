@@ -43,6 +43,12 @@ const PREVIEW_MAX = 24 * 1024 * 1024
 
 const THUMB = 52
 
+/** One line of a copied thing: whitespace flattened, then cut to fit a row. */
+const preview = (text: string) => {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat || '(blank)'
+}
+
 export function ShareScreen() {
   const { call, client, clipboard, files, palette, status } = useConnection()
   const [draft, setDraft] = useState('')
@@ -54,6 +60,8 @@ export function ShareScreen() {
   const [note, setNote] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  /** The history entry last tapped, so its row can say so. */
+  const [copied, setCopied] = useState<string | null>(null)
 
   const connected = status === 'connected'
 
@@ -119,6 +127,25 @@ export function ShareScreen() {
       setBusy(null)
     }
   }, [call])
+
+  /**
+   * Copies one remembered entry back onto the phone.
+   *
+   * The history is only worth keeping if reaching into it is one tap, so this
+   * is deliberately not the `clipboard.get` round trip below: the text is
+   * already here, and an entry from ten minutes ago is not what the desktop
+   * would answer with anyway. The tick beside the row it copied is the
+   * confirmation, and it survives long enough to be read.
+   */
+  const copyEntry = useCallback(async (text: string) => {
+    try {
+      await Clipboard.setStringAsync(text)
+      setCopied(text)
+      report('copied to the phone clipboard')
+    } catch (err) {
+      fail(err)
+    }
+  }, [])
 
   const pullClipboard = useCallback(async () => {
     setBusy('pull')
@@ -345,12 +372,32 @@ export function ShareScreen() {
         <CardHeader
           icon="clipboard"
           title="Clipboard"
-          subtitle={clipboard ? `desktop copied ${clock(clipboard.at)}` : 'not synced yet'}
+          subtitle={
+            clipboard.length
+              ? `desktop copied ${clock(clipboard[0].at)}${clipboard.length > 1 ? ` · ${clipboard.length} kept` : ''}`
+              : 'not synced yet'
+          }
         />
-        {clipboard?.text ? (
-          <Body tone={palette.foreground} style={{ marginBottom: space.md }} >
-            {clipboard.text.length > 240 ? `${clipboard.text.slice(0, 240)}…` : clipboard.text}
-          </Body>
+        {clipboard.length ? (
+          <View style={{ marginBottom: space.md }}>
+            {clipboard.map((entry, i) => (
+              <View key={`${entry.at}-${i}`}>
+                {i ? <Divider style={{ marginVertical: 0 }} /> : null}
+                <ListRow
+                  title={preview(entry.text)}
+                  subtitle={clock(entry.at)}
+                  onPress={() => copyEntry(entry.text)}
+                  right={
+                    <Feather
+                      name={copied === entry.text ? 'check' : 'copy'}
+                      size={15}
+                      color={copied === entry.text ? palette.green : palette.muted}
+                    />
+                  }
+                />
+              </View>
+            ))}
+          </View>
         ) : (
           <Body tone={palette.muted} style={{ marginBottom: space.md, fontSize: size.label }}>
             Anything you copy on the desktop shows up here.
