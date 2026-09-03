@@ -92,7 +92,7 @@ export async function fromClipboard(): Promise<Picked | null> {
 export async function upload(client: ConnectClient, picked: Picked): Promise<string> {
   const result = await new File(picked.uri).upload(`${client.baseUrl}/api/upload`, {
     httpMethod: 'POST',
-    headers: client.uploadHeaders(picked.name, 'agent'),
+    headers: await client.uploadHeaders(picked.name, 'agent'),
   })
   let body: { path?: string; error?: string } = {}
   try {

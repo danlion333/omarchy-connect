@@ -10,6 +10,7 @@ import {
   newToken,
   upsertDevice,
   findDeviceByToken,
+  findDeviceById,
   touchDevice,
   removeDevice,
   pairedDevice,
@@ -21,7 +22,7 @@ import { isGeneric, nameFromNetwork } from './lib/hostname.js'
 import { Bus } from './bus.js'
 import { consumePairingCode, activePairing, createPairingCode } from './pairing.js'
 import { buildMethodTable, collectCapabilities, startPlugins, stopPlugins } from './plugins/index.js'
-import { inboxPathFor, announceReceivedFile, resolveOffer, offerFile } from './plugins/share.js'
+import { inboxPathFor, announceReceivedFile, resolveOffer, offerFile, redeemTicket } from './plugins/share.js'
 import { accept as acceptHandshake, identity, fingerprint, SUITE } from './lib/crypto.js'
 import { telemetryFor, forget as forgetTelemetry } from './plugins/device.js'
 import {
@@ -294,9 +295,33 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
   /* ── HTTP ──────────────────────────────────────────────────────────── */
 
-  function authFromRequest(req, url) {
-    const token = req.headers['x-oc-token'] || url.searchParams.get('token')
-    return findDeviceByToken(typeof token === 'string' ? token : null)
+  /**
+   * The file routes are authorised by a ticket and by nothing else.
+   *
+   * A ticket is minted over the encrypted socket (`share.ticket`), is good for
+   * one request in one direction, and expires in two minutes — so the device
+   * token, which is the phone's whole identity, never travels on a cleartext
+   * HTTP request and never lands in a proxy log or a URL history. There is no
+   * fallback to `x-oc-token` or `?token=`: a fallback is the attack, since a
+   * sniffer would simply ask for the road that still carries the credential.
+   */
+  function authFromTicket(req, use) {
+    const deviceId = redeemTicket(req.headers['x-oc-ticket'], use)
+    return deviceId ? findDeviceById(deviceId) : null
+  }
+
+  /**
+   * The same gate the WebSocket hello applies, said in HTTP.
+   *
+   * With remote access off a phone dialling over the tunnel is refused at
+   * `hello` — but the file routes are a second front door, and they used to
+   * open for anything holding a credential no matter which interface it
+   * arrived on. Decided the way the socket decides it: by the local address
+   * the kernel routed the connection in on, never by judging the peer's.
+   */
+  function remoteRefused(req) {
+    const link = overlay.classify(req.socket.localAddress, overlayState)
+    return link.via === 'remote' && !remoteEnabled()
   }
 
   /**
@@ -644,13 +669,19 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     }
 
     if (req.method === 'POST' && url.pathname === '/api/upload') {
-      const device = authFromRequest(req, url)
+      if (remoteRefused(req)) {
+        return json(res, 403, { error: 'remote access is off on this desktop — run `omarchy-connect remote on` there' })
+      }
+      const device = authFromTicket(req, 'upload')
       if (!device) return json(res, 401, { error: 'unauthorized' })
       return receiveUpload(req, res, url, device)
     }
 
     if (req.method === 'GET' && url.pathname.startsWith('/api/download/')) {
-      const device = authFromRequest(req, url)
+      if (remoteRefused(req)) {
+        return json(res, 403, { error: 'remote access is off on this desktop — run `omarchy-connect remote on` there' })
+      }
+      const device = authFromTicket(req, 'download')
       if (!device) return json(res, 401, { error: 'unauthorized' })
       return sendOffer(req, res, url.pathname.slice('/api/download/'.length))
     }

@@ -67,8 +67,8 @@ phone never parses a frame it has not decrypted.
 | `/api/sms` | POST | localhost | Asks the paired phone to send an SMS; answers when it confirms. |
 | `/api/call` | POST | localhost | Answers, rejects, hangs up or places a call, over Bluetooth or through the app. |
 | `/api/ios` | POST | localhost | Opens or closes the window in which an iPhone will agree to mirror its notifications. |
-| `/api/upload` | POST | token | Phone → desktop file transfer. Streams to the inbox. |
-| `/api/download/<token>` | GET | token | Desktop → phone file transfer for an offered file. |
+| `/api/upload` | POST | ticket | Phone → desktop file transfer. Streams to the inbox. |
+| `/api/download/<offer>` | GET | ticket | Desktop → phone file transfer for an offered file. |
 | `/ws` | WS | handshake | Everything else. |
 
 Everything above is served over plain HTTP unless TLS is switched on, in which
@@ -293,6 +293,7 @@ a sleeping phone's TCP connection dies silently.
 | `share.text` | `{ text, action: "clipboard" \| "file" }` |
 | `share.inbox` | `{ limit }` — files received from phones |
 | `share.offers` | — files the desktop is currently offering |
+| `share.ticket` | `{ use: "upload" \| "download" }` → `{ ticket, use, expiresAt, ttlMs }` — a one-use pass for one HTTP file transfer |
 | `theme.list` / `theme.current` / `theme.set` | — / — / `{ name }` |
 | `hypr.workspaces` / `hypr.goto` | — / `{ id }` |
 | `hypr.windows` / `hypr.focus` / `hypr.close` | — / `{ address }` |
@@ -1050,7 +1051,8 @@ nothing else, so what crosses is the file and what reaches the agent is its
 *path* — not a workaround for being unable to pass an image, but how an image
 is passed: an agent reads one by opening it.
 
-The phone uploads to `POST /api/upload` with `x-oc-dest: agent`, which is the
+The phone uploads to `POST /api/upload` with `x-oc-dest: agent` (and an upload
+ticket, like any other upload), which is the
 same endpoint as a file transfer through a different door. That door behaves
 differently in every way that matters: it lands in a swept cache directory
 (`$XDG_CACHE_HOME/omarchy-connect/agent`) rather than the share inbox, it fires
@@ -1288,7 +1290,30 @@ The same block is published in the desktop status file, so the panel and
 
 ## File transfer
 
-**Phone → desktop.** `POST /api/upload` with `x-oc-token` and `x-oc-filename`.
+### Tickets
+
+The HTTP file roads are authorised by a **ticket**, never by the device token.
+A ticket is 32 random bytes, good for one request, in one direction, for two
+minutes, and it is minted only over the encrypted WebSocket — `share.ticket`
+with `use: "upload"` or `use: "download"` — which already knows which device is
+asking. It travels in `x-oc-ticket`, and there is no fallback: `x-oc-token` and
+`?token=` are refused with `401` on both roads.
+
+The point is what a listener gets. The device token is a phone's whole
+identity — with it a stranger completes their own key exchange on `/ws` and
+owns the desktop — and it used to ride on every upload header and in every
+download query string, in cleartext whenever TLS was off, which is the default.
+A query string is also the part of a request that gets written down, in proxy
+logs and URL histories, so it outlived the transfer by years. A stolen ticket
+buys the one file that was already on the wire in front of the thief, cannot be
+replayed, and is worthless by the time anyone reads it out of a log.
+
+Both roads also answer `403 { "error": "remote access is off …" }` to a request
+that arrived over a tunnel while remote access is off — the same gate, decided
+the same way (by the interface the connection came in on), as the `hello` that
+a remote WebSocket gets.
+
+**Phone → desktop.** `POST /api/upload` with `x-oc-ticket` and `x-oc-filename`.
 The body streams straight to `~/Downloads/Omarchy Connect/`, never overwriting
 (`report.pdf` becomes `report (2).pdf`). Capped at 512 MB; a partial upload is
 deleted. The desktop raises a notification on arrival.
@@ -1309,10 +1334,12 @@ typed at a prompt as a bare word.)
   text and file names — is encrypted end to end and the desktop is
   authenticated by a pinned key. See **Encryption** above.
 - **File bodies are the exception, unless TLS is on.** `/api/upload` and
-  `/api/download` are authenticated by the token, and the offer tokens and file
-  names that set them up travel encrypted — but with TLS off the bytes
-  themselves do not, and someone already on your LAN could read a file in
-  flight. `omarchy-connect tls enable` closes this for any client that can pin
+  `/api/download` are authenticated by a one-use ticket minted over the
+  encrypted socket, and the offer tokens and file names that set them up travel
+  encrypted — but with TLS off the bytes themselves do not, and someone already
+  on your LAN could read a file in flight. What they cannot do any more is
+  read a credential out of that traffic: a ticket is spent on the request they
+  are watching, and the device token never goes near HTTP. `omarchy-connect tls enable` closes this for any client that can pin
   the certificate; Expo Go and iOS cannot, and stay exposed.
 - **Mirrored messages are as sensitive as the messages themselves.** SMS bodies
   and caller names cross the WebSocket, so they are encrypted end to end — but

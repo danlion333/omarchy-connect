@@ -167,7 +167,7 @@ export function ShareScreen() {
       if (!client) throw new Error('not connected')
       const result = await new File(uri).upload(`${client.baseUrl}/api/upload`, {
         httpMethod: 'POST',
-        headers: client.uploadHeaders(name),
+        headers: await client.uploadHeaders(name),
       })
       if (result.status >= 400) throw new Error(`the desktop refused the file (${result.status})`)
       return JSON.parse(result.body || '{}')
@@ -245,7 +245,7 @@ export function ShareScreen() {
       if (running) return running
       const job = (async () => {
         if (!client) throw new Error('not connected')
-        const uri = await downloadOffer(client.downloadUrl(token), token, name)
+        const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
         setLocal((prev) => ({ ...prev, [token]: uri }))
         return uri
       })()
