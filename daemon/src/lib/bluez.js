@@ -215,6 +215,42 @@ export function matchesName(device, expect) {
   return name.includes(wanted) || wanted.includes(name)
 }
 
+/**
+ * Is the pairing question BlueZ is asking about the handset this window was
+ * opened for?
+ *
+ * The question itself carries no name and no address — see `agent` — so this
+ * is inference, and it is stated here rather than buried in a callback so
+ * that it can be argued with and tested. The evidence is the tree BlueZ
+ * publishes at the moment of the question: a device in the middle of pairing
+ * is one this desktop is `Connected` to and has not `Paired` with. On the
+ * ordinary path there is exactly one of those, and it is the phone.
+ *
+ * Three answers:
+ *
+ *   - Nothing is mid-pairing. BlueZ is asking about something this side
+ *     cannot see, so no. A window that answers questions it cannot account
+ *     for is the window this function exists to close.
+ *   - Everything mid-pairing is the expected handset — by name, or by the
+ *     address this desktop itself just paged. Yes.
+ *   - Somebody else is in there too. No, and deliberately so: with a stranger
+ *     and the right phone both connected there is no way to tell whose
+ *     question this is, and the honest move is to answer neither. It costs a
+ *     retry — the bond window pages again on its own — and a stranger who
+ *     stands close enough for long enough can keep a bond from being made,
+ *     which is a far smaller thing than being bonded to.
+ *
+ * With no name to expect, the caller has nothing to hold anything against and
+ * should not be calling this at all; it says so by answering no.
+ */
+export function requestIsExpected(tree, { expected = null, address = null } = {}) {
+  if (!normalise(expected) && !address) return false
+  const pairing = (Array.isArray(tree) ? tree : []).filter((d) => d && d.connected && !d.paired)
+  if (!pairing.length) return false
+  const mine = (d) => matchesName(d, expected) || (address && d.address === address)
+  return pairing.every(mine)
+}
+
 function byName(devices, expect) {
   if (!normalise(expect)) return null
   const exact = devices.filter((d) => normalise(d.name) === normalise(expect))
@@ -489,11 +525,32 @@ export const BOND_PIN = '0000'
  * each one as a prompt on stdout and waits on stdin — so the questions the
  * happy path never asks are read and answered here rather than left hanging:
  * a legacy PIN request gets `BOND_PIN`, and the yes/no family — confirm this
- * passkey, accept this pairing, authorize this service — gets yes, because a
- * question arriving inside a window the user opened on purpose *is* the
- * consent. Without the PIN answer, a handset that fell back to legacy
- * pairing sat on "Enter PIN code:" until the page timed out, which read from
- * the outside as pairing that silently never works.
+ * passkey, accept this pairing, authorize this service — is put to `confirm`.
+ * Without the PIN answer, a handset that fell back to legacy pairing sat on
+ * "Enter PIN code:" until the page timed out, which read from the outside as
+ * pairing that silently never works.
+ *
+ * `confirm` exists because "the window is the consent" was too generous a
+ * reading of consent. The window is thirty seconds of a *discoverable*
+ * adapter in a room this desktop does not own, and an agent that answers yes
+ * to every yes/no question bonds with whoever asks first — a stranger's
+ * handset in the next seat gets the same yes as the phone the button was
+ * pressed for. So the answer is the caller's to give, and the caller knows
+ * which phone it is waiting for.
+ *
+ * What the caller does *not* get is the question's subject, and that is worth
+ * writing down because it shapes everything downstream. bluetoothctl's
+ * prompts do not name the device: they read "Confirm passkey %06u (yes/no):",
+ * "Accept pairing (yes/no):", "Authorize service %s (yes/no):" — a passkey, a
+ * UUID, no address anywhere (checked against 5.87). The identity has to come
+ * from BlueZ's own tree at the moment the question is asked, which is what
+ * `requestIsExpected` is for. `confirm` is therefore asynchronous, and the
+ * prompt is left waiting on stdin while it is answered — bluetoothctl is
+ * happy to wait, and a D-Bus read takes a fraction of the time BlueZ allows.
+ *
+ * With no `confirm` the old behaviour stands: yes to everything. That is the
+ * right default for a caller that has nothing to hold a request against, and
+ * the only caller in this repository passes one.
  *
  * The scan belongs in here rather than in a `busctl` call of its own, and the
  * reason is a detail of BlueZ worth writing down: `SetDiscoveryFilter` is
@@ -508,7 +565,7 @@ export const BOND_PIN = '0000'
  * process goes, BlueZ hands the role back to whatever else was registered,
  * which on Omarchy is the system's own agent.
  */
-export function agent({ pin = BOND_PIN, notify } = {}) {
+export function agent({ pin = BOND_PIN, notify, confirm = null } = {}) {
   if (!has('bluetoothctl')) return null
   const child = spawn('bluetoothctl', ['--agent', 'NoInputNoOutput'], { stdio: ['pipe', 'pipe', 'ignore'] })
   const write = (text) => {
@@ -532,6 +589,22 @@ export function agent({ pin = BOND_PIN, notify } = {}) {
    * which is why every match anchors to the end.
    */
   let tail = ''
+  /**
+   * The caller's answer, or yes when there is no caller to ask.
+   *
+   * A `confirm` that throws or that cannot tell is a no. The cost of a wrong
+   * no is one page that has to be retried, and the bond window retries by
+   * itself; the cost of a wrong yes is a bond with a device nobody chose.
+   */
+  const decide = async () => {
+    if (!confirm) return true
+    try {
+      return (await confirm()) === true
+    } catch {
+      return false
+    }
+  }
+  let answering = Promise.resolve()
   child.stdout.setEncoding('utf8')
   child.stdout.on('data', (chunk) => {
     tail = (tail + chunk).slice(-2048)
@@ -541,8 +614,15 @@ export function agent({ pin = BOND_PIN, notify } = {}) {
       tell('pin', pin)
     } else if (/\(yes\/no\):\s*$/.test(tail)) {
       tail = ''
-      write('yes\n')
-      tell('confirm', null)
+      // One at a time, in the order asked. Two questions can arrive while the
+      // first is still being thought about — two handsets in the room is the
+      // whole reason this is here — and answering them out of order would put
+      // the wrong yes against the wrong request.
+      answering = answering.then(async () => {
+        const yes = await decide()
+        write(yes ? 'yes\n' : 'no\n')
+        tell(yes ? 'confirm' : 'declined', null)
+      })
     }
   })
   write(['power on', 'default-agent', 'menu scan', 'transport bredr', 'back', 'scan on', ''].join('\n'))

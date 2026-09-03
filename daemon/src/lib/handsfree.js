@@ -16,6 +16,7 @@ import {
   openToPairing,
   pairDevice,
   phoneish,
+  requestIsExpected,
   trustDevice,
   pick,
 } from './bluez.js'
@@ -433,6 +434,7 @@ export class Handsfree extends EventEmitter {
         state.pin = value
         this.emit('link', this.link)
       },
+      confirm: () => this.askedForThis(state),
     })
     const opened = await openToPairing(path, seconds)
     if (!opened.ok) {
@@ -449,6 +451,34 @@ export class Handsfree extends EventEmitter {
       // Whatever the tree looked like before the window, it has moved.
       await this.handset({ fresh: true }).catch(() => {})
     }
+  }
+
+  /**
+   * Whether a pairing question BlueZ has just asked belongs to this window.
+   *
+   * A discoverable adapter is an invitation the whole room can read, and the
+   * agent used to answer yes to every question that arrived during one. This
+   * is the narrowing: the window still says yes without anybody touching the
+   * desktop, but only for the handset it was opened for — the phone this
+   * desktop is already paired with over the LAN, by name, or the exact device
+   * it paged itself a moment ago.
+   *
+   * Two ways to be out of scope, and both are a no. A question that arrives
+   * after the window closed, or for a window that has been replaced, is not
+   * this window's to answer. And a desktop with no LAN pairing has no name to
+   * expect — `bond` in that state deliberately waits to be chosen rather than
+   * choosing, and the question is then the *only* evidence there is, so the
+   * window is the consent, exactly as it was before.
+   */
+  async askedForThis(state) {
+    if (this.bonding !== state || this.stopped || Date.now() > state.until) return false
+    const expected = this.expectedName()
+    if (!expected) return true
+    const tree = await devices().catch(() => null)
+    if (!tree) return false
+    const yes = requestIsExpected(tree, { expected, address: state.handset?.address || null })
+    if (!yes) log.warn(`bluetooth: a pairing request arrived that is not ${expected} — not confirming it`)
+    return yes
   }
 
   /**

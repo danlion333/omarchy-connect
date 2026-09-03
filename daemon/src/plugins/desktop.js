@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { run, has, spawnDetached } from '../lib/exec.js'
+import { run, has, spawnDetached, notifyArgs } from '../lib/exec.js'
 import { readTheme } from '../lib/theme.js'
 import * as hypr from '../lib/hypr.js'
 
@@ -163,7 +163,7 @@ export default {
     /** Ring the desktop so it can be located in the room. */
     async 'system.locate'() {
       if (has('notify-send')) {
-        spawnDetached('notify-send', ['-u', 'critical', '-a', 'Omarchy Connect', 'Here I am', os.hostname()])
+        spawnDetached('notify-send', notifyArgs(['-u', 'critical', '-a', 'Omarchy Connect'], 'Here I am', os.hostname()))
       }
       const sounds = ['/usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga', '/usr/share/sounds/freedesktop/stereo/bell.oga']
       const sound = sounds.find((s) => fs.existsSync(s))

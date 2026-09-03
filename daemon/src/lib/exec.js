@@ -56,6 +56,28 @@ export function wlCopy(text) {
 }
 
 /**
+ * `notify-send` arguments, with the fence between this daemon's words and the
+ * phone's put in explicitly.
+ *
+ * Almost every card this desktop draws carries text that came off a handset:
+ * the body of an SMS, the name of a file somebody shared, the first line of
+ * their clipboard, the caller's name out of their address book. Handed to
+ * `notify-send` positionally, a text beginning with a dash stops being text —
+ * libnotify parses with GLib's option parser, so `-u` inside a message picks
+ * an urgency and `--icon` picks an icon, and a person who writes a message
+ * beginning with a dash gets a notification that behaves in a way they did
+ * not ask for on a desktop they do not own. The summary can also simply
+ * disappear into an unknown option, which is a message silently not shown.
+ *
+ * `--` ends option parsing for good, and everything after it is the summary
+ * and the body whatever it looks like. The flags this daemon chose itself
+ * stay in front of it, where they are still read.
+ */
+export function notifyArgs(flags = [], ...texts) {
+  return [...flags, '--', ...texts.filter((t) => t !== undefined && t !== null).map(String)]
+}
+
+/**
  * Fire and forget — for things like screen lock that outlive the request.
  *
  * `opts` is passed through so a caller can say where the thing should run:

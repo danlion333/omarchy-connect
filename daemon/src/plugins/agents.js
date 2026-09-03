@@ -1455,6 +1455,26 @@ function checkedResume(adapter, cwd, id) {
 }
 
 /**
+ * The command line an agent is started with, on either road.
+ *
+ * One function because there is one rule, and it was previously kept in only
+ * one of the two places that needed it: the prompt goes after `--`. A prompt
+ * is arbitrary text typed on a phone, and text typed on a phone begins with a
+ * dash often enough to matter — "-p is a flag, right?", a pasted diff, a line
+ * lifted out of a man page. Handed straight after `--bg`, such a prompt is
+ * read by the CLI's own parser as options: at best an unknown-flag error, at
+ * worst a flag the user never asked for, chosen by whoever typed the message.
+ * After `--` it is what it always was, a sentence.
+ *
+ * The flags themselves — `--resume`, `--name`, `--bg` — are this daemon's own
+ * words and stay in front of the fence, where they are still parsed.
+ */
+export function agentCommand({ args = [], prompt = '', background = false } = {}) {
+  const flags = background ? [...args, '--bg'] : [...args]
+  return prompt ? [...flags, '--', prompt] : flags
+}
+
+/**
  * Start an agent, and say which road it went down.
  *
  * Two roads, and they are not variations on each other:
@@ -1487,14 +1507,12 @@ async function startAgent({ adapter, cwd, resume = null, prompt = '', background
 
   if (background) {
     if (!prompt) throw new Error('a background agent needs something to work on')
-    const res = await run(bin, [...args, '--bg', prompt], { cwd, timeout: SPAWN_TIMEOUT_MS })
+    const res = await run(bin, agentCommand({ args, prompt, background: true }), { cwd, timeout: SPAWN_TIMEOUT_MS })
     if (!res.ok) throw new Error(res.stderr || `${bin} --bg failed`)
     return { via: 'background', output: res.stdout.slice(0, 400) }
   }
 
-  // `--` so the prompt reaches the agent as a prompt: one beginning with a
-  // dash is a perfectly ordinary thing to ask for from a phone.
-  const command = [...args, ...(prompt ? ['--', prompt] : [])]
+  const command = agentCommand({ args, prompt })
 
   if (tmux.available()) {
     const session = await tmux.freeSessionName()
