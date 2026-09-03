@@ -3,7 +3,7 @@ import { Alert, AppState, Platform, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Field, ListRow, Screen } from '../ui/kit'
 import { clock, duration } from '../lib/format'
 import {
@@ -528,7 +528,7 @@ function Notifications() {
  * back.
  */
 function BackgroundLink() {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const supported = backgroundLinkSupported()
   const [enabled, setEnabled] = useState(false)
   const [running, setRunning] = useState(false)
@@ -657,7 +657,7 @@ function BackgroundLink() {
  * decides to hand it over, at a moment when it is obvious what it buys them.
  */
 function PhoneMirror({ enabled }: { enabled: boolean }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const supported = phoneMirrorSupported()
   const [granted, setGranted] = useState(false)
   const [canAskAgain, setCanAskAgain] = useState(true)

@@ -12,7 +12,7 @@ import {
 import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentHistoryEntry } from '../api/client'
 import { Body, Button, Card, CardHeader, Divider, Empty } from '../ui/kit'
 import { Badge, modelLabel, tokens } from '../ui/agentkit'
@@ -263,7 +263,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
 
 /** A working directory, by the name a person would call it. */
 function Place({ dir, active, onPress }: { dir: string; active: boolean; onPress: () => void }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const name = dir.split('/').filter(Boolean).slice(-1)[0] || dir
   return (
     <Pressable
@@ -309,7 +309,7 @@ function HistoryRow({
   canSpawn: boolean
   onPress: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const model = modelLabel(entry.model)
   const actionable = entry.live || canSpawn
   return (

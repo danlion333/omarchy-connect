@@ -19,7 +19,7 @@ import * as ImagePicker from 'expo-image-picker'
 import * as Sharing from 'expo-sharing'
 import { File } from 'expo-file-system'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, Value } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
 import { downloadOffer } from '../lib/download'
@@ -490,7 +490,7 @@ function OfferRow({
   onSave: () => void
   onShare: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const kind = mediaKind(offer.name)
   const gallery = kind !== 'file'
   const settling = busy === `open:${offer.token}`
@@ -735,7 +735,7 @@ function Viewer({
   onShare: () => void
   onClose: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const insets = useSafeAreaInsets()
   const open = !!offer && !!uri
 

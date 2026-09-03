@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { ActivityIndicator, View } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Screen, Segmented, Title } from '../ui/kit'
 import { DEFAULT_PORT, parsePairingUrl, probeHost, scanSubnet, type Discovered, type PairingTarget } from '../api/discovery'
 import { font, radius, size, space } from '../theme'
@@ -103,7 +103,7 @@ export function PairScreen() {
 type PairFn = (target: PairingTarget) => void
 
 function ScanPane({ onPaired }: { onPaired: PairFn }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const [permission, requestPermission] = useCameraPermissions()
   const [invalid, setInvalid] = useState(false)
   const handled = useRef(false)
@@ -167,7 +167,7 @@ function ScanPane({ onPaired }: { onPaired: PairFn }) {
 }
 
 function FindPane({ onPaired }: { onPaired: PairFn }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const [scanning, setScanning] = useState(false)
   const [progress, setProgress] = useState(0)
   const [found, setFound] = useState<Discovered[]>([])
@@ -251,7 +251,7 @@ function FindPane({ onPaired }: { onPaired: PairFn }) {
 }
 
 function ManualPane({ onPaired }: { onPaired: PairFn }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const [host, setHost] = useState('')
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [code, setCode] = useState('')
@@ -337,7 +337,7 @@ function CodeEntry({
   onSubmit: () => void
   fingerprint?: string | null
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   return (
     <Card>
       <CardHeader icon="key" title={title} subtitle={subtitle} />

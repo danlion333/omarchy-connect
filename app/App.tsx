@@ -6,7 +6,7 @@ import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-cont
 import { Feather } from '@expo/vector-icons'
 import { useFonts, JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsMono_700Bold } from '@expo-google-fonts/jetbrains-mono'
 
-import { ConnectionProvider, useConnection } from './src/state/ConnectionContext'
+import { ConnectionProvider, useAgents, useConnection } from './src/state/ConnectionContext'
 import { DashboardScreen } from './src/screens/DashboardScreen'
 import { RemoteScreen } from './src/screens/RemoteScreen'
 import { ShareScreen } from './src/screens/ShareScreen'
@@ -113,7 +113,8 @@ function useRequestedRoute(): { tab: TabKey; agent?: string } | null {
 }
 
 function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
-  const { palette, agentsWaiting, status } = useConnection()
+  const { palette, status } = useConnection()
+  const { agentsWaiting } = useAgents()
   const insets = useSafeAreaInsets()
 
   return (
