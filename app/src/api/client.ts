@@ -635,7 +635,20 @@ export class ConnectClient {
 
     ws.onmessage = (event) => {
       const data = event.data
-      if (typeof data === 'string') return this.handleMessage(data)
+      // Everything the desktop says after the key exchange is a binary frame
+      // it encrypted with the channel key, so a text frame is never the
+      // desktop talking: it is whoever else can reach this socket. The
+      // transport is plain TCP by default, which puts an ARP-spoofing
+      // neighbour in a position to inject one, and a frame taken on trust
+      // here is a frame that can send an SMS from this phone, rewrite the
+      // remembered pairing, or answer a request the desktop never saw. So
+      // there is exactly one door into `handleMessage` — `handleBinary`,
+      // after `decrypt` — and this is not it.
+      if (typeof data === 'string') {
+        this.lastError = 'the desktop sent an unencrypted frame'
+        ws.close(4005, 'unencrypted frame')
+        return
+      }
       this.handleBinary(new Uint8Array(data as ArrayBuffer))
     }
 
