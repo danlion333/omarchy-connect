@@ -58,6 +58,16 @@ export async function requestCallPermission(): Promise<boolean> {
   return result.granted
 }
 
+export const canSendMessages = () => {
+  const native = telephony()
+  if (!native) return false
+  try {
+    return native.canSendMessages()
+  } catch {
+    return false
+  }
+}
+
 export const canAnswerCalls = () => {
   const native = telephony()
   if (!native) return false

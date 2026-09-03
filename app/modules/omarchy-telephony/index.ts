@@ -60,6 +60,8 @@ declare class OmarchyTelephony extends NativeModule<Events> {
   requestCallPermissionAsync(): Promise<PermissionResult>
   /** Whether ANSWER_PHONE_CALLS is held right now — cheap, so not a promise. */
   canAnswerCalls(): boolean
+  /** Whether SEND_SMS is held right now. */
+  canSendMessages(): boolean
   /**
    * Whether the dialler's notifications can be read — which is the only place
    * a modern Android puts the caller's name where an app can see it.

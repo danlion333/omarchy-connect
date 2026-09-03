@@ -98,6 +98,12 @@ it is drawn.
   down the low-energy road as a name and a sentence with no number anywhere in
   it — so all three stay plain lines. While the field has the keyboard the
   panel's single-key actions stand down, because `s` in a reply is a letter.
+  A refusal stays on the line under the header until the next action replaces
+  it or the panel is shut: it is an event rather than a condition, and the
+  probe that follows every action would otherwise wipe it within the same
+  frame. Sending needs its own Android permission, granted on the app's setup
+  screen — without it the field takes what is typed and the phone declines to
+  send it, which is exactly the sentence that line then holds.
 - **Recent transfers** — the last few files across the link, either direction.
 - **Actions** — Pair *or* Unpair, then Send and Inbox. Three, and all three are
   things you came here to do. The first slot is the way in while the desktop is

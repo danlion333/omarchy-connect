@@ -65,6 +65,38 @@ check('and neither does an empty row', Model.phoneReplyTo(null) === '' && Model.
 check('a number arriving with whitespace around it is still an address',
   Model.phoneReplyTo({ kind: 'sms', from: ' +15551234567 ' }) === '+15551234567')
 
+/**
+ * The line under the header, which is the only place a refused reply has to
+ * say so. The Service keeps a failed action apart from a standing condition
+ * because they expire differently — a failed action calls `refresh()` on its
+ * way out, and when both lived in one property the probe that followed
+ * cleared the sentence about forty milliseconds after it appeared, which on
+ * screen is a red flash and no explanation.
+ */
+check('a command in flight says so, in the ordinary colour',
+  Model.statusLine('Sending…', '', '').text === 'Sending…' &&
+    Model.statusLine('Sending…', '', '').failed === false)
+check('a failed action is what the line says once the command is done',
+  Model.statusLine('', 'the phone refused', '').text === 'the phone refused' &&
+    Model.statusLine('', 'the phone refused', '').failed === true)
+check('and it outranks a status file that has since read back fine',
+  Model.statusLine('', 'the phone refused', '').text === 'the phone refused')
+check('a standing condition is what is left when nothing has just happened',
+  Model.statusLine('', '', 'omarchy-connect is not installed').failed === true,
+  Model.statusLine('', '', 'omarchy-connect is not installed').text)
+check('and with nothing to say the row draws nothing',
+  Model.statusLine('', '', '').text === '' && Model.statusLine('', '', '').failed === false)
+
+// The half of the same rule that lives in QML and cannot be run here: the
+// property a failed action writes to has to be one the status file's own
+// reader does not touch, or the flash comes back.
+const service = fs.readFileSync(path.join(repo, 'shell', 'Service.qml'), 'utf8')
+const applyBody = service.slice(service.indexOf('function apply('), service.indexOf('FileView'))
+check('the status file reader clears only the standing condition',
+  applyBody.includes('root.lastError = ""') && !applyBody.includes('actionError'))
+check('and a command that came back non-zero writes to the other one',
+  /root\.actionError = root\.elide/.test(service))
+
 const argvFor = (to, body) => Model.smsCommand({ exec: ['omarchy-connect'] }, to, body)
 check('the reply is the command the CLI documents',
   argvFor('+1555', 'hi').slice(0, 2).join(' ') === 'omarchy-connect sms')

@@ -148,6 +148,9 @@ class OmarchyTelephonyModule : Module() {
 
     Function("canAnswerCalls") { canAnswerCalls() }
 
+    /** Whether SEND_SMS is held right now, for the same reason as above. */
+    Function("canSendMessages") { canSendMessages() }
+
     /**
      * Who is calling, rather than merely that someone is. There is no dialog
      * to raise for this one — notification access is granted on a settings
@@ -281,6 +284,9 @@ class OmarchyTelephonyModule : Module() {
     context.getSystemService(Context.TELECOM_SERVICE) as? TelecomManager
       ?: throw CodedException("this device has no telecom service")
 
+  private fun canSendMessages(): Boolean =
+    context.checkSelfPermission(Manifest.permission.SEND_SMS) == PackageManager.PERMISSION_GRANTED
+
   private fun canAnswerCalls(): Boolean =
     Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
       context.checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) ==
@@ -324,6 +330,12 @@ class OmarchyTelephonyModule : Module() {
   private fun sendMessage(to: String, text: String): Map<String, Any?> {
     if (to.isBlank()) throw CodedException("no number to send to")
     if (text.isEmpty()) throw CodedException("nothing to send")
+    // Asked before the radio is, so a desktop waiting on this gets a sentence
+    // rather than a SecurityException stack: the permission is granted on the
+    // settings screen, and that is where the answer has to point.
+    if (!canSendMessages()) {
+      throw CodedException("permission to send messages was not granted on this phone")
+    }
 
     val manager =
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

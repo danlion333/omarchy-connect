@@ -24,7 +24,18 @@ Item {
 
   property var status: null
   property bool loaded: false
+  // Two different kinds of bad news, kept apart on purpose.
+  //
+  // `lastError` is a condition — the status file will not parse, the daemon is
+  // not installed — and it is true until the next read says otherwise, so
+  // every successful `apply` clears it. `actionError` is an event: one command
+  // the user asked for came back non-zero, and it has to stay on screen long
+  // enough to be read. They were one property once, and the condition won:
+  // a failed action calls `refresh()` on its way out, the probe that follows
+  // succeeds a few tens of milliseconds later, and the sentence explaining
+  // what went wrong was wiped before anyone could finish reading it.
   property string lastError: ""
+  property string actionError: ""
   property string actionStatus: ""
 
   readonly property string stateHome: {
@@ -228,6 +239,8 @@ Item {
   /** Run and wait, for the two commands whose failure is worth a message. */
   function invoke(argv, message) {
     if (action.running) return
+    // The new action's own outcome replaces the last one's.
+    root.actionError = ""
     root.actionStatus = message || ""
     action.command = argv
     action.running = true
@@ -338,10 +351,10 @@ Item {
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function (exitCode) {
       if (exitCode !== 0) {
-        root.lastError = root.elide(String(actionErr.text || actionOut.text || "The command failed."))
+        root.actionError = root.elide(String(actionErr.text || actionOut.text || "The command failed."))
         root.actionStatus = ""
       } else {
-        root.lastError = ""
+        root.actionError = ""
         root.actionStatus = ""
         // A command can succeed and still have something to say — a daemon too
         // old to take a switch live is the case this was written for. Saying it

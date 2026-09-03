@@ -385,6 +385,10 @@ Panel {
   visible: !(root.setting("hideWhenUnpaired", false) === true && bridge.loaded && !paired && !bridge.running)
 
   onOpenedChanged: {
+    // A failure explains the key that was just pressed, so it belongs to the
+    // panel that was open at the time. Coming back to it later is a fresh
+    // look at the phone rather than the tail of an old attempt.
+    bridge.actionError = ""
     agentConfirmOpen = false
     replyTo = ""
     replyDraft = ""
@@ -637,7 +641,10 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
 
-            readonly property bool failed: bridge.lastError !== "" && bridge.actionStatus === ""
+            // Which of the three lines this is, and whether it is bad news,
+            // is decided in Model.js — see `statusLine` for the order.
+            readonly property var line: Model.statusLine(bridge.actionStatus, bridge.actionError, bridge.lastError)
+            readonly property bool failed: line.failed
 
             Text {
               width: root.iconCell
@@ -651,7 +658,7 @@ Panel {
             Text {
               id: messageText
               width: parent.width - root.iconCell - parent.spacing
-              text: bridge.actionStatus !== "" ? bridge.actionStatus : bridge.lastError
+              text: messageRow.line.text
               color: messageRow.failed ? root.urgent : root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.bodySmall

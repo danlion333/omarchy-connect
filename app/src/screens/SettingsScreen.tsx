@@ -10,11 +10,13 @@ import {
   canAnswerCalls,
   canReadCallNotifications,
   canReadContacts,
+  canSendMessages,
   openNotificationAccess,
   phoneMirrorSupported,
   phonePermission,
   requestCallPermission,
   requestPhonePermission,
+  requestSendPermission,
 } from '../api/phone'
 import {
   backgroundLinkEnabled,
@@ -664,6 +666,8 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
   const [busy, setBusy] = useState(false)
   const [answering, setAnswering] = useState(false)
   const [askingCalls, setAskingCalls] = useState(false)
+  const [sending, setSending] = useState(false)
+  const [askingSend, setAskingSend] = useState(false)
   const [callerId, setCallerId] = useState(false)
   const [contacts, setContacts] = useState(false)
 
@@ -674,6 +678,7 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
       setCanAskAgain(result.canAskAgain)
     })
     setAnswering(canAnswerCalls())
+    setSending(canSendMessages())
     setCallerId(canReadCallNotifications())
     setContacts(canReadContacts())
     // Notification access is granted on a system screen rather than in a
@@ -681,6 +686,7 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
     const subscription = AppState.addEventListener('change', (next) => {
       if (next !== 'active') return
       setAnswering(canAnswerCalls())
+      setSending(canSendMessages())
       setCallerId(canReadCallNotifications())
       setContacts(canReadContacts())
     })
@@ -696,6 +702,15 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
       setContacts(canReadContacts())
     } finally {
       setBusy(false)
+    }
+  }, [])
+
+  const askSend = useCallback(async () => {
+    setAskingSend(true)
+    try {
+      setSending(await requestSendPermission())
+    } finally {
+      setAskingSend(false)
     }
   }, [])
 
@@ -758,6 +773,22 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
               variant="ghost"
               loading={askingCalls}
               onPress={askCalls}
+            />
+          )}
+          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
+            Replying to a message from the desktop is a separate permission too, because sending an SMS is the
+            one thing here that can cost money. Without it the reply field on the desktop panel accepts what you
+            type and the phone refuses to send it.
+          </Body>
+          {sending ? (
+            <DataGrid pairs={[{ label: 'Send messages', value: 'granted' }]} columns={1} />
+          ) : (
+            <Button
+              icon="send"
+              label="Allow replying from the desktop"
+              variant="ghost"
+              loading={askingSend}
+              onPress={askSend}
             />
           )}
           <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>

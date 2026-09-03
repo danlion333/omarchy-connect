@@ -241,6 +241,29 @@ function phoneReplyTo(entry) {
  * is given, so handing it a sentence pre-split would only lose the spacing
  * somebody typed.
  */
+/**
+ * The one line under the header, out of the three things that compete for it.
+ *
+ * An action in flight talks first — "Sending…" is an answer to the key that
+ * was just pressed. A failed action talks next, and it outranks the standing
+ * condition underneath it for the same reason: whoever is reading this line
+ * pressed something a moment ago and is owed the outcome. `lastError` — the
+ * status file will not parse, the daemon is not installed — is what is left
+ * when nothing has just happened.
+ *
+ * The two errors are kept apart in the Service because they expire
+ * differently, and joining them here rather than in the delegate is what lets
+ * a test say so without a compositor.
+ */
+function statusLine(actionStatus, actionError, lastError) {
+  var busy = String(actionStatus || "")
+  var failed = String(actionError || "")
+  var standing = String(lastError || "")
+  if (busy !== "") return { text: busy, failed: false }
+  if (failed !== "") return { text: failed, failed: true }
+  return { text: standing, failed: standing !== "" }
+}
+
 function smsCommand(status, to, message) {
   return command(status, ["sms", String(to || ""), String(message || "")])
 }
