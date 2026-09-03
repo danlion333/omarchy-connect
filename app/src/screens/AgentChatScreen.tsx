@@ -84,6 +84,24 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     return () => focusAgent(null)
   }, [session.id])
 
+  /**
+   * How far the desktop had got, last time it said anything.
+   *
+   * Kept in a ref rather than in state because nothing on screen is drawn from
+   * it: it exists so that a re-open after a reconnect can ask for the blocks
+   * this screen missed instead of the whole window again.
+   */
+  const cursor = useRef<number | null>(null)
+  /**
+   * Which run of the desktop's numbering that cursor was dealt from.
+   *
+   * Block numbers restart at one, and a daemon that was restarted while the
+   * phone was away deals the same numbers out again — so the number alone is
+   * not enough to resume from. This is handed straight back, and a desktop
+   * that does not recognise it answers with the window instead.
+   */
+  const epoch = useRef<string | null>(null)
+
   /* Open the session, then let the daemon push the rest. */
   useEffect(() => {
     let live = true
@@ -91,10 +109,14 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     setBlocks([])
     setExpanded({})
     setLive('')
-    call<{ blocks: AgentBlock[] }>('agents.open', { id: session.id, limit: 120 })
+    cursor.current = null
+    epoch.current = null
+    call<{ blocks: AgentBlock[]; cursor?: number; epoch?: string }>('agents.open', { id: session.id, limit: 120 })
       .then((res) => {
         if (!live) return
         setBlocks(res.blocks || [])
+        if (typeof res.cursor === 'number') cursor.current = res.cursor
+        epoch.current = res.epoch ?? null
         setError(null)
       })
       .catch((err) => live && setError((err as Error).message))
@@ -102,10 +124,53 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
 
     return () => {
       live = false
+      cursor.current = null
+      epoch.current = null
       // Closing is what stops the desktop tailing a transcript nobody reads.
       call('agents.close', { id: session.id }).catch(() => {})
     }
   }, [call, session.id])
+
+  /**
+   * Come back after a reconnect.
+   *
+   * The desktop drops every open session the moment the event bus loses its
+   * subscribers, which a dropped socket does — so a link that comes back comes
+   * back with nothing being tailed, and this screen would sit there silently
+   * showing a conversation that has moved on. Nothing said so: no error, no
+   * empty state, just a chat that stopped. So every `hello` re-opens the
+   * session, and does it from the cursor: the desktop answers with the blocks
+   * that arrived while the phone was away, and only falls back to the whole
+   * window when it cannot honour the cursor (`resumed: false`) — a session
+   * that reloaded under us, or a gap the ring has already dropped.
+   */
+  useEffect(() => {
+    if (!client) return
+    return client.on('hello', () => {
+      call<{ blocks: AgentBlock[]; cursor?: number; epoch?: string; resumed?: boolean }>('agents.open', {
+        id: session.id,
+        limit: 120,
+        since: cursor.current,
+        epoch: epoch.current,
+      })
+        .then((res) => {
+          if (typeof res.cursor === 'number') cursor.current = res.cursor
+          epoch.current = res.epoch ?? null
+          const fresh = res.blocks || []
+          // A daemon too old to know about `since` answers without `resumed`
+          // and with the whole window, which is the behaviour this replaces —
+          // treating that as a resume would double every block on screen.
+          if (res.resumed) {
+            if (fresh.length) setBlocks((prev) => [...prev, ...fresh])
+          } else {
+            setBlocks(fresh)
+            setLive('')
+          }
+          setError(null)
+        })
+        .catch((err) => setError((err as Error).message))
+    })
+  }, [call, client, session.id])
 
   useEffect(() => {
     if (!client) return
@@ -120,6 +185,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
       // so as well, and either message is enough — whichever lands first wins,
       // and the words are on screen once either way.
       setLive('')
+      if (typeof data.cursor === 'number') cursor.current = data.cursor
       setBlocks((prev) => (data.reset ? data.blocks : [...prev, ...data.blocks]))
     })
   }, [client, session.id])

@@ -1,3 +1,4 @@
+import crypto from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -56,6 +57,33 @@ import { alive, ancestors, commOf, hasTty, procFile, startedAt, startTicks } fro
 const RING = 500
 /** Transcripts tailed at once. Opening a fifth drops the oldest. */
 const OPEN_LIMIT = 4
+/**
+ * How long a session a phone walked away from keeps what it had.
+ *
+ * A dropped socket is nearly always a phone that is coming straight back — a
+ * screen that went off, a network that changed — and throwing the session's
+ * blocks away the moment the bus goes quiet is what made every reconnect a
+ * full reload of a conversation that had not changed. Held for long enough to
+ * cover a reconnect and no longer; what it costs is the ring, which was
+ * already the ceiling on what an open session holds.
+ */
+const DETACH_KEEP_MS = 5 * 60_000
+
+/**
+ * What makes a cursor checkable rather than merely plausible.
+ *
+ * Block numbers restart at one whenever a session's numbering does, and they
+ * are assigned deterministically from the same window of the same file — so a
+ * daemon that restarts hands out the very same numbers to what may not be the
+ * very same blocks, and a phone resuming from `145` across that restart would
+ * be answered with everything after *a* block 145 rather than after *its*
+ * block 145. Two blocks that happen to share a number are only the same block
+ * if the numbering they were dealt from is the same numbering, and this is
+ * what says so: a value that is new for every run of the daemon, and new again
+ * every time a session's counter goes back to zero.
+ */
+const RUN = crypto.randomBytes(6).toString('hex')
+const epochOf = (entry) => `${RUN}.${entry.gen}`
 /** How often the process scan re-runs while a phone is watching. */
 const SCAN_MS = 8000
 /** Backstop for the tail: `fs.watch` misses writes on some filesystems. */
@@ -362,6 +390,11 @@ function upsert(fields) {
     loaded: false,
     opens: 0,
     openedAt: 0,
+    // Which run of the numbering the block seqs belong to; see `epochOf`.
+    gen: 0,
+    // When the last phone reading this went away without closing it. What it
+    // holds is kept until `DETACH_KEEP_MS` is up, so a reconnect resumes.
+    detachedAt: 0,
     watcher: null,
     writeChain: null,
     // The unfinished sentence as the phone last saw it, the one it has already
@@ -718,14 +751,44 @@ function openedSessions() {
 function release(entry) {
   entry.opens = Math.max(0, entry.opens - 1)
   if (entry.opens > 0) return
+  entry.detachedAt = 0
   closeTail(entry)
   entry.blocks = []
   entry.reordered = false
   entry.loaded = false
   entry.offset = 0
   entry.seq = 0
+  // The numbering starts again, so no cursor from before this point means
+  // anything any more.
+  entry.gen += 1
   entry.draft = ''
   entry.draftHeld = ''
+}
+
+/**
+ * The phone is gone, but not for good.
+ *
+ * Distinct from `release`, which is somebody closing a screen. Here nothing
+ * was closed: the socket died, and with it the bus subscription this session
+ * was being tailed for. The tail stops — it must, or the desktop goes on
+ * reading a transcript for nobody — but everything the phone already has stays
+ * exactly where it is, block numbering included, so that the re-open on the
+ * other side of the reconnect can be answered with the handful of blocks it
+ * missed instead of the whole window again. `expireDetached` is what stops
+ * that being a leak.
+ */
+function detach(entry) {
+  entry.opens = 0
+  entry.detachedAt = Date.now()
+  closeTail(entry)
+}
+
+function expireDetached() {
+  const cutoff = Date.now() - DETACH_KEEP_MS
+  for (const entry of sessions.values()) {
+    if (entry.opens > 0 || !entry.detachedAt || entry.detachedAt > cutoff) continue
+    release(entry)
+  }
 }
 
 /* ── discovery: the process scan ───────────────────────────────────────── */
@@ -1259,6 +1322,9 @@ function watch() {
   if (scanTimer) return
 
   scanTimer = setInterval(() => {
+    // Before the early return below, not after: a phone that never comes back
+    // leaves its sessions detached, and nothing else is looking at them.
+    expireDetached()
     // Nobody is watching: the scan is the only thing here that costs
     // anything, and hooks keep the registry current for free.
     if (!bus?.hasSubscribers('agent')) return
@@ -1272,12 +1338,11 @@ function watch() {
   pollTimer = setInterval(() => {
     const open = openedSessions()
     if (!open.length) return
-    // A phone that walked away takes its subscription with it.
+    // A phone that walked away takes its subscription with it. It is very
+    // often coming back — a screen that went off, a network that changed — so
+    // the tail stops and the transcript is kept where it was.
     if (!bus?.hasSubscribers('agent')) {
-      for (const entry of open) {
-        entry.opens = 0
-        release(entry)
-      }
+      for (const entry of open) detach(entry)
       return
     }
     for (const entry of open) drain(entry)
@@ -1670,8 +1735,20 @@ export default {
      * Start reading one session: a snapshot now, then `agent` events as the
      * transcript grows. Only opened sessions are tailed — the same
      * reference-counted discipline the stats sampler uses.
+     *
+     * `since` is a cursor from an earlier open or `blocks` event, and it turns
+     * this into a resume. A phone re-opens after every reconnect — the desktop
+     * drops its subscriptions when the bus loses its last subscriber, so an
+     * open session stops being tailed the moment the socket dies — and without
+     * a cursor that would mean refetching the whole window, over a link that
+     * has only just come back, to redraw a chat that has not changed. With one,
+     * the answer is the handful of blocks the phone missed, and `resumed` says
+     * so: the screen appends rather than replacing. A cursor the desktop can no
+     * longer honour — the session was reloaded and its numbering restarted, or
+     * the ring dropped the blocks in between — is not an error, it is a reload:
+     * the full window comes back with `resumed: false`.
      */
-    'agents.open'({ id, limit = 60 } = {}) {
+    'agents.open'({ id, limit = 60, since = null, epoch = null } = {}) {
       requireEnabled()
       const entry = sessions.get(String(id))
       if (!entry) throw new Error('no such agent session')
@@ -1687,14 +1764,45 @@ export default {
       }
       entry.opens += 1
       entry.openedAt = Date.now()
+      entry.detachedAt = 0
       load(entry)
       drain(entry)
       openTail(entry)
 
+      // Asked after the drain, not before: the blocks that arrived while the
+      // phone was away are exactly the ones a resume is for.
+      const from = Number(since)
+      const resumable =
+        since !== null &&
+        since !== undefined &&
+        // The cursor and the numbering it was dealt from travel together, and
+        // a cursor without one is a cursor from a phone that cannot say.
+        epoch === epochOf(entry) &&
+        Number.isInteger(from) &&
+        from >= 0 &&
+        from <= entry.seq &&
+        // Everything after the cursor still has to be in the ring, or the
+        // resume would quietly skip whatever fell off the front of it.
+        (!entry.blocks.length || entry.blocks[0].seq <= from + 1)
+
+      if (resumable) {
+        const missed = entry.blocks.filter((block) => block.seq > from)
+        return {
+          session: publicSession(entry),
+          resumed: true,
+          blocks: missed.slice(-count).map(publicBlock),
+          cursor: entry.seq,
+          epoch: epochOf(entry),
+          truncated: missed.length > count,
+        }
+      }
+
       return {
         session: publicSession(entry),
+        resumed: false,
         blocks: entry.blocks.slice(-count).map(publicBlock),
         cursor: entry.seq,
+        epoch: epochOf(entry),
         truncated: entry.blocks.length > count,
       }
     },

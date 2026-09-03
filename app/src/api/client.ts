@@ -649,7 +649,17 @@ export class ConnectClient {
     this.secure = null
     this.handshake = null
 
+    // Every handler below opens with the same line, and it is the whole point
+    // of them being written out rather than shared: a socket only speaks for
+    // itself. `moveTo` and `close` replace `this.ws` while the socket they
+    // dropped is still alive enough to fire, and React Native delivers those
+    // last events on a later tick, after the replacement is already open. A
+    // handler that trusted `this` there would run a dead socket's outcome
+    // against a live one — the late `onclose` in particular would stop the
+    // ping and pin the status to `reconnecting` on a connection that is fine,
+    // with nothing in the log to say why.
     ws.onopen = () => {
+      if (ws !== this.ws) return
       if (!this.publicKey) {
         // Without a pinned key we cannot tell the desktop apart from anything
         // else answering on that address, so we refuse rather than fall back.
@@ -667,6 +677,7 @@ export class ConnectClient {
     }
 
     ws.onmessage = (event) => {
+      if (ws !== this.ws) return
       const data = event.data
       // Everything the desktop says after the key exchange is a binary frame
       // it encrypted with the channel key, so a text frame is never the
@@ -686,11 +697,13 @@ export class ConnectClient {
     }
 
     ws.onerror = () => {
+      if (ws !== this.ws) return
       // React Native gives no useful detail here; onclose carries the outcome.
       this.lastError = this.lastError || 'connection failed'
     }
 
     ws.onclose = (event) => {
+      if (ws !== this.ws) return
       this.stopPing()
       this.failAllPending(new Error('disconnected'))
       if (this.closedByUser) {
@@ -779,13 +792,35 @@ export class ConnectClient {
     this.host = host
     this.port = port
     this.attempt = 0
+    const old = this.ws
+    // Nulled and detached *before* the close, not after: `close()` can fire
+    // `onclose` synchronously, and a handler that ran while `this.ws` still
+    // pointed at the socket being dropped would take the live connection's
+    // ping and status down with it.
+    this.ws = null
+    this.detach(old)
     try {
-      this.ws?.close(4009, 'address changed')
+      old?.close(4009, 'address changed')
     } catch {
       /* already gone */
     }
-    this.ws = null
     this.connect()
+  }
+
+  /**
+   * Takes the handlers off a socket we are done with.
+   *
+   * The identity guard inside each handler is the rule; this is the belt to
+   * its braces. A detached socket cannot deliver anything at all, which also
+   * means a buffered message from a host we have just decided is not our
+   * desktop never reaches `handleBinary`.
+   */
+  private detach(ws: WebSocket | null) {
+    if (!ws) return
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onerror = null
+    ws.onclose = null
   }
 
   /** How many reconnect attempts have failed back-to-back. */
@@ -988,8 +1023,10 @@ export class ConnectClient {
     clearTimeout(this.retryTimer)
     this.stopPing()
     this.failAllPending(new Error('closed'))
-    this.ws?.close()
+    const old = this.ws
     this.ws = null
+    this.detach(old)
+    old?.close()
     this.setStatus('idle', null)
   }
 
