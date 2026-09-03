@@ -44,7 +44,13 @@ const daemon = spawn(process.execPath, ['daemon/bin/omarchy-connect.js', 'start'
 })
 process.on('exit', () => {
   daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  // A daemon that is still writing its state on the way out turns the tidy-up
+  // into a crashed suite, which is a lie about a run that passed everything.
+  try {
+    fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 })
+  } catch {
+    /* a leftover directory in /tmp is not a test failure */
+  }
 })
 
 const base = `http://127.0.0.1:${PORT}`
@@ -172,5 +178,4 @@ disowned.close()
 
 rogueWs.close()
 rogueHttp.close()
-daemon.kill('SIGTERM')
 done('relocation checks')
