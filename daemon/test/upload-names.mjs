@@ -101,7 +101,6 @@ const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).js
 const phone = connectPhone(PORT, info.publicKey)
 const pending = new Map()
 let seq = 0
-let token = null
 
 const req = (method, params = {}) =>
   new Promise((resolve, reject) => {
@@ -122,7 +121,6 @@ await new Promise((resolve, reject) => {
     )
     .catch(reject)
   phone.on((msg) => {
-    if (msg.t === 'paired') token = msg.token
     if (msg.t === 'hello.ok') resolve(msg)
     if (msg.t === 'hello.err') reject(new Error(msg.error))
     if (msg.t === 'res') {
@@ -135,8 +133,16 @@ await new Promise((resolve, reject) => {
   phone.ws.on('error', reject)
 })
 
-const upload = (name, body = 'hello') =>
-  fetch(`${base}/api/upload`, { method: 'POST', headers: { 'x-oc-token': token, 'x-oc-filename': name }, body })
+// A ticket per upload, asked for over the socket: the HTTP road no longer
+// takes the device token at all.
+const ticketFor = async (use) => (await req('share.ticket', { use })).ticket
+
+const upload = async (name, body = 'hello') =>
+  fetch(`${base}/api/upload`, {
+    method: 'POST',
+    headers: { 'x-oc-ticket': await ticketFor('upload'), 'x-oc-filename': name },
+    body,
+  })
 
 const percent = await upload('100%.txt')
 const percentBody = await percent.json().catch(() => ({}))

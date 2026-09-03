@@ -845,7 +845,7 @@ class Link {
     const client = this.client
     if (!client) return
     try {
-      const uri = await downloadOffer(client.downloadUrl(token), token, name)
+      const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
       await saveToGallery(uri)
       noteFileAlert(token, name, 'in your gallery')
       // Kept on screen for a moment as a receipt, then taken down: the offer

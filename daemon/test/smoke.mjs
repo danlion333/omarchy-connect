@@ -212,17 +212,22 @@ await new Promise((resolve, reject) => {
   copy.stdin.end(`desktop-side copy ${Date.now()}`)
 })
 
+// The HTTP file roads take a one-use ticket, minted over the encrypted
+// socket. The device token itself is refused there — offering it is exactly
+// the mistake this endpoint used to invite.
+const ticketFor = async (use) => (await req('share.ticket', { use })).ticket
+
 const rejectedUpload = await fetch(`${base}/api/upload`, {
   method: 'POST',
-  headers: { 'x-oc-token': 'f'.repeat(64), 'x-oc-filename': 'smoke.txt' },
+  headers: { 'x-oc-token': token, 'x-oc-filename': 'smoke.txt' },
   body: 'hello from the smoke test',
 })
-check('upload rejects a bad token', rejectedUpload.status === 401)
+check('upload refuses the device token', rejectedUpload.status === 401)
 
 const payload = `smoke test payload ${Date.now()}`
 const upload = await fetch(`${base}/api/upload`, {
   method: 'POST',
-  headers: { 'x-oc-token': token, 'x-oc-filename': 'smoke test.txt' },
+  headers: { 'x-oc-ticket': await ticketFor('upload'), 'x-oc-filename': 'smoke test.txt' },
   body: payload,
 })
 const uploaded = await upload.json()
@@ -243,9 +248,14 @@ const offer = await (
 check('desktop offers a file', typeof offer.token === 'string', `${offer.name} · ${offer.recipients} recipient(s)`)
 
 const downloadNoAuth = await fetch(`${base}/api/download/${offer.token}`)
-check('download needs a token', downloadNoAuth.status === 401)
+check('download needs a ticket', downloadNoAuth.status === 401)
 
-const downloaded = await fetch(`${base}/api/download/${offer.token}?token=${token}`)
+const downloadWithToken = await fetch(`${base}/api/download/${offer.token}?token=${token}`)
+check('and the device token in the query buys nothing', downloadWithToken.status === 401)
+
+const downloaded = await fetch(`${base}/api/download/${offer.token}`, {
+  headers: { 'x-oc-ticket': await ticketFor('download') },
+})
 const body = await downloaded.text()
 check('desktop -> phone download', downloaded.ok && body.includes('smoke test payload'), `${body.length} bytes`)
 

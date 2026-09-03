@@ -142,6 +142,16 @@ export function findDeviceByToken(token) {
   return loadConfig().devices.find((d) => tokenMatches(d.token, token)) || null
 }
 
+/**
+ * The pairing record behind an id, for the places that were handed an id
+ * rather than a credential — an HTTP file ticket names the device it was
+ * minted for, and the device it names may have been unpaired since.
+ */
+export function findDeviceById(id) {
+  if (!id) return null
+  return loadConfig().devices.find((d) => d.id === id) || null
+}
+
 /** A set rather than an append: pairing replaces the list, never grows it. */
 export function upsertDevice(device) {
   updateConfig((cfg) => {

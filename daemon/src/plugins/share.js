@@ -37,6 +37,61 @@ export function resolveOffer(token) {
 }
 
 /**
+ * Tickets: what the HTTP file routes accept instead of the device token.
+ *
+ * The token a phone gets when it pairs is the whole of its identity — hand it
+ * to anyone listening and they can run their own key exchange on `/ws` and
+ * own the desktop. It used to ride on every upload as `x-oc-token` and on
+ * every download as `?token=…`, and with TLS off (which is the default) both
+ * went out in cleartext; the query one also settled into proxy logs and URL
+ * history, where it outlives the transfer by years.
+ *
+ * So the credential stays on the encrypted channel, and the phone asks it for
+ * a ticket per transfer: 32 random bytes, good for one request, two minutes,
+ * and one direction. Losing one to a sniffer costs the file that was already
+ * on the wire in front of them, and nothing else — it cannot be replayed, it
+ * cannot be turned into a socket, and it is worthless by the time anyone has
+ * read it out of a log.
+ */
+const tickets = new Map()
+const TICKET_TTL = 2 * 60 * 1000
+
+function sweepTickets() {
+  const now = Date.now()
+  for (const [value, ticket] of tickets) if (ticket.expiresAt < now) tickets.delete(value)
+}
+
+export function issueTicket(deviceId, use) {
+  sweepTickets()
+  const value = crypto.randomBytes(32).toString('base64url')
+  const expiresAt = Date.now() + TICKET_TTL
+  tickets.set(value, { deviceId, use, expiresAt })
+  return { ticket: value, use, expiresAt, ttlMs: TICKET_TTL }
+}
+
+/**
+ * Answers with the device the ticket was minted for, or null — and either way
+ * the ticket is gone. Deleting before the checks is deliberate: a ticket that
+ * was presented for the wrong direction, or after it expired, has been seen
+ * by somebody, and a seen ticket is spent whatever it bought.
+ */
+export function redeemTicket(value, use) {
+  sweepTickets()
+  if (typeof value !== 'string' || !value) return null
+  const ticket = tickets.get(value)
+  if (!ticket) return null
+  tickets.delete(value)
+  if (ticket.expiresAt < Date.now()) return null
+  if (ticket.use !== use) return null
+  return ticket.deviceId
+}
+
+/** For the suites: nothing outstanding between one daemon and the next. */
+export function forgetTickets() {
+  tickets.clear()
+}
+
+/**
  * The inbox keeps the name the phone chose, minus the parts of it that are
  * not really a name.
  *
@@ -108,6 +163,19 @@ export default {
         return { ok: true, action, path: target }
       }
       throw new Error(`unknown action: ${action}`)
+    },
+
+    /**
+     * A one-use pass for one HTTP file transfer, in the direction it names.
+     * Only reachable over the WebSocket, which is encrypted end to end and
+     * already knows which device is asking — which is the whole point: the
+     * long-lived credential never has to leave that channel again.
+     */
+    'share.ticket'({ use = 'upload' } = {}, ctx = {}) {
+      if (use !== 'upload' && use !== 'download') throw new Error(`unknown ticket use: ${use}`)
+      const deviceId = ctx.device?.id
+      if (!deviceId) throw new Error('not authenticated')
+      return issueTicket(deviceId, use)
     },
 
     'share.offers'() {

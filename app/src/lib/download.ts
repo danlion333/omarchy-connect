@@ -10,12 +10,22 @@ import { Directory, File, Paths } from 'expo-file-system'
  * A directory per offer, so two files the desktop happened to call the same
  * thing keep their own bytes — and their own name, which is what the gallery
  * and the share sheet end up showing.
+ *
+ * The headers carry the one-use ticket the desktop wants for this fetch. The
+ * URL carries only which file is being asked for, because a URL is the part
+ * of a request that gets written down — proxy logs, history, a crash report —
+ * and a credential written down outlives the transfer by years.
  */
-export async function downloadOffer(url: string, token: string, name: string): Promise<string> {
+export async function downloadOffer(
+  url: string,
+  token: string,
+  name: string,
+  headers: Record<string, string> = {},
+): Promise<string> {
   const dir = new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
   if (!dir.exists) dir.create({ intermediates: true })
   const target = new File(dir, name)
   if (target.exists) target.delete()
-  const file = await File.downloadFileAsync(url, target)
+  const file = await File.downloadFileAsync(url, target, { headers })
   return file.uri
 }

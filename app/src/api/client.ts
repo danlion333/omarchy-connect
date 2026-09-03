@@ -1170,21 +1170,40 @@ export class ConnectClient {
   /* ── HTTP side ───────────────────────────────────────────────────── */
 
   /**
+   * One pass, for one transfer, in one direction.
+   *
+   * The device token is the phone's whole identity — with it a stranger can
+   * run their own key exchange on `/ws` and drive the desktop — and until now
+   * it rode on every upload header and in every download query string, in
+   * cleartext whenever TLS was off, which is the default. So it stays on the
+   * encrypted socket and each transfer asks that socket for a ticket instead:
+   * two minutes, one request, worthless to anyone who reads it afterwards.
+   */
+  private fileTicket(use: 'upload' | 'download'): Promise<string> {
+    return this.call<{ ticket: string }>('share.ticket', { use }).then((res) => res.ticket)
+  }
+
+  /**
    * `dest` picks which door the file goes through on the desktop. The default
    * is the share inbox, which notifies and is kept; `agent` is the swept cache
    * a picture waits in while an agent is told where to look, and the desktop
    * answers that one with the path it wrote.
    */
-  uploadHeaders(filename: string, dest: 'inbox' | 'agent' = 'inbox') {
+  async uploadHeaders(filename: string, dest: 'inbox' | 'agent' = 'inbox') {
     return {
-      'x-oc-token': this.token ?? '',
+      'x-oc-ticket': await this.fileTicket('upload'),
       'x-oc-filename': encodeURIComponent(filename),
       'x-oc-dest': dest,
       'content-type': 'application/octet-stream',
     }
   }
 
+  /** The offer token names the file; it says nothing about who may have it. */
   downloadUrl(offerToken: string) {
-    return `${this.baseUrl}/api/download/${offerToken}?token=${this.token ?? ''}`
+    return `${this.baseUrl}/api/download/${offerToken}`
+  }
+
+  async downloadHeaders() {
+    return { 'x-oc-ticket': await this.fileTicket('download') }
   }
 }

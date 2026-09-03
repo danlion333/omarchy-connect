@@ -151,7 +151,6 @@ async function connect() {
   const phone = connectPhone(PORT, info.publicKey)
   const pending = new Map()
   let seq = 0
-  let token = null
 
   const req = (method, params = {}) =>
     new Promise((resolve, reject) => {
@@ -172,7 +171,6 @@ async function connect() {
       )
       .catch(reject)
     phone.on((msg) => {
-      if (msg.t === 'paired') token = msg.token
       if (msg.t === 'hello.ok') resolve(msg)
       if (msg.t === 'hello.err') reject(new Error(msg.error))
       if (msg.t === 'res') {
@@ -184,12 +182,17 @@ async function connect() {
     })
   })
 
-  const record = (name = 'dictation.m4a') =>
-    fetch(`${base}/api/upload`, {
+  // The upload road is authorised by a one-use ticket asked for over the
+  // encrypted socket, never by the device token, so every recording here
+  // starts by asking for one the way the app does.
+  const record = async (name = 'dictation.m4a') => {
+    const { ticket } = await req('share.ticket', { use: 'upload' })
+    return fetch(`${base}/api/upload`, {
       method: 'POST',
-      headers: { 'x-oc-token': token, 'x-oc-filename': name, 'x-oc-dest': 'agent' },
+      headers: { 'x-oc-ticket': ticket, 'x-oc-filename': name, 'x-oc-dest': 'agent' },
       body: 'not really aac, but bytes',
     }).then((r) => r.json())
+  }
 
   return { hello, req, record }
 }

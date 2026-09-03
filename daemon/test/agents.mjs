@@ -564,7 +564,11 @@ await startDaemon(false)
   // this desktop that would ever read what a phone dropped there.
   const dropped = await fetch(`${base}/api/upload`, {
     method: 'POST',
-    headers: { 'x-oc-token': token, 'x-oc-filename': 'shot.png', 'x-oc-dest': 'agent' },
+    headers: {
+      'x-oc-ticket': (await req('share.ticket', { use: 'upload' })).ticket,
+      'x-oc-filename': 'shot.png',
+      'x-oc-dest': 'agent',
+    },
     body: 'x',
   })
   check('a picture for an agent is refused while disabled', dropped.status === 403, String(dropped.status))
@@ -1116,7 +1120,7 @@ if (!hasTmux) {
   const uploaded = await fetch(`${base}/api/upload`, {
     method: 'POST',
     headers: {
-      'x-oc-token': token,
+      'x-oc-ticket': (await req('share.ticket', { use: 'upload' })).ticket,
       'x-oc-filename': encodeURIComponent('a shot.png'),
       'x-oc-dest': 'agent',
       'content-type': 'application/octet-stream',
