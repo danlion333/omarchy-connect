@@ -77,6 +77,18 @@ check('neither is a file on somebody else\'s machine',
   drops('file://desktop-2/home/me/report.pdf').length === 0)
 check('but localhost is this machine', drops('file://localhost/a.txt')[0] === '/a.txt')
 check('an empty drag asks for nothing', drops().length === 0 && drops('', '  ').length === 0)
+// The shape a real drop arrives in. QML hands over a `list<url>`, which counts
+// and indexes like an array but is not one — `Array.isArray` returns false for
+// it, and asking that question refused every genuine file with "only files can
+// be dropped here". So the list is faked here the way QML makes it: countable,
+// indexable, and not an array.
+const sequence = (...urls) => Model.dropPaths(Object.assign({ length: urls.length }, urls))
+check('a QML url list is a list of files, not an array',
+  sequence('file:///a.txt', 'file:///b.txt').join(',') === '/a.txt,/b.txt',
+  JSON.stringify(sequence('file:///a.txt', 'file:///b.txt')))
+check('and one url on its own is one file',
+  Model.dropPaths('file:///a.txt').join(',') === '/a.txt',
+  JSON.stringify(Model.dropPaths('file:///a.txt')))
 
 /* ── and the argv it hands the CLI ─────────────────────────────────────── */
 

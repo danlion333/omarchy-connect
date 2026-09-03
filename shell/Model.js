@@ -147,9 +147,19 @@ function fileName(filePath) {
  * `localhost`, which is how some file managers spell it) is this machine.
  * Duplicates collapse because a drop can list the same file twice and sending
  * it twice would be two notifications for one gesture.
+ *
+ * What arrives here is not a JavaScript array. A `DropArea` hands over the
+ * drag's `urls` as a QML `list<url>`: it counts and it indexes, but
+ * `Array.isArray` says no to it, and asking that question was how every real
+ * drop used to come out empty and be refused as "not a file". So the question
+ * asked is the one that matters — can this be counted and indexed — and a
+ * lone string is taken as the single URI it is rather than walked letter by
+ * letter.
  */
 function dropPaths(urls) {
-  var items = Array.isArray(urls) ? urls : []
+  var items = []
+  if (typeof urls === "string") items = [urls]
+  else if (urls && typeof urls.length === "number") items = urls
   var paths = []
   for (var i = 0; i < items.length; i++) {
     var raw = String(items[i] || "").trim()
