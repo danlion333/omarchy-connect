@@ -1670,8 +1670,20 @@ export default {
      * Start reading one session: a snapshot now, then `agent` events as the
      * transcript grows. Only opened sessions are tailed — the same
      * reference-counted discipline the stats sampler uses.
+     *
+     * `since` is a cursor from an earlier open or `blocks` event, and it turns
+     * this into a resume. A phone re-opens after every reconnect — the desktop
+     * drops its subscriptions when the bus loses its last subscriber, so an
+     * open session stops being tailed the moment the socket dies — and without
+     * a cursor that would mean refetching the whole window, over a link that
+     * has only just come back, to redraw a chat that has not changed. With one,
+     * the answer is the handful of blocks the phone missed, and `resumed` says
+     * so: the screen appends rather than replacing. A cursor the desktop can no
+     * longer honour — the session was reloaded and its numbering restarted, or
+     * the ring dropped the blocks in between — is not an error, it is a reload:
+     * the full window comes back with `resumed: false`.
      */
-    'agents.open'({ id, limit = 60 } = {}) {
+    'agents.open'({ id, limit = 60, since = null } = {}) {
       requireEnabled()
       const entry = sessions.get(String(id))
       if (!entry) throw new Error('no such agent session')
@@ -1691,8 +1703,33 @@ export default {
       drain(entry)
       openTail(entry)
 
+      // Asked after the drain, not before: the blocks that arrived while the
+      // phone was away are exactly the ones a resume is for.
+      const from = Number(since)
+      const resumable =
+        since !== null &&
+        since !== undefined &&
+        Number.isInteger(from) &&
+        from >= 0 &&
+        from <= entry.seq &&
+        // Everything after the cursor still has to be in the ring, or the
+        // resume would quietly skip whatever fell off the front of it.
+        (!entry.blocks.length || entry.blocks[0].seq <= from + 1)
+
+      if (resumable) {
+        const missed = entry.blocks.filter((block) => block.seq > from)
+        return {
+          session: publicSession(entry),
+          resumed: true,
+          blocks: missed.slice(-count).map(publicBlock),
+          cursor: entry.seq,
+          truncated: missed.length > count,
+        }
+      }
+
       return {
         session: publicSession(entry),
+        resumed: false,
         blocks: entry.blocks.slice(-count).map(publicBlock),
         cursor: entry.seq,
         truncated: entry.blocks.length > count,

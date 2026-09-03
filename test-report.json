@@ -1,0 +1,939 @@
+{
+  "startedAt": "2026-09-03T15:41:20.846Z",
+  "status": "passed",
+  "suites": 1,
+  "total": 183,
+  "passed": 183,
+  "failed": 0,
+  "results": [
+    {
+      "package": "daemon",
+      "suite": "agents",
+      "file": "/home/dan/Projects/omarchy-connect/.claude/worktrees/issue-9/daemon/test/agents.mjs",
+      "status": "passed",
+      "total": 183,
+      "passed": 183,
+      "failed": 0,
+      "error": null,
+      "checks": [
+        {
+          "name": "a bare session is a session",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "so is one with flags",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "so is one carrying a prompt",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the agent’s own supervisor is not",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "nor are its background helpers",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "nor is a housekeeping command",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a helper hiding in its process title is caught too",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a live agent takes the transcript it could have written",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and never one that stopped before it started",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an agent that has not written yet is absent, not misattributed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a session at a keyboard is served before a helper that shares its directory",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "two agents in one directory get one transcript each",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "this process knows when it started",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and that a test runner has no controlling terminal to speak of",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "without it the newest file wins and both are wrong",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a session at a keyboard does not take a background conversation",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the background agent keeps its own",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a transcript that has not said yet is still a candidate",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a finished conversation with a freshly-bumped mtime does not outrank a live one",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the session is dated by its last turn, not by the last write to its file",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a transcript with no turn yet falls back to its mtime",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a background transcript says so",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an interactive one says nothing, which is its answer",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and a transcript with no turn yet stays unknown",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a background transcript still says so after a line that does not",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and it is dated by its last turn rather than by its last line",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a task notification is not a thing the person said",
+          "ok": true,
+          "detail": "[]"
+        },
+        {
+          "name": "but the words beside one survive",
+          "ok": true,
+          "detail": "[{\"role\":\"user\",\"kind\":\"text\",\"at\":1787685873475,\"text\":\"looks good\"}]"
+        },
+        {
+          "name": "a harness injection that announces itself is believed",
+          "ok": true,
+          "detail": "[]"
+        },
+        {
+          "name": "a long answer is not cut short",
+          "ok": true,
+          "detail": "12000"
+        },
+        {
+          "name": "nor is a long thing the person said",
+          "ok": true,
+          "detail": "12000"
+        },
+        {
+          "name": "but a huge tool result is still clamped",
+          "ok": true,
+          "detail": "32780"
+        },
+        {
+          "name": "capabilities say agents are off",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "capabilities admit writing is not implemented",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "agents.list is refused while disabled",
+          "ok": true,
+          "detail": "agent control is off"
+        },
+        {
+          "name": "agents.send is refused while disabled",
+          "ok": true,
+          "detail": "agent control is off"
+        },
+        {
+          "name": "a hook is ignored while disabled",
+          "ok": true,
+          "detail": "agents disabled"
+        },
+        {
+          "name": "a picture for an agent is refused while disabled",
+          "ok": true,
+          "detail": "403"
+        },
+        {
+          "name": "a phone cannot turn on its own reading",
+          "ok": true,
+          "detail": "unknown method: agents.enable"
+        },
+        {
+          "name": "the desktop switch turns reading on",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the switch says whether the hooks are in place",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the phone is told the answer changed",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the same link can read agents now",
+          "ok": true,
+          "detail": "no reconnect"
+        },
+        {
+          "name": "a hook lands once the switch is on",
+          "ok": true,
+          "detail": "claude:11111111-2222-3333-4444-555555555555"
+        },
+        {
+          "name": "the status file tells the panel it is on",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the decision survives a restart",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the switch turns it off again",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "reading stops the moment it is turned off",
+          "ok": true,
+          "detail": "agent control is off"
+        },
+        {
+          "name": "the phone is told it stopped",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the status file follows",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "capabilities say agents are on",
+          "ok": true,
+          "detail": "claude"
+        },
+        {
+          "name": "capabilities name the road into a terminal",
+          "ok": true,
+          "detail": "tmux"
+        },
+        {
+          "name": "capabilities list the keys a phone may press",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "capabilities admit the two things the app has to ask for",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "no sessions before anything is discovered",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "SessionStart registers a session",
+          "ok": true,
+          "detail": "claude:11111111-2222-3333-4444-555555555555"
+        },
+        {
+          "name": "a hook-registered session is announced",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "agents.list finds it",
+          "ok": true,
+          "detail": "example · idle"
+        },
+        {
+          "name": "the session names its directory and its road",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a session in no terminal we can reach is read-only",
+          "ok": true,
+          "detail": "null"
+        },
+        {
+          "name": "the list says what the agent is doing",
+          "ok": true,
+          "detail": "src/app.js:12"
+        },
+        {
+          "name": "the session carries the model it is running as",
+          "ok": true,
+          "detail": "claude-opus-5"
+        },
+        {
+          "name": "and how full its context is, counting the cache",
+          "ok": true,
+          "detail": "100000"
+        },
+        {
+          "name": "and the permission mode it is in",
+          "ok": true,
+          "detail": "normal"
+        },
+        {
+          "name": "and the branch it is on",
+          "ok": true,
+          "detail": "master"
+        },
+        {
+          "name": "the project is still said, now that the title may not say it",
+          "ok": true,
+          "detail": "example"
+        },
+        {
+          "name": "a background agent is matched to the conversation it writes",
+          "ok": true,
+          "detail": "reading the router"
+        },
+        {
+          "name": "the list carries what the plan has left",
+          "ok": true,
+          "detail": "12"
+        },
+        {
+          "name": "and it can be asked for on its own",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the desktop lists the skills it has",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the built-ins worth a thumb",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the list is for the session's own directory",
+          "ok": true,
+          "detail": "/home/dan/Projects/example"
+        },
+        {
+          "name": "a name nobody published is refused",
+          "ok": true,
+          "detail": "that desktop does not have a command by that name"
+        },
+        {
+          "name": "the conversations on disk are listed",
+          "ok": true,
+          "detail": "1"
+        },
+        {
+          "name": "an open one says so, and says which session it is",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the working directory is read off the file, not off the slug",
+          "ok": true,
+          "detail": "/home/dan/Projects/example"
+        },
+        {
+          "name": "the session says what it is working through",
+          "ok": true,
+          "detail": "Reading the router"
+        },
+        {
+          "name": "and the list itself is one call away",
+          "ok": true,
+          "detail": "1"
+        },
+        {
+          "name": "background agents are listed with what they are doing",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the ones that are also live sessions say which",
+          "ok": true,
+          "detail": "{\"job12345\":\"claude:11111111-2222-3333-4444-555555555555\"}"
+        },
+        {
+          "name": "a job something is running calls itself live",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a job whose agent is gone does not",
+          "ok": true,
+          "detail": "[[\"job12345\",true],[\"deadjob1\",false]]"
+        },
+        {
+          "name": "starting an agent is refused while its own switch is off",
+          "ok": true,
+          "detail": "starting agents from a phone is off"
+        },
+        {
+          "name": "agents.open returns the conversation",
+          "ok": true,
+          "detail": "user:text assistant:thinking assistant:text assistant:tool user:result"
+        },
+        {
+          "name": "the user turn survives",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the tool call is one line",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the tool result carries a status",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "bookkeeping lines are dropped",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "subagent traffic stays out of the chat",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a thinking signature is never rendered",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "open answers with a cursor",
+          "ok": true,
+          "detail": "5"
+        },
+        {
+          "name": "the full tool body is one tap away",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "new blocks stream to an open session",
+          "ok": true,
+          "detail": "cursor 6"
+        },
+        {
+          "name": "a submitted prompt means working",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a permission prompt means waiting",
+          "ok": true,
+          "detail": "Claude needs your permission to use Bash"
+        },
+        {
+          "name": "the waiting session sorts to the top",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the status file tells the panel",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the status file agrees with the phone about who is first",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an agent left alone at its prompt is idle, not waiting",
+          "ok": true,
+          "detail": "idle"
+        },
+        {
+          "name": "transcript activity clears a stale waiting",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a permission request means waiting the moment it is asked",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the prompt says which tool wants what",
+          "ok": true,
+          "detail": "Bash needs your permission: rm -rf node_modules"
+        },
+        {
+          "name": "a finished tool batch clears a prompt answered at the keyboard",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a self-answering mode never says waiting",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an unfamiliar notification type changes nothing",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "subagents are counted out",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and counted back in",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the status line bridge is accepted",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "its numbers override the cache where they are fresher",
+          "ok": true,
+          "detail": "[{\"kind\":\"seven_day\",\"label\":\"week\",\"percent\":81,\"resetsAt\":1788536467000,\"severity\":\"warning\",\"active\":false,\"asOf\":1788450067125,\"stale\":false},{\"kind\":\"session\",\"label\":\"session\",\"percent\":41,\"resetsAt\":1788453667000,\"severity\":\"normal\",\"active\":true,\"asOf\":1788450067125,\"stale\":false}]"
+        },
+        {
+          "name": "and add the windows the cache never had",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "numbers straight off an API response are not stale",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a multiple-choice question arrives whole",
+          "ok": true,
+          "detail": "Which database?"
+        },
+        {
+          "name": "the options survive the trip, in order",
+          "ok": true,
+          "detail": "Postgres · SQLite"
+        },
+        {
+          "name": "an option keeps what it means",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a question on disk is a session waiting",
+          "ok": true,
+          "detail": "Which database?"
+        },
+        {
+          "name": "a hook carries a question the file does not have yet",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a reordered conversation is sent again whole",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the words the question was held back with come before it",
+          "ok": true,
+          "detail": "8 then 9"
+        },
+        {
+          "name": "the question is still one card",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the card keeps the number the phone knows it by",
+          "ok": true,
+          "detail": "9 vs 9"
+        },
+        {
+          "name": "the answer that released the turn comes after the card",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a session inside a pane is answerable",
+          "ok": true,
+          "detail": "tmux %0"
+        },
+        {
+          "name": "and it names the pane it found",
+          "ok": true,
+          "detail": "%0 vs %0"
+        },
+        {
+          "name": "agents.send reports the road it took",
+          "ok": true,
+          "detail": "{\"ok\":true,\"via\":\"tmux\",\"pane\":\"%0\",\"submitted\":true}"
+        },
+        {
+          "name": "the text reaches the far end of the pty",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "utf-8 survives send-keys -l",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a multi-line message stays one message",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "a digit answers a numbered prompt",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "the raw screen is what the terminal shows",
+          "ok": true,
+          "detail": "так, продовжуй"
+        },
+        {
+          "name": "an unknown key is refused rather than forwarded",
+          "ok": true,
+          "detail": "that key cannot be sent from a phone: C-z; rm -rf /"
+        },
+        {
+          "name": "an oversized message is refused",
+          "ok": true,
+          "detail": "that is too much text to type at once"
+        },
+        {
+          "name": "agents.answer names what it picked",
+          "ok": true,
+          "detail": "[\"SQLite\"]"
+        },
+        {
+          "name": "the choice reaches the pty as its digit",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an option that does not exist is refused",
+          "ok": true,
+          "detail": "there is no option 7"
+        },
+        {
+          "name": "a block that is not a question cannot be answered",
+          "ok": true,
+          "detail": "that block is not a question"
+        },
+        {
+          "name": "a single-choice list takes one answer",
+          "ok": true,
+          "detail": "that question takes one answer"
+        },
+        {
+          "name": "a multi-select names every label it picked",
+          "ok": true,
+          "detail": "[\"Green\",\"Blue\"]"
+        },
+        {
+          "name": "the boxes are ticked and the tabs walked to submit",
+          "ok": true,
+          "detail": "\"23\\u001b[C\\n\""
+        },
+        {
+          "name": "a picture for an agent answers with where it landed",
+          "ok": true,
+          "detail": "/tmp/omarchy-connect-agents-j8TLih/.cache/omarchy-connect/agent/a-shot.png"
+        },
+        {
+          "name": "it goes to the cache, not the share inbox",
+          "ok": true,
+          "detail": "/tmp/omarchy-connect-agents-j8TLih/.cache/omarchy-connect/agent/a-shot.png"
+        },
+        {
+          "name": "and its name is safe to type at a prompt",
+          "ok": true,
+          "detail": "a-shot.png"
+        },
+        {
+          "name": "the bytes are all there",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "the agent is told where the picture is",
+          "ok": true,
+          "detail": "a-shot.png"
+        },
+        {
+          "name": "and the question comes with it",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a path outside the drop directory is refused",
+          "ok": true,
+          "detail": "that file is not one this phone handed over"
+        },
+        {
+          "name": "a closed pane takes the composer with it",
+          "ok": true,
+          "detail": "undefined"
+        },
+        {
+          "name": "an agent whose process died stops being listed",
+          "ok": true,
+          "detail": "undefined"
+        },
+        {
+          "name": "a session inside a herdr pane is answerable",
+          "ok": true,
+          "detail": "herdr w1:p1"
+        },
+        {
+          "name": "and it names the pane herdr gave it",
+          "ok": true,
+          "detail": "w1:p1 vs w1:p1"
+        },
+        {
+          "name": "agents.send reports the herdr road",
+          "ok": true,
+          "detail": "{\"ok\":true,\"via\":\"herdr\",\"pane\":\"w1:p1\",\"submitted\":true}"
+        },
+        {
+          "name": "the text reaches the far end of a herdr pty",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "utf-8 survives the socket",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a multi-line message stays one message here too",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "a digit answers a numbered prompt",
+          "ok": true,
+          "detail": "\"так, продовжуй\\nline one\\nline two\\n2\\n\""
+        },
+        {
+          "name": "herdr hands over the raw screen as well",
+          "ok": true,
+          "detail": "2"
+        },
+        {
+          "name": "and no more of it than was asked for",
+          "ok": true,
+          "detail": "7"
+        },
+        {
+          "name": "a pane named in an inherited environment is read",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "but a process that is not in that pane is not offered it",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "while the agent that really is in it keeps it",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a herdr server that has gone takes the composer with it",
+          "ok": true,
+          "detail": "undefined"
+        },
+        {
+          "name": "a question reaches the phone before the transcript has it",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and it arrives whole, options and all",
+          "ok": true,
+          "detail": "Apple · Banana"
+        },
+        {
+          "name": "the session says what it is stuck on, not that it is stuck",
+          "ok": true,
+          "detail": "Which fruit should I pick?"
+        },
+        {
+          "name": "a hook-carried question validates like any other",
+          "ok": true,
+          "detail": "there is no option 7"
+        },
+        {
+          "name": "reopening finds the question again",
+          "ok": true,
+          "detail": "1 copies"
+        },
+        {
+          "name": "and opening a waiting session leaves it waiting",
+          "ok": true,
+          "detail": "waiting"
+        },
+        {
+          "name": "the transcript copy is dropped as the duplicate it is",
+          "ok": true,
+          "detail": "1"
+        },
+        {
+          "name": "and what was picked lands on the same card",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "an answered question stops being what the session waits on",
+          "ok": true,
+          "detail": "Which colours?"
+        },
+        {
+          "name": "and it is not put back on screen next time",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "a resume from the current cursor brings nothing back",
+          "ok": true,
+          "detail": "resumed=true blocks=0"
+        },
+        {
+          "name": "and the cursor has not moved",
+          "ok": true,
+          "detail": "14 vs 14"
+        },
+        {
+          "name": "a resume brings back only what arrived while the phone was away",
+          "ok": true,
+          "detail": "1 blocks"
+        },
+        {
+          "name": "every block it does bring is past the cursor",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the cursor moves on",
+          "ok": true,
+          "detail": "14 → 15"
+        },
+        {
+          "name": "an open without a cursor is the reload it always was",
+          "ok": true,
+          "detail": "15 blocks"
+        },
+        {
+          "name": "a cursor from the future is answered with the window rather than nothing",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "so is one from before the ring starts",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "SessionEnd ends it",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "nothing re-announces a finished session",
+          "ok": true,
+          "detail": "state"
+        },
+        {
+          "name": "a daemon that does not know the switch is not a refusal",
+          "ok": true,
+          "detail": "\u001b[2m18:41:20\u001b[0m \u001b[33m !!\u001b[0m the running daemon did not take it"
+        },
+        {
+          "name": "the config is written anyway",
+          "ok": true,
+          "detail": ""
+        },
+        {
+          "name": "and the CLI says the running daemon is stale",
+          "ok": true,
+          "detail": "\u001b[2m18:41:20\u001b[0m \u001b[33m !!\u001b[0m the running daemon did not take it"
+        }
+      ],
+      "durationMs": 18939,
+      "exitCode": 0
+    }
+  ]
+}

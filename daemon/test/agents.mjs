@@ -1368,6 +1368,47 @@ check(
   afterAnswer.blocks.filter((b) => b.kind === 'question' && b.summary.includes('fruit')).length === 1,
 )
 
+/* ── coming back after a reconnect ─────────────────────────────────────── */
+
+// The phone re-opens every session it has on screen as soon as the link is
+// back, because the desktop stopped tailing them when the socket died. Doing
+// that without a cursor means refetching the whole window over a link that has
+// only just returned, so `agents.open` takes one.
+const settled = await req('agents.open', { id: session.id, limit: 200, since: afterAnswer.cursor })
+check('a resume from the current cursor brings nothing back', settled.resumed === true && settled.blocks.length === 0,
+  `resumed=${settled.resumed} blocks=${settled.blocks.length}`)
+check('and the cursor has not moved', settled.cursor === afterAnswer.cursor, `${settled.cursor} vs ${afterAnswer.cursor}`)
+
+fs.appendFileSync(
+  transcript,
+  line({ type: 'user', timestamp: at, message: { role: 'user', content: 'and now write the tests' } }),
+)
+await settle(600)
+const resumed = await req('agents.open', { id: session.id, limit: 200, since: settled.cursor })
+check(
+  'a resume brings back only what arrived while the phone was away',
+  resumed.resumed === true && resumed.blocks.length === 1 && JSON.stringify(resumed.blocks).includes('write the tests'),
+  `${resumed.blocks.length} blocks`,
+)
+check('every block it does bring is past the cursor', resumed.blocks.every((b) => b.seq > settled.cursor))
+check('and the cursor moves on', resumed.cursor > settled.cursor, `${settled.cursor} → ${resumed.cursor}`)
+
+// The whole window, for comparison — and for the phone that has no cursor.
+const whole = await req('agents.open', { id: session.id, limit: 200 })
+check('an open without a cursor is the reload it always was',
+  whole.resumed === false && whole.blocks.length > resumed.blocks.length, `${whole.blocks.length} blocks`)
+check(
+  'a cursor from the future is answered with the window rather than nothing',
+  (await req('agents.open', { id: session.id, limit: 200, since: whole.cursor + 1000 })).resumed === false,
+)
+check(
+  'so is one from before the ring starts',
+  (await req('agents.open', { id: session.id, limit: 200, since: 0 })).blocks.length === whole.blocks.length,
+)
+// Five opens above the one the screen holds; the tail must not be left with a
+// reference count that keeps it open after the screen closes.
+for (let i = 0; i < 5; i += 1) await req('agents.close', { id: session.id })
+
 await req('agents.close', { id: session.id })
 const before = events.length
 await hook('SessionEnd')

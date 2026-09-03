@@ -680,8 +680,19 @@ see **Security model**, because writing to an agent is a shell.
 | Method | Params | Returns |
 | --- | --- | --- |
 | `agents.list` | — | `{ sessions, adapters, write, keys, spawn }` — every session this desktop can see. |
-| `agents.open` | `{ id, limit }` | `{ session, blocks, cursor, truncated }`, and starts streaming `agent` events for it. |
+| `agents.open` | `{ id, limit, since }` | `{ session, blocks, cursor, truncated, resumed }`, and starts streaming `agent` events for it. |
 | `agents.close` | `{ id }` | `{ ok }` — stops the desktop tailing a transcript nobody is reading. |
+
+`agents.open` is also how a phone comes back. The desktop stops tailing every
+open session when the event bus loses its last subscriber, so a dropped socket
+ends the stream; the app re-opens each session it has on screen as soon as it
+has said `hello` again. Passing `since` — the `cursor` from the last open or the
+last `blocks` event — makes that a resume: the reply carries `resumed: true` and
+only the blocks numbered after the cursor, which the app appends. A cursor the
+desktop cannot honour, because the session was reloaded and its numbering
+restarted or the ring has since dropped the blocks in between, is answered with
+the whole window and `resumed: false`, and the app replaces what it has.
+
 | `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
 | `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
