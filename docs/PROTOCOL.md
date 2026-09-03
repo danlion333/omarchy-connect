@@ -402,6 +402,17 @@ desktop raises a notification for every message, for a ringing phone (urgent —
 a late one is useless) and for a missed call, and keeps the last 50 in memory
 for the bar panel. It is not an archive: the phone already has one.
 
+`at` is the phone's own clock, and the desktop reads it: a report stamped more
+than two minutes ago is written into the history and the counters and
+published to the panel, but raises no notification, no ringtone and no
+Bluetooth page. Otherwise a handset coming back onto the network after an
+afternoon away announces every call and message of that afternoon at once, all
+of them already dealt with on the phone. The age of each report decides on its
+own, not the fact that it travelled in a batch — the same batch usually
+carries the message that landed a second before the phone dialled, and that
+one still interrupts. A report with no `at` is treated as happening now, which
+is what the roads with no clock of their own — hands-free, ANCS — send.
+
 The same call reaching the desktop down more than one road at once is stored
 once. A `call` entry counts as the same call when it shares a state with one
 recorded in the last six seconds and either shares its number or brings one it
