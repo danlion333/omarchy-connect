@@ -24,7 +24,8 @@
     "test:wol": "node test/wol.mjs",
     "test:overlay": "node test/overlay.mjs",
     "test:remote": "node test/remote.mjs",
-    "test:dictation": "node test/dictation.mjs"
+    "test:dictation": "node test/dictation.mjs",
+    "test:upload-names": "node test/upload-names.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
