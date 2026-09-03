@@ -74,12 +74,20 @@ check('the number and the message are one argument each',
 
 /* ── a daemon, a phone, and a real reply ──────────────────────────────── */
 
+// A stand-in for libnotify ahead of the daemon that will use it: a mirrored
+// message raises a desktop card, and a test run must not put one on the screen
+// of whoever is running the suite.
+const fakeBin = path.join(sandbox, 'bin')
+fs.mkdirSync(fakeBin, { recursive: true })
+fs.writeFileSync(path.join(fakeBin, 'notify-send'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
 const daemon = spawn(
   process.execPath,
   [path.join(root, 'bin', 'omarchy-connect.js'), 'start', '--port', String(PORT)],
   {
     env: {
       ...process.env,
+      PATH: `${fakeBin}:${process.env.PATH}`,
       HOME: sandbox,
       XDG_CONFIG_HOME: sandbox,
       OMARCHY_CONNECT_STATE: state,
@@ -139,11 +147,6 @@ const request = (method, params) => {
   return until((m) => m.t === 'res' && m.id === id).then(([res]) => res)
 }
 
-// A stand-in for libnotify: a mirrored message raises a desktop card, and a
-// test run should not put one on the tester's screen.
-fs.mkdirSync(path.join(sandbox, 'bin'), { recursive: true })
-fs.writeFileSync(path.join(sandbox, 'bin', 'notify-send'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
-
 const stored = await request('phone.report', { events: [missed, appNote, sms] })
 check('the phone mirrored a message, a notification and a missed call', stored?.data?.stored === 3,
   JSON.stringify(stored?.data))
@@ -201,7 +204,7 @@ const cli = (argv) =>
         XDG_CONFIG_HOME: sandbox,
         OMARCHY_CONNECT_STATE: state,
         OMARCHY_CONNECT_LOG: 'error',
-        PATH: `${sandbox}/bin:${process.env.PATH}`,
+        PATH: `${fakeBin}:${process.env.PATH}`,
       },
     })
     let out = ''

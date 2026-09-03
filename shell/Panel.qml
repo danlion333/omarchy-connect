@@ -43,14 +43,20 @@ Panel {
   // draft that vanished because the battery level ticked over would be a
   // panel nobody types into twice. `replyFocused` is what tells the key
   // catcher to keep its hands off the letters while somebody is using them.
+  // The row the field is open on, keyed by the entry rather than by the
+  // number: two messages from the same person are two rows, and keying on the
+  // number would open a field on both of them and point them at one draft.
+  property string replyId: ""
   property string replyTo: ""
   property string replyDraft: ""
   property bool replyFocused: false
+  property int messageIndex: 0
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
+  readonly property color accent: Color.accent
 
   // Every glyph on this panel is drawn into a cell of this width rather than
   // taking whatever width its own outline happens to want. Nerd Fonts draws a
@@ -211,8 +217,27 @@ Panel {
   // Everything the keyboard can land on, in the order it is drawn. The two
   // expanders are always here; what they hold only joins the list once they
   // are open, which is the same rule the eye follows.
+  // The rows a reply field can open on, in the order the list draws them.
+  // Everything the keyboard does with this section is an index into this,
+  // rather than into the list itself, so `l` never lands the cursor on a
+  // notification that has nothing to answer.
+  readonly property var answerable: bridge.phoneRecent.slice(0, 4).filter(function (entry) {
+    return Model.phoneReplyTo(entry) !== ""
+  })
+
+  // The row the keyboard cursor is on, named the same way the field names
+  // the row it is open on. Comparing entries themselves would compare two
+  // wrappers around one object and quietly never match.
+  readonly property string cursorEntryId: {
+    var entry = answerable[messageIndex]
+    if (!entry) return ""
+    return String(entry.id || Model.phoneReplyTo(entry))
+  }
+
   readonly property var sections: {
-    var list = ["header", "actions", "details", "settings"]
+    var list = ["header", "actions"]
+    if (answerable.length > 0) list.push("messages")
+    list.push("details", "settings")
     if (settingsOpen) {
       if (bridge.agentsAvailable) list.push("agents")
       if (bridge.remoteAvailable) list.push("remote")
@@ -224,6 +249,8 @@ Panel {
   function ensureCursor() {
     if (actionIndex >= actions.length) actionIndex = Math.max(0, actions.length - 1)
     if (actionIndex < 0) actionIndex = 0
+    if (messageIndex >= answerable.length) messageIndex = Math.max(0, answerable.length - 1)
+    if (messageIndex < 0) messageIndex = 0
     if (sections.indexOf(focusSection) < 0) focusSection = "actions"
   }
 
@@ -234,6 +261,8 @@ Panel {
     if (dx !== 0) {
       if (focusSection === "actions")
         actionIndex = Math.max(0, Math.min(actions.length - 1, actionIndex + dx))
+      else if (focusSection === "messages")
+        messageIndex = Math.max(0, Math.min(answerable.length - 1, messageIndex + dx))
       return
     }
     if (dy === 0) return
@@ -242,13 +271,17 @@ Panel {
     if (index < 0 || index >= sections.length) return
     focusSection = sections[index]
     if (focusSection === "header" && panelFlick) panelFlick.contentY = 0
-    else if (focusSection !== "actions") scrollToBottom()
+    else if (focusSection !== "actions" && focusSection !== "messages") scrollToBottom()
   }
 
   function activateCursor() {
     ensureCursor()
     if (focusSection === "header") bridge.toggleDaemon()
     else if (focusSection === "actions") runAction(actions[actionIndex].key)
+    // Enter on a message opens the field under it rather than sending
+    // anything; the second Enter, with the field holding the keyboard, is the
+    // one that sends.
+    else if (focusSection === "messages") toggleReply(answerable[messageIndex])
     else if (focusSection === "details") toggleDetails()
     else if (focusSection === "settings") toggleSettings()
     // Enter on the agent switch opens the question rather than answering it,
@@ -297,14 +330,19 @@ Panel {
    * from one conversation into the next is how a message ends up with the
    * wrong person.
    */
-  function toggleReply(number) {
+  function toggleReply(entry) {
+    var number = Model.phoneReplyTo(entry)
     if (number === "") return
-    if (replyTo === number) { cancelReply(); return }
+    var id = String((entry && entry.id) || number)
+    if (replyId === id) { cancelReply(); return }
+    replyId = id
     replyTo = number
     replyDraft = ""
   }
 
   function cancelReply() {
+    replyId = ""
+    replyId = ""
     replyTo = ""
     replyDraft = ""
     replyFocused = false
@@ -319,7 +357,8 @@ Panel {
    * actually did shows up where every other action's outcome does — the
    * status line under the header, and the error line when it failed.
    */
-  function sendReply(number) {
+  function sendReply() {
+    var number = replyTo
     var body = replyDraft
     cancelReply()
     bridge.sendSms(number, body)
@@ -923,7 +962,10 @@ Panel {
                   required property var modelData
                   readonly property bool missed: modelData.missed === true
                   readonly property string replyTo: Model.phoneReplyTo(modelData)
-                  readonly property bool replying: replyTo !== "" && root.replyTo === replyTo
+                  readonly property string entryId: String((modelData && modelData.id) || replyTo)
+                  readonly property bool replying: replyTo !== "" && root.replyId === entryId
+                  readonly property bool cursored: root.cursorActive && root.focusSection === "messages"
+                    && root.cursorEntryId === entryId
 
                   width: parent.width
                   spacing: Style.space(4)
@@ -934,6 +976,22 @@ Panel {
                   Item {
                     width: parent.width
                     height: phoneRow.implicitHeight
+
+                    // The keyboard cursor, on the one list that has rows worth
+                    // landing on. It is the same fill every other control on
+                    // this panel wears under the cursor, drawn a little wider
+                    // than the text so the row reads as picked rather than as
+                    // highlighted.
+                    Rectangle {
+                      anchors.fill: parent
+                      anchors.leftMargin: -Style.space(4)
+                      anchors.rightMargin: -Style.space(4)
+                      anchors.topMargin: -Style.space(2)
+                      anchors.bottomMargin: -Style.space(2)
+                      visible: phoneEntry.cursored
+                      color: Style.hoverFillFor(root.foreground, root.accent)
+                      radius: Style.cornerRadius
+                    }
 
                     ListRow {
                       id: phoneRow
@@ -949,7 +1007,7 @@ Panel {
                       enabled: phoneEntry.replyTo !== ""
                       hoverEnabled: enabled
                       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                      onClicked: root.toggleReply(phoneEntry.replyTo)
+                      onClicked: root.toggleReply(phoneEntry.modelData)
                     }
                   }
 
@@ -975,7 +1033,16 @@ Panel {
                     }
                     onTextChanged: if (phoneEntry.replying) root.replyDraft = text
                     onActiveFocusChanged: root.replyFocused = activeFocus
-                    onAccepted: root.sendReply(phoneEntry.replyTo)
+                    // Enter is handled here rather than through `accepted`
+                    // because a TextField does not swallow the key: an
+                    // unaccepted Return carries on up to the panel's key
+                    // catcher, which — with the field now closed and no
+                    // longer holding the keyboard — reads it as Enter on the
+                    // row and opens the field straight back up. Taking the
+                    // key here ends it here, which is also how Esc has always
+                    // behaved.
+                    Keys.onReturnPressed: root.sendReply()
+                    Keys.onEnterPressed: root.sendReply()
                     Keys.onEscapePressed: root.cancelReply()
                   }
                 }

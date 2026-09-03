@@ -87,8 +87,9 @@ it is drawn.
   notifications over low energy. Hidden entirely until something arrives, which
   in Expo Go with no Bluetooth paired is never.
 
-  A message can be answered where it landed: click the row and a field opens
-  under it, Enter sends, Esc puts it away. It is the same `omarchy-connect sms`
+  A message can be answered where it landed: click the row — or walk to it
+  with the keyboard and press Enter — and a field opens under it, Enter sends,
+  Esc puts it away. It is the same `omarchy-connect sms`
   the terminal has, run the same way every other action on this panel is run,
   so the phone confirming the send is what clears the line and a refusal
   arrives as a sentence rather than as silence. Only a row with somebody to
@@ -239,6 +240,11 @@ panel is harmless. `b` raises the hands-free link to the matched handset, or
 drops it if it is already up — and with no handset bonded at all it makes the
 bond instead, which is the state the row used to have nothing but a sentence
 for. It does nothing while a page or a pairing window is already under way.
+
+`j` walks into **From the phone** as well, but only past the rows that have
+somebody to answer — `h` and `l` step between those, Enter opens the field on
+the one under the cursor. A list of app notifications and missed calls has
+nothing to land on and the cursor skips the section entirely.
 
 A reply field open on a message owns the keyboard for as long as it is
 focused: every letter goes into the message, Enter sends it and Esc shuts it
