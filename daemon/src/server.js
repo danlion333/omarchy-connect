@@ -299,7 +299,32 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     return findDeviceByToken(typeof token === 'string' ? token : null)
   }
 
+  /**
+   * Every request goes through here, and nothing that happens inside is
+   * allowed to reach the process.
+   *
+   * `createServer`'s handler is called from the event loop with nobody above
+   * it, so a synchronous throw in any route — a bad percent-escape in a
+   * filename, a header that will not parse into a URL — is an uncaught
+   * exception, and an uncaught exception used to be the end of the daemon.
+   * One phone with an awkward filename would take down every other device's
+   * socket with it and leave systemd to put the whole thing back three
+   * seconds later. A request that goes wrong is worth a 500 and a line in the
+   * log; it is not worth the link.
+   */
   function handleHttp(req, res) {
+    try {
+      routeHttp(req, res)
+    } catch (err) {
+      log.error(`${req.method} ${req.url} threw:`, err)
+      // The route may already have started answering — writing a second set
+      // of headers would throw again, this time from inside the catch.
+      if (!res.headersSent) json(res, 500, { error: 'internal error' })
+      else res.destroy()
+    }
+  }
+
+  function routeHttp(req, res) {
     const url = new URL(req.url, `${scheme}://${req.headers.host || 'localhost'}`)
 
     // Unauthenticated: this is how the phone finds an Omarchy box on the subnet.
@@ -659,7 +684,17 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     const declared = Number(req.headers['content-length'] || 0)
     if (declared > cap) return json(res, 413, { error: 'file too large' })
 
-    const name = decodeURIComponent(String(rawName))
+    // The name arrives percent-encoded because a header cannot carry a
+    // newline or a Cyrillic letter, but `decodeURIComponent` throws on plenty
+    // of names a phone will really send — `100%.txt`, or anything the encoder
+    // truncated mid-escape. Refusing the one request is the whole cost;
+    // before this it cost the process.
+    let name
+    try {
+      name = decodeURIComponent(String(rawName))
+    } catch {
+      return json(res, 400, { error: 'filename is not valid percent-encoding' })
+    }
     const target = forAgent ? agentDrops.pathFor(name) : inboxPathFor(name)
     const out = fs.createWriteStream(target)
     let written = 0

@@ -1287,6 +1287,16 @@ The body streams straight to `~/Downloads/Omarchy Connect/`, never overwriting
 (`report.pdf` becomes `report (2).pdf`). Capped at 512 MB; a partial upload is
 deleted. The desktop raises a notification on arrival.
 
+The filename is percent-encoded, because a header cannot carry a newline or a
+Cyrillic letter. A value that is not valid percent-encoding — `100%.txt`, or an
+escape the encoder cut in half — is answered with `400
+{ "error": "filename is not valid percent-encoding" }` rather than guessed at.
+What survives decoding keeps its spaces and its alphabet, and loses only what
+is not filename material: separators, so a name cannot climb out of the inbox,
+and NUL and the other control characters. (An agent drop is stricter still —
+see **Pictures** under `agents` — because that path's name is going to be
+typed at a prompt as a bare word.)
+
 ## Security model
 
 - The control channel — every command, every event, the clipboard, notification

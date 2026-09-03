@@ -18,6 +18,7 @@ import * as panel from '../src/lib/panel.js'
 import * as tls from '../src/lib/tls.js'
 import { run, has, spawn, spawnDetached } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
+import { installCrashGuard } from '../src/lib/guard.js'
 import * as sys from '../src/lib/sys.js'
 import * as overlay from '../src/lib/overlay.js'
 import { INBOX } from '../src/plugins/share.js'
@@ -155,6 +156,10 @@ function daemonRequest(pathname, { method = 'GET', body = null, port = null, tim
 /* ── commands ────────────────────────────────────────────────────────── */
 
 async function cmdStart(args) {
+  // Only `start` arms it. A one-shot command that throws should exit with a
+  // stack, the way any CLI does; it is the daemon that has other people's
+  // sockets to lose.
+  installCrashGuard({ label: 'daemon' })
   const cfg = loadConfig()
   const port = Number(args.port) || cfg.port
   const server = createServer({ port, version: pkg.version })

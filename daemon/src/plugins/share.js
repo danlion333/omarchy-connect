@@ -36,9 +36,28 @@ export function resolveOffer(token) {
   return offers.get(token) || null
 }
 
+/**
+ * The inbox keeps the name the phone chose, minus the parts of it that are
+ * not really a name.
+ *
+ * Unlike an agent drop — which is going to be typed at a prompt as a bare
+ * word, and so gets flattened to `[A-Za-z0-9._-]` — a received file is for
+ * the person, and `звіт за березень.pdf` should still be called that when
+ * they open the inbox. What cannot survive is anything that is not filename
+ * material at all: a NUL, which `fs` refuses with a synchronous throw, and
+ * the other control characters, which arrive invisible and make a file nobody
+ * can name in a shell. Separators go too, so a name can never climb out of
+ * the inbox.
+ */
+function safeInboxName(raw) {
+  // eslint-disable-next-line no-control-regex
+  const stripped = String(raw ?? '').replace(/[\u0000-\u001f\u007f]/g, '')
+  return path.basename(stripped).replace(/[/\\]/g, '_').replace(/^\.+$/, '') || 'file'
+}
+
 /** Never overwrite: `report.pdf` becomes `report (2).pdf`. */
 function uniquePath(dir, name) {
-  const safe = path.basename(name).replace(/[/\\]/g, '_') || 'file'
+  const safe = safeInboxName(name)
   const ext = path.extname(safe)
   const stem = safe.slice(0, safe.length - ext.length)
   let candidate = path.join(dir, safe)
