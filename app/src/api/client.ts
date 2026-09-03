@@ -379,6 +379,9 @@ const PROBE_STAGGER_MS = 250
  */
 const UPGRADE_RETRIES = [2_000, 5_000, 15_000, 30_000]
 
+/** How an address is named where one is remembered rather than dialled. */
+const addressKey = (host: string, port: number) => `${host}:${port}`
+
 /**
  * One WebSocket to one desktop, with request/response correlation, an event
  * bus, and reconnection. The socket is the only thing that talks to the
@@ -409,6 +412,35 @@ export class ConnectClient {
    * construction.
    */
   endpoints: Candidate[] = []
+
+  /**
+   * The last address that carried an authenticated connection.
+   *
+   * Everything else this client dials is a *candidate*: an address a probe
+   * vouched for, and a probe is one plaintext `/api/info` response in which
+   * the host names its own key. Any HTTP server on the LAN can echo the key
+   * this phone pinned, so the answer is a reason to try an address, never
+   * evidence about who is behind it — only a handshake against the pinned key
+   * is that. Keeping the last proven address means a candidate that turns out
+   * to be somebody else costs one failed dial and nothing more: there is
+   * always a known-good address to go back to.
+   *
+   * Seeded with the address this client was built from, which is the one the
+   * stored pairing names, which is written only after a `hello.ok`.
+   */
+  private proven: { host: string; port: number }
+
+  /**
+   * Addresses that answered a probe with our key and then failed the
+   * handshake — which is to say, proved they are not our desktop.
+   *
+   * Without this the impostor is still a denial of service by repetition: the
+   * probes are re-run at every dial and under every live socket, the same
+   * rogue answers the same way, and the phone spends its life following it
+   * and coming back. Held in memory only, so a desktop that really did move
+   * to that address is one app restart from being followed again.
+   */
+  private rejected = new Set<string>()
 
   private secure: SecureChannel | null = null
   private handshake: ReturnType<typeof startHandshake> | null = null
@@ -501,6 +533,7 @@ export class ConnectClient {
     this.askNetwork = opts.network ?? null
     this.endpoints = opts.endpoints ?? []
     this.probe = opts.probe ?? null
+    this.proven = { host: opts.host, port: opts.port }
   }
 
   /**
@@ -665,8 +698,15 @@ export class ConnectClient {
         return
       }
       // 4003/4005 mean the desktop rejected our credentials or our key —
-      // retrying cannot help, only pairing again can.
+      // retrying cannot help, only pairing again can. That reading is only
+      // true of the address we know is the desktop's, though. On a candidate
+      // — an address a probe suggested, and a probe is a stranger's word for
+      // it — the same close means the opposite: not "the desktop disowned
+      // this phone" but "this was never the desktop". Reading it as the first
+      // is what let any host on the LAN stop the phone reconnecting for good,
+      // by echoing the pinned key once and then failing the handshake.
       if (event.code === 4003 || event.code === 4005) {
+        if (this.publicKey && !this.onProvenAddress()) return this.fallBack()
         this.setStatus('error', this.lastError || 'pairing rejected')
         this.emit('unauthorized', this.lastError)
         return
@@ -693,7 +733,47 @@ export class ConnectClient {
     this.connect(force)
   }
 
-  /** Follows the desktop to a new address, keeping the pinned key. */
+  /** Whether the socket that just died was on the last known-good address. */
+  private onProvenAddress() {
+    return this.host === this.proven.host && this.port === this.proven.port
+  }
+
+  /**
+   * Gives up on a candidate and goes back to the address we know.
+   *
+   * Not a fresh start: the ladder is not reset, because the phone has learnt
+   * nothing good — it followed a bad address and came back, and the desktop
+   * it actually wants has been silent for however long it has been silent.
+   */
+  private fallBack() {
+    this.rejected.add(addressKey(this.host, this.port))
+    this.lastError = null
+    this.host = this.proven.host
+    this.port = this.proven.port
+    // Every probe still in flight was asked on behalf of a decision that has
+    // just been reversed.
+    this.raceToken += 1
+    this.upgradeToken += 1
+    this.scheduleReconnect()
+  }
+
+  /**
+   * Whether this address has already claimed our key and failed to prove it.
+   *
+   * Public because `api/link`'s subnet sweep follows addresses through the
+   * same door and has to skip the same liars.
+   */
+  suspect(host: string, port: number) {
+    return this.rejected.has(addressKey(host, port))
+  }
+
+  /**
+   * Follows the desktop to a new address, keeping the pinned key.
+   *
+   * Every caller has one probe response behind it, so this is always a move
+   * onto an unproven address — `proven` deliberately stays where it is until
+   * a `hello.ok` arrives from the new one.
+   */
   moveTo(host: string, port: number) {
     if (host === this.host && port === this.port) return
     this.host = host
@@ -754,8 +834,16 @@ export class ConnectClient {
    * the one pinned at pairing, and a certificate pin we are holding must not
    * have changed under us.
    */
-  private isOurDesktop(found: { publicKey: string | null; certPin: string | null } | null): boolean {
+  private isOurDesktop(
+    at: { host: string; port: number },
+    found: { publicKey: string | null; certPin: string | null } | null,
+  ): boolean {
     if (!found || found.publicKey !== this.publicKey) return false
+    // Both of those were read out of the candidate's own answer about itself,
+    // so they say nothing an impostor could not also say. What they cannot
+    // fake is a handshake, and an address that has already failed one is not
+    // asked again.
+    if (this.suspect(at.host, at.port)) return false
     return !(this.certPin && found.certPin && found.certPin !== this.certPin)
   }
 
@@ -799,7 +887,7 @@ export class ConnectClient {
         if (token !== this.upgradeToken || this.ws?.readyState !== WebSocket.OPEN) return
         const found = await probe(candidate.host, candidate.port).catch(() => null)
         if (token !== this.upgradeToken || this.ws?.readyState !== WebSocket.OPEN) return
-        if (!this.isOurDesktop(found)) continue
+        if (!this.isOurDesktop(candidate, found)) continue
         this.moveTo(candidate.host, candidate.port)
         return
       }
@@ -861,7 +949,7 @@ export class ConnectClient {
         const found = await probe(candidate.host, candidate.port).catch(() => null)
         if (token !== this.raceToken) return
         // The same checks `link.relocate` makes before following an address.
-        if (!this.isOurDesktop(found)) return
+        if (!this.isOurDesktop(candidate, found)) return
         if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
         this.moveTo(candidate.host, candidate.port)
       }, PROBE_STAGGER_MS * (index + 1))
@@ -982,6 +1070,9 @@ export class ConnectClient {
       case 'hello.ok': {
         this.attempt = 0
         this.hello = msg as Hello
+        // Authenticated, which is the one event that turns a candidate
+        // address into the address to fall back to.
+        this.proven = { host: this.host, port: this.port }
         // This address just carried a working, authenticated connection,
         // which is the only evidence worth ordering candidates by.
         const now = Date.now()

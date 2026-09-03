@@ -398,18 +398,21 @@ class Link {
         (client.networkFacts === null || client.networkFacts.lan
           ? await findDesktopByKey(client.publicKey, client.port)
           : null)
-      // The identity key already proves this is the right machine, but if it
-      // has TLS on it must also still be the certificate we pinned — a desktop
-      // that answers with a different one is not one we follow silently.
+      // The certificate pin is compared for the same reason it is compared
+      // anywhere else, but neither it nor the identity key proves anything
+      // here: both were read out of the candidate's own answer about itself,
+      // and any HTTP server on this subnet can echo them back. A probe says
+      // where to try next, no more.
       if (found && client.certPin && found.certPin && found.certPin !== client.certPin) return
+      if (found && client.suspect(found.host, found.port)) return
       if (found && (found.host !== client.host || found.port !== client.port)) {
+        // Followed, but not written down. The address on the stored pairing is
+        // documented as the last one that actually worked, and until now this
+        // wrote a probe result there — so a host that echoed the pinned key
+        // once left the phone holding somebody else's address on disk. The
+        // record is now moved by `rememberAddress` alone, off the back of a
+        // `hello.ok`, which is the only moment anything has been proved.
         client.moveTo(found.host, found.port)
-        const previous = this.state.desktop
-        if (previous) {
-          const next = { ...previous, host: found.host, port: found.port }
-          await saveDesktop(next)
-          this.patch({ desktop: next })
-        }
       }
     } finally {
       this.relocatingNow = false
@@ -432,6 +435,9 @@ class Link {
       const found = await probeHost(candidate.host, candidate.port).catch(() => null)
       if (!found || found.publicKey !== client.publicKey) continue
       if (client.certPin && found.certPin && found.certPin !== client.certPin) continue
+      // An address that has already claimed this key and then failed the
+      // handshake is not asked a second time.
+      if (client.suspect(candidate.host, candidate.port)) continue
       return found
     }
     return null
