@@ -1791,10 +1791,15 @@ async function cmdAgent(args) {
     ]),
   )
 
-  // What the plan has left, read from the CLI's own cache. The phone draws the
-  // same two rows in its status line, and a desktop that says something
-  // different from the phone in your hand is a desktop nobody trusts.
-  const usage = agents.limits || agentLimits.read()
+  // What the plan has left. The phone draws the same rows in its status line,
+  // and a desktop that says something different from the phone in your hand is
+  // a desktop nobody trusts — so when the daemon has an answer it is the one
+  // printed, and only a terminal that could not reach it asks on its own.
+  let usage = agents.limits
+  if (!usage) {
+    await agentLimits.probe({ force: true })
+    usage = agentLimits.read()
+  }
   if (usage?.limits?.length) {
     console.log(
       card(

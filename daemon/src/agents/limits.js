@@ -3,27 +3,53 @@ import os from 'node:os'
 import path from 'node:path'
 
 /**
- * How much of the plan is left, read from the CLI's own cache.
+ * How much of the plan is left, asked of the account service directly.
  *
- * Claude Code asks the account service what a session has used and writes the
- * answer into `~/.claude.json` under `cachedUsageUtilization`. That file is
- * the only place on this desktop the number exists, and reading it is the
- * whole of this module: nothing here talks to a network, holds a credential,
- * or asks a question the CLI has not already asked on its own behalf.
+ * A limit is the one number that changes what you do next. An agent that is
+ * going to stop in twenty minutes because the five-hour window ran out is
+ * worth knowing about *before* you send it off on something long, and from a
+ * phone that is the difference between waiting for a result and finding out
+ * an hour later that nothing happened. Which is exactly the number this
+ * module was worst at: it read `cachedUsageUtilization` out of `~/.claude.json`,
+ * a cache the CLI rewrites when it feels like it, so a per-model weekly row
+ * arrived days old and had to admit it. A figure that has to apologise for
+ * its age is not the figure anyone opened the screen for.
  *
- * Which matters because a limit is the one number that changes what you do
- * next. An agent that is going to stop in twenty minutes because the five-hour
- * window ran out is worth knowing about *before* you send it off on something
- * long, and from a phone that is the difference between waiting for a result
- * and finding out an hour later that nothing happened.
+ * So it asks. `api/oauth/usage` answers every window at once — the five-hour
+ * session, the seven-day account window, and the scoped rows that are the
+ * only place a per-model allowance appears — and it answers them as of now.
+ * The credential is the one Claude Code already keeps in
+ * `~/.claude/.credentials.json`, read at the moment of the request and never
+ * held; the token stays on this desktop, and only the percentages travel.
+ * Nothing is asked that the CLI does not ask on its own behalf every session.
  *
- * The cache is refreshed by the CLI, not by us, so a desktop whose CLI has not
- * run today reports numbers with a date on them. The freshness travels with
- * the answer rather than being hidden — a stale limit presented as current is
- * worse than one that says how old it is.
+ * The old readings stay, demoted to what they always should have been. The
+ * config cache still answers when the network does not, and the status line
+ * still overlays the two unscoped windows between probes for free. Freshness
+ * therefore travels per row, as before — but on a desktop that is online, the
+ * rows are simply current, and nothing has an age to print.
  */
 
 const FILE = path.join(os.homedir(), '.claude.json')
+
+/** Where the account service answers, and what it wants to be asked with. */
+const ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
+const BETA = 'oauth-2025-04-20'
+const PROBE_TIMEOUT_MS = 10_000
+
+/**
+ * The floor between probes. A phone pulling to refresh twice must not be two
+ * requests, and the periodic probe is far slower than this anyway — this is
+ * here to absorb a flurry, not to set the pace.
+ */
+const PROBE_MIN_MS = 15_000
+
+/** Claude Code's own sign-in, wherever it has been told to keep it. */
+const credentialsFile = () =>
+  path.join(
+    process.env.CLAUDE_CONFIG_DIR ? path.resolve(process.env.CLAUDE_CONFIG_DIR) : path.join(os.homedir(), '.claude'),
+    '.credentials.json',
+  )
 
 /** Past this the number is history rather than status. */
 const STALE_MS = 6 * 60 * 60 * 1000
@@ -234,13 +260,136 @@ function finish(value) {
 }
 
 /**
+ * What the account service last said, when it has been asked and answered.
+ *
+ * Held in memory rather than written anywhere: it is a fact about right now,
+ * it costs one request to have again, and a copy on disk is one more place a
+ * percentage can be read back long after it stopped being true.
+ */
+let live = null
+
+/** The last answer's shape, for deciding whether this one is news. */
+let livePrint = ''
+
+/** Why there is no live answer, in words a phone can show. */
+let probeStatus = ''
+
+/** One request at a time, and not more often than the floor above. */
+let probing = null
+let probedAt = 0
+
+/**
+ * The sign-in Claude Code keeps, read fresh each time.
+ *
+ * Only the CLI can mint one of these, and it rewrites the file when it runs,
+ * so a desktop left alone long enough finds the saved token lapsed. Holding a
+ * copy would just mean asking with a token we already knew was dead.
+ */
+function credentials() {
+  let login
+  try {
+    login = JSON.parse(fs.readFileSync(credentialsFile(), 'utf8'))?.claudeAiOauth
+  } catch {
+    return null
+  }
+  if (!login || typeof login !== 'object') return null
+  const token = String(login.accessToken || '')
+  if (!token) return null
+  return { token, expiresAt: Number(login.expiresAt) || 0 }
+}
+
+/**
+ * Ask, and keep the answer.
+ *
+ * Resolves to whether the numbers moved, so a caller can decide whether the
+ * phone is worth waking. A failure is never destructive: the last live answer
+ * stands and goes on ageing, the config cache is still under it, and the row
+ * that would have been refreshed simply says how old it is — which is the
+ * behaviour this module had for everything, and now has only when offline.
+ */
+export function probe({ force = false } = {}) {
+  if (probing) return probing
+  if (!force && Date.now() - probedAt < PROBE_MIN_MS) return Promise.resolve(false)
+  probing = ask().finally(() => {
+    probing = null
+  })
+  return probing
+}
+
+async function ask() {
+  const login = credentials()
+  if (!login) {
+    probeStatus = 'waiting for sign-in'
+    return false
+  }
+  if (login.expiresAt > 0 && login.expiresAt <= Date.now()) {
+    probeStatus = 'sign-in expired'
+    return false
+  }
+
+  probedAt = Date.now()
+  let payload
+  try {
+    const response = await fetch(ENDPOINT, {
+      headers: {
+        authorization: `Bearer ${login.token}`,
+        'anthropic-beta': BETA,
+        accept: 'application/json',
+      },
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    })
+    if (!response.ok) {
+      // A status is a server that answered, which is a reason to wait rather
+      // than to retry: 429 in particular is the service asking us to stop.
+      probeStatus = response.status === 429 ? 'rate limited' : `service said ${response.status}`
+      return false
+    }
+    payload = await response.json()
+  } catch {
+    probeStatus = 'offline'
+    return false
+  }
+
+  const at = Date.now()
+  const rows = rowsFrom(payload, at)
+  if (!rows.length) {
+    probeStatus = 'no limits reported'
+    return false
+  }
+
+  const print = JSON.stringify(rows.map((row) => [row.kind, row.label, row.percent]))
+  const moved = livePrint !== print
+  livePrint = print
+  live = { fetchedAt: at, limits: rows, spend: spendFrom(payload) }
+  probeStatus = ''
+  return moved
+}
+
+/**
+ * Whichever reading is newest.
+ *
+ * Normally that is the probe, by minutes to days. It is the config cache on a
+ * desktop that cannot reach the service, or has not been asked yet — and the
+ * comparison rather than a preference is what makes a probe that has been
+ * failing since breakfast lose to a cache the CLI rewrote since.
+ */
+function newest() {
+  const cached = readCache()
+  if (!live) return cached
+  if (!cached) return live
+  return live.fetchedAt >= cached.fetchedAt ? live : cached
+}
+
+/**
  * The limits as they stand, or `null` when this desktop has never been told.
  *
- * Cached against the file's mtime: this is asked on every session list, and
- * the file behind it is rewritten by the CLI a few times an hour.
+ * Synchronous, because it is asked on every session list and must not turn one
+ * into a request. The probe runs on its own timer and leaves its answer here.
  */
 export function read() {
-  return finish(merged(readCache()))
+  const value = finish(merged(newest()))
+  if (!value) return null
+  return probeStatus ? { ...value, probeStatus } : value
 }
 
 function readCache() {

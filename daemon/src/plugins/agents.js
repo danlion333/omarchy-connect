@@ -69,6 +69,16 @@ const POLL_MS = 2000
  * being read does none of them.
  */
 const DRAFT_MS = 400
+/**
+ * How often the account service is asked what the plan has left.
+ *
+ * The percentages move with every turn of every session, and the two unscoped
+ * windows already ride in free on the status line between probes — so this
+ * only has to be often enough that a per-model row is never visibly behind.
+ * Five minutes is well inside that, and is one request from a desktop with a
+ * phone actually watching; a desktop with nobody subscribed asks nothing.
+ */
+const LIMITS_MS = 5 * 60 * 1000
 /** Rows of pane to read for a draft. A paragraph in flight is never taller. */
 const DRAFT_LINES = 40
 /** A scan-discovered session whose transcript moved this recently is working. */
@@ -116,6 +126,7 @@ let bus = null
 let scanTimer = null
 let pollTimer = null
 let draftTimer = null
+let limitsTimer = null
 
 const enabled = () => loadConfig().agents?.enabled === true
 const spawnAllowed = () => loadConfig().agents?.spawn === true
@@ -1286,8 +1297,20 @@ function watch() {
   }, DRAFT_MS)
   draftTimer.unref?.()
 
+  // Its own timer for the same reason the draft has one: it is watching
+  // something else entirely, at a pace measured in minutes rather than
+  // frames, and it leaves the wire alone when nobody is listening.
+  limitsTimer = setInterval(() => {
+    if (!bus?.hasSubscribers('agent')) return
+    void limits.probe().then(announceLimits)
+  }, LIMITS_MS)
+  limitsTimer.unref?.()
+
   sweep()
   void resurvey()
+  // Asked once on the way up, so the first phone to look sees today's numbers
+  // rather than whatever the config cache was left holding.
+  void limits.probe({ force: true }).then(announceLimits)
   log.info("agent control is on — phones can read and answer this desktop's coding agents")
 }
 
@@ -1296,9 +1319,11 @@ function unwatch() {
   clearInterval(scanTimer)
   clearInterval(pollTimer)
   clearInterval(draftTimer)
+  clearInterval(limitsTimer)
   scanTimer = null
   pollTimer = null
   draftTimer = null
+  limitsTimer = null
   for (const entry of sessions.values()) closeTail(entry)
   sessions.clear()
   recencies.clear()
@@ -1597,7 +1622,10 @@ export default {
       sweep()
       // Awaited here, unlike on the timer: a pull-to-refresh that came back
       // with a stale composer would be the one moment the answer mattered.
-      await resurvey()
+      // The limits ride along for the same reason, and in parallel — they are
+      // a network round trip and the survey is a local one, so serialising
+      // them would spend the slower of the two twice.
+      await Promise.all([resurvey(), limits.probe()])
       // A blocked agent is the reason anyone opened this screen.
       const list = [...sessions.values()].filter((e) => e.state !== 'gone').sort(byUrgency)
       return { sessions: list.map(publicSession), ...this['agents.capabilities']() }
@@ -1816,13 +1844,17 @@ export default {
     /**
      * How much of the plan is left, and when the window turns over.
      *
-     * Read from the cache the CLI keeps for its own status line, so a desktop
-     * whose CLI has not run today answers with a date attached rather than
-     * with a guess. `null` is a real answer: an account on no plan at all, or
-     * a desktop that has never been told.
+     * Asked of the account service, because somebody asking this question is
+     * asking about now — this is the phone's pull-to-refresh, and answering it
+     * out of a cache is what the screen used to do wrong. `force` skips the
+     * floor between probes for exactly that reason: an interval is there to
+     * absorb a flurry, not to overrule a person who reached for the answer.
+     * `null` is still a real answer: an account on no plan at all, or a
+     * desktop that has never been told and cannot reach anyone to ask.
      */
-    'agents.limits'() {
+    async 'agents.limits'() {
       requireEnabled()
+      await limits.probe({ force: true })
       return { limits: limits.read() }
     },
 

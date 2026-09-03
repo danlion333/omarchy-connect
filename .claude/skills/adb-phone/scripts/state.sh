@@ -38,6 +38,21 @@ if adb shell pm list packages | grep -q "^package:$PKG$"; then
   # Sideloaded via a messenger => notification access is a "Restricted setting".
   adb shell dumpsys package "$PKG" | grep -q "installerPackageName=com.android.packageinstaller" \
     || echo "note: not installed by adb/packageinstaller — notification access may be restricted"
+
+  # A debug build has no JS in it — it needs Metro on 8081 or it shows the red
+  # "Unable to load script" screen. See SKILL.md for the fix.
+  if adb shell dumpsys package "$PKG" | grep -m1 'flags=\[' | grep -q DEBUGGABLE; then
+    echo "DEBUGGABLE build — loads JS from Metro, not from the APK"
+    if ss -ltn 2>/dev/null | grep -q ':8081 '; then
+      adb reverse --list 2>/dev/null | grep -q 'tcp:8081' \
+        && echo "  metro up on 8081, reverse in place" \
+        || echo "  metro up on 8081 but NO reverse — run: adb reverse tcp:8081 tcp:8081"
+    else
+      echo "  NO metro on 8081 — app will fail to load JS (cd app && npx expo start --dev-client)"
+    fi
+  else
+    echo "release build — JS bundle embedded, Metro not needed"
+  fi
 else
   echo "$PKG NOT INSTALLED — cd app && npx expo run:android"
   exit 0

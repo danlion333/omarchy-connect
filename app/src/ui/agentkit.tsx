@@ -239,11 +239,13 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
 export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
   const { palette } = useConnection()
   if (!limits?.limits?.length) return null
-  // The desktop refreshes the account-wide windows off every turn of every
-  // session, but per-model rows only when the CLI rewrites its cache — so on
-  // one card some rows are live and others are days old, and the note below
-  // has to name the old ones rather than cast doubt on all of them.
+  // Normally every row here was measured seconds ago: the desktop asks the
+  // account service outright, and it answers each window at once. A row only
+  // has an age when that ask failed and something older had to stand in — so
+  // the note names the rows it is about and, when the desktop knows, says
+  // what went wrong instead of describing a cache as if it were the design.
   const stale = limits.limits.filter((limit) => limit.stale).map((limit) => limit.label)
+  const because = limits.probeStatus ? `the desktop is ${limits.probeStatus}` : 'the desktop has nothing newer'
   return (
     <View style={{ gap: space.md }}>
       {limits.limits.map((limit) => (
@@ -256,8 +258,7 @@ export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
       ) : null}
       {stale.length ? (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          {stale.length === limits.limits.length ? 'these are' : `${stale.join(', ')} — `}from the desktop's cache, which
-          only a session running there refreshes
+          {stale.length === limits.limits.length ? 'these are' : `${stale.join(', ')} — `}last measured earlier: {because}
         </Text>
       ) : null}
     </View>

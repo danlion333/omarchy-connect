@@ -226,6 +226,67 @@ check('the refreshed rows are no longer old', row('week')?.stale === false && ro
 check('but a per-model row it cannot refresh still says it is', row('week · Fable')?.stale === true)
 check('so the card as a whole is still flagged', usageLive?.stale === true)
 
+// ── the probe ──────────────────────────────────────────────────────────
+//
+// Everything above is the fallback road: a cache the CLI rewrites when it
+// feels like it, corrected where the status line can. What the phone should
+// normally be looking at is the account service's own answer, which knows
+// every window at once and knows it as of now. The service is faked here —
+// the assertion is that we ask the way the credential says to, and that a
+// live answer beats a cache days older than it.
+
+write(
+  path.join(sandbox, '.claude', '.credentials.json'),
+  JSON.stringify({ claudeAiOauth: { accessToken: 'oauth-abc', expiresAt: Date.now() + 3_600_000, rateLimitTier: 'max_5x' } }),
+)
+
+let asked = null
+const answer = {
+  five_hour: { utilization: 4, resets_at: new Date(Date.now() + 2 * 3_600_000).toISOString() },
+  seven_day: { utilization: 91, resets_at: new Date(Date.now() + 18 * 3_600_000).toISOString() },
+  limits: [
+    { kind: 'session', group: 'session', percent: 4, resets_at: new Date(Date.now() + 2 * 3_600_000).toISOString(), scope: null, is_active: false },
+    { kind: 'weekly_all', group: 'weekly', percent: 91, resets_at: new Date(Date.now() + 18 * 3_600_000).toISOString(), scope: null, is_active: true },
+    { kind: 'weekly_scoped', group: 'weekly', percent: 89, resets_at: new Date(Date.now() + 18 * 3_600_000).toISOString(), scope: { model: { display_name: 'Fable' } }, is_active: false },
+  ],
+}
+globalThis.fetch = async (url, init) => {
+  asked = { url: String(url), headers: init?.headers || {} }
+  return { ok: true, status: 200, json: async () => answer }
+}
+
+const moved = await limits.probe({ force: true })
+const probed = limits.read()
+const live = (label) => probed?.limits?.find((l) => l.label === label)
+
+check('the account service is the one asked', asked?.url === 'https://api.anthropic.com/api/oauth/usage', asked?.url)
+check("with Claude Code's own sign-in", asked?.headers.authorization === 'Bearer oauth-abc', asked?.headers.authorization)
+check('and the beta header it wants', asked?.headers['anthropic-beta'] === 'oauth-2025-04-20')
+check('a first answer is news', moved === true)
+check('the live week replaces the cached one', live('week')?.percent === 91, String(live('week')?.percent))
+check('and the per-model row is live too, not three days old', live('week · Fable')?.percent === 89, String(live('week · Fable')?.percent))
+check('so nothing on the card has an age to print', probed?.stale === false && probed.limits.every((l) => l.stale === false))
+check('and no row apologises for a source', !probed?.probeStatus)
+
+// The same numbers again are not worth waking a phone for.
+check('an unchanged answer is not news', (await limits.probe({ force: true })) === false)
+
+// A service that answers with a status is a service asking us to wait, and
+// the last live answer is still the best thing on the desktop.
+globalThis.fetch = async () => ({ ok: false, status: 429, json: async () => ({}) })
+await limits.probe({ force: true })
+const after = limits.read()
+check('a rate-limited probe keeps the last live numbers', after?.limits?.find((l) => l.label === 'week')?.percent === 91)
+check('and says why there is nothing newer', after?.probeStatus === 'rate limited', after?.probeStatus)
+
+// No sign-in at all: back to the cache, honestly labelled.
+fs.rmSync(path.join(sandbox, '.claude', '.credentials.json'))
+globalThis.fetch = async () => {
+  throw new Error('should not be asked without a credential')
+}
+await limits.probe({ force: true })
+check('a desktop with no sign-in says so rather than guessing', limits.read()?.probeStatus === 'waiting for sign-in')
+
 /* ── background agents ─────────────────────────────────────────────────── */
 
 const jobs = await import('../src/agents/jobs.js')

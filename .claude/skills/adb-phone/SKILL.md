@@ -84,6 +84,58 @@ Prefer `adb install` over sideloading through a messenger: on Android 13+ an app
 installer is a chat app has **notification access greyed out as "Restricted setting"**,
 which silently kills caller ID. Installing over adb never hits that block.
 
+A **debug** build carries no JS: `app/android/app/build/outputs/apk/debug/app-debug.apk`
+has no `assets/index.android.bundle` in it and fetches the code from Metro every launch.
+The **release** APK embeds the bundle and needs nothing running on the desktop. For
+testing the app the way a user meets it, install the release one:
+
+```bash
+adb install -r app/android/app/build/outputs/apk/release/app-release.apk
+unzip -l <apk> | grep index.android.bundle    # which kind of APK is this
+adb shell dumpsys package dev.omarchy.connect | grep -m1 'flags=\['   # DEBUGGABLE?
+```
+
+### The red "Unable to load script" screen
+
+`Unable to load script … make sure your bundle 'index.android.bundle' is packaged
+correctly` with a `loadJSBundleFromAssets` stack is **not** a bug in the app's code. It
+means a debug build launched with nowhere to fetch JS from. It appears before a single
+line of JS runs, so no recent commit to `app/src/`, `daemon/` or `shell/` can cause it —
+check that claim before chasing one:
+
+```bash
+git log --oneline -20 -- app/android app/app.json app/plugins app/modules   # native churn
+cd app && npx tsc --noEmit
+cd app && npx expo export:embed --platform android --dev false \
+  --bundle-output "$SCRATCH/index.android.bundle" --assets-dest "$SCRATCH"   # does it bundle at all
+```
+
+The three things to check on the device side, in order:
+
+```bash
+adb shell dumpsys package dev.omarchy.connect | grep -m1 'flags=\['  # DEBUGGABLE => needs Metro
+ss -ltnp | grep :8081                                                # is Metro even up
+adb reverse --list                                                   # is 8081 forwarded
+```
+
+Fix — start Metro, forward the port, relaunch:
+
+```bash
+cd app && npx expo start --dev-client --port 8081   # background it
+curl -sf http://localhost:8081/status               # wait for "packager-status:running"
+adb reverse tcp:8081 tcp:8081
+adb shell am force-stop dev.omarchy.connect
+adb shell am start -n dev.omarchy.connect/.MainActivity
+```
+
+`adb reverse` does not survive a phone reboot or a replugged cable, and `expo
+run:android` only sets it at install time — so a debug build that worked yesterday shows
+this screen today with nothing having changed in the repo. That is the usual story.
+
+A screenshot straight after the relaunch can come back all black: the screen is off, not
+the app broken. `adb shell input keyevent KEYCODE_WAKEUP` first, and confirm with
+`adb shell dumpsys window | grep mCurrentFocus`.
+
 ### Logs
 
 ```bash

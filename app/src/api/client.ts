@@ -193,6 +193,12 @@ export type AgentLimits = {
   fetchedAt: number
   /** Whether any row is old enough to be history rather than status. */
   stale: boolean
+  /**
+   * Why the desktop has nothing newer than what is here — "offline", "rate
+   * limited", "waiting for sign-in". Absent on the normal path, where the
+   * account service answered and every row is current.
+   */
+  probeStatus?: string
   limits: AgentLimit[]
   spend: { used: number | null; limit: number | null; currency: string; percent: number | null } | null
 }

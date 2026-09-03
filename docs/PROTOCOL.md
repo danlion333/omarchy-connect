@@ -757,25 +757,40 @@ you read once you have picked one.
 #### Limits
 
 `agents.limits` — and `capabilities.agents.limits`, and the `limits` on
-`agents.list` — are read from `cachedUsageUtilization` in `~/.claude.json`,
-which is where the CLI parks the answer it already asked the account service
-for. Nothing here talks to a network or holds a credential.
+`agents.list` — come from the account service itself: a `GET` to
+`api.anthropic.com/api/oauth/usage`, carrying the OAuth token Claude Code
+already keeps in `~/.claude/.credentials.json` and the `oauth-2025-04-20` beta
+header. That endpoint answers every window at once — the five-hour session, the
+seven-day account window, and the scoped rows that are the only place a
+per-model allowance appears — and it answers as of now. The token is read at
+the moment of the request, never held and never sent to a phone; only the
+percentages travel.
+
+`agents.limits` probes on every call, because asking it is a person asking
+about now. The daemon otherwise probes every five minutes, and only while a
+phone is subscribed.
+
+Two older readings stay underneath as fallbacks, and a row says which it came
+from by carrying an age. `cachedUsageUtilization` in `~/.claude.json` is what
+the CLI parks for its own status line, rewritten when it feels like it; the
+status-line bridge overlays the two unscoped windows between probes for free.
+Whichever reading is newest wins.
 
 ```jsonc
 {
   "fetchedAt": 1756100000000,
-  "stale": false,                   // older than six hours: history, not status
+  "stale": false,                   // any row older than six hours: history, not status
+  "probeStatus": "offline",         // absent on the normal path; why nothing is newer
   "limits": [
-    { "kind": "weekly_all", "label": "week", "percent": 73,
-      "resetsAt": 1756400000000, "severity": "normal", "active": true }
+    { "kind": "weekly_all", "label": "week", "percent": 73, "asOf": 1756100000000,
+      "resetsAt": 1756400000000, "severity": "normal", "active": true, "stale": false }
   ],
   "spend": null                     // extra usage, when the account has it switched on
 }
 ```
 
 A change is pushed as an `agent` event (`kind: "limits"`) rather than polled,
-and only when a percentage actually moves — the file behind it is rewritten far
-more often than the numbers in it change.
+and only when a percentage actually moves.
 
 #### Skills and commands
 
