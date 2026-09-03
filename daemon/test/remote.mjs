@@ -12,7 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { connectPhone } from './phone.mjs'
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const PORT = Number(process.env.PORT || 8803)
@@ -24,6 +24,10 @@ const check = (name, ok, detail = '') => {
 }
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-remote-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 quietBluetooth(sandbox)
 
 // The daemon is started with remote access already on and the loopback
@@ -75,12 +79,12 @@ async function info() {
 const control = (op) =>
   fetch(`http://127.0.0.1:${PORT}/api/remote/control`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify({ op }),
   }).then((r) => r.json())
 
 const pairCode = () =>
-  fetch(`http://127.0.0.1:${PORT}/api/pair-code`, { method: 'POST' }).then((r) => r.json())
+  fetch(`http://127.0.0.1:${PORT}/api/pair-code`, { method: 'POST', headers: local() }).then((r) => r.json())
 
 start()
 const desktop = await info()

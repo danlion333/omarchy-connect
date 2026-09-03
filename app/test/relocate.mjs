@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
+import { localHeaders } from '../../daemon/test/sandbox.mjs'
 import { ConnectClient } from '../src/api/client.ts'
 import { check, done } from '../../tools/test-harness.mjs'
 
@@ -32,6 +33,10 @@ const PORT = Number(process.env.PORT || 8811)
 const FAKE = PORT + 1
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-relocate-'))
+
+// The daemon's local routes are gated on the secret in its status file; a
+// caller reads it the way the CLI does.
+const local = () => localHeaders(`${sandbox}/state`)
 const daemon = spawn(process.execPath, ['daemon/bin/omarchy-connect.js', 'start', '--port', String(PORT)], {
   cwd: new URL('../..', import.meta.url).pathname,
   env: {
@@ -95,7 +100,7 @@ check('a stranger can echo the pinned key on a probe', found.publicKey === info.
 
 /* ── a phone that already knows its desktop ─────────────────────────────── */
 
-const { code } = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+const { code } = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
 const client = new ConnectClient({
   host: '127.0.0.1',
   port: PORT,

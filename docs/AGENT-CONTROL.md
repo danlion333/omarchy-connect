@@ -77,8 +77,8 @@ That single fact solves the correlation problem — which transcript belongs to
 which pane — that no amount of process scanning solves cleanly.
 
 `omarchy-connect agent hook` reads stdin, adds the environment, and POSTs to
-`127.0.0.1:<port>/api/agent/hook` (loopback-only, like the other CLI
-endpoints). Installed into `~/.claude/settings.json` by
+`127.0.0.1:<port>/api/agent/hook` (loopback-only, and gated on the secret from
+the status file like the other CLI endpoints — see PROTOCOL.md). Installed into `~/.claude/settings.json` by
 `omarchy-connect agent install-hooks`:
 
 | Hook | Effect |

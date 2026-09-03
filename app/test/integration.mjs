@@ -9,6 +9,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { localHeaders } from '../../daemon/test/sandbox.mjs'
 import { ConnectClient } from '../src/api/client.ts'
 import { mergeEndpoints } from '../src/lib/endpoints.ts'
 import { magicPacket, wakeTargets } from '../src/lib/wol.ts'
@@ -21,6 +22,10 @@ const check = (name, ok, detail = '') => {
 }
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-test-'))
+
+// The daemon's local routes are gated on the secret in its status file; a
+// caller reads it the way the CLI does.
+const local = () => localHeaders(`${sandbox}/state`)
 // Set on this process too, not only on the daemon below: the impostor test at
 // the end loads the daemon's own crypto in here, and that reads the identity
 // key out of the config directory this points at. Pointing it at the sandbox
@@ -56,7 +61,7 @@ for (let i = 0; i < 40; i += 1) {
 }
 
 const info = await (await fetch(`${base}/api/info`)).json()
-const { code } = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+const { code } = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
 
 const client = new ConnectClient({
   host: '127.0.0.1',

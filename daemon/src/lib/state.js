@@ -91,6 +91,10 @@ export function baseSnapshot({ version = null, port = null } = {}) {
     at: Date.now(),
     running: false,
     pid: null,
+    // The secret the local HTTP routes are gated on. It belongs to a running
+    // daemon and to one run of it, so a stopped daemon publishes the field
+    // empty rather than leaving the last one lying about.
+    localSecret: null,
     version,
     name: cfg.deviceName,
     host: null,
@@ -184,6 +188,7 @@ export function clear() {
   snapshot.at = Date.now()
   snapshot.running = false
   snapshot.pid = null
+  snapshot.localSecret = null
   snapshot.pairing = null
   snapshot.devices = (snapshot.devices || []).map((d) => ({ ...d, online: false, address: null }))
   // Agent sessions are the daemon's live view of other processes: with it

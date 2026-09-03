@@ -10,7 +10,7 @@ import crypto from 'node:crypto'
 import { spawn, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 import { connectPhone } from './phone.mjs'
 
@@ -19,6 +19,10 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const entry = path.join(root, 'bin', 'omarchy-connect.js')
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-tls-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 const env = {
   ...process.env,
   XDG_CONFIG_HOME: sandbox,
@@ -97,7 +101,7 @@ check('plain http is not served', plaintext === 0)
 
 const codeRes = await new Promise((resolve) => {
   const req = https.request(
-    { host: '127.0.0.1', port: PORT, path: '/api/pair-code', method: 'POST', ca, timeout: 4000 },
+    { host: '127.0.0.1', port: PORT, path: '/api/pair-code', method: 'POST', ca, timeout: 4000, headers: local() },
     (res) => {
       let text = ''
       res.on('data', (c) => (text += c))

@@ -25,13 +25,17 @@ import { fileURLToPath } from 'node:url'
 
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 const PORT = Number(process.env.PORT || 8809)
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-file-auth-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 const downloads = path.join(sandbox, 'Downloads')
 fs.mkdirSync(downloads, { recursive: true })
 quietBluetooth(sandbox)
@@ -89,7 +93,7 @@ async function info() {
 }
 
 const desktop = await info()
-const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
 
 const phone = connectPhone(PORT, desktop.publicKey)
 const pending = new Map()
@@ -167,7 +171,7 @@ check('a download ticket does not open the upload road',
 const offer = await (
   await fetch(`${base}/api/offer`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify({ path: path.join(root, 'package.json') }),
   })
 ).json()
@@ -197,7 +201,7 @@ const remoteDownload = await ticketFor('download')
 const control = (op) =>
   fetch(`${base}/api/remote/control`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify({ op }),
   }).then((r) => r.json())
 

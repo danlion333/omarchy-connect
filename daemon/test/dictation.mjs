@@ -21,13 +21,17 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { connectPhone } from './phone.mjs'
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 const PORT = Number(process.env.PORT || 8809)
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-dictation-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 const drops = path.join(sandbox, '.cache', 'omarchy-connect', 'agent')
 
 /** What the stand-in transcriber claims to have heard. */
@@ -140,14 +144,14 @@ async function waitForDaemon() {
 const control = (op) =>
   fetch(`${base}/api/agent/control`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify({ op }),
   }).then((r) => r.json())
 
 /** A paired phone that can both call methods and push bytes at the upload door. */
 async function connect() {
   const info = await (await fetch(`${base}/api/info`)).json()
-  const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+  const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
   const phone = connectPhone(PORT, info.publicKey)
   const pending = new Map()
   let seq = 0

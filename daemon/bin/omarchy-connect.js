@@ -117,7 +117,17 @@ function daemonRequest(pathname, { method = 'GET', body = null, port = null, tim
       path: pathname,
       method,
       timeout,
-      headers: payload ? { 'content-type': 'application/json', 'content-length': payload.length } : {},
+      // Three of these are what the daemon's local routes ask for, and they
+      // are cheap enough to send on every request rather than to remember
+      // which route wants them. `x-oc-local` is the secret out of the status
+      // file this process has just read — the file is 0600, so holding it is
+      // the same act as being the user; a header of our own naming and a JSON
+      // content type are what a web page cannot forge on a `no-cors` POST.
+      headers: {
+        'content-type': 'application/json',
+        ...(payload ? { 'content-length': payload.length } : {}),
+        ...(stored?.localSecret ? { 'x-oc-local': stored.localSecret } : {}),
+      },
     }
     if (secure) {
       const cert = tls.info()
