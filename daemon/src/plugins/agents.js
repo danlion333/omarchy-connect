@@ -1656,6 +1656,17 @@ function announceJobs() {
   emit({ kind: 'jobs', jobs: jobList })
 }
 
+/**
+ * Did that write actually ask the agent something?
+ *
+ * `writer.send` reports what it observed of the composer, and the answer here
+ * is the one question the session's state depends on: a message still sitting
+ * in the box has asked nothing, so the row must not turn `working` for it. A
+ * write that was never meant to submit — a draft put in front of the agent to
+ * look at — is not a failure and does not fall in here.
+ */
+const reached = (result, submit) => submit === false || result.submitted !== false
+
 /* ── plugin ────────────────────────────────────────────────────────────── */
 
 export default {
@@ -1850,7 +1861,11 @@ export default {
       // A hook-backed session hears about this from the agent itself a moment
       // later. A scanned one never would, and a composer that leaves the row
       // sitting at `waiting` after a successful answer reads as a failed send.
-      if (entry.state !== 'working') setState(entry, 'working')
+      //
+      // Unless the message never went: a send the writer watched stay in the
+      // composer has asked the agent nothing, and a row that says `working`
+      // for it is the phone's only chance of noticing spent on a lie.
+      if (reached(result, submit) && entry.state !== 'working') setState(entry, 'working')
       return { ok: true, ...result }
     },
 
@@ -1884,7 +1899,7 @@ export default {
       await ensureWritable(entry)
 
       const result = await writer.serialise(entry, () => writer.send(entry, body, { submit: submit !== false }))
-      if (entry.state !== 'working') setState(entry, 'working')
+      if (reached(result, submit) && entry.state !== 'working') setState(entry, 'working')
       return { ok: true, paths: files, ...result }
     },
 
@@ -2040,7 +2055,7 @@ export default {
       await ensureWritable(entry)
 
       const result = await writer.serialise(entry, () => writer.send(entry, body, { submit: submit !== false }))
-      if (entry.state !== 'working') setState(entry, 'working')
+      if (reached(result, submit) && entry.state !== 'working') setState(entry, 'working')
       return { ok: true, command: body, ...result }
     },
 

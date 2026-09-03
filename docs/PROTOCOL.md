@@ -732,7 +732,7 @@ included, for a few minutes, which is what a resume across a reconnect is
 resuming from. `agents.close` throws it away immediately, as it always did.
 
 | `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
-| `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. |
+| `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. `submitted` is what the desktop observed, not what it was asked for. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
 | `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
 | `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
@@ -1129,6 +1129,30 @@ on the desktop would ever read what was dropped there.
 each path against the drop directory rather than trusting it: this method types
 what it is handed into a shell's neighbourhood, so a phone naming
 `~/.ssh/id_ed25519` gets a refusal and not a paste.
+
+### `submitted` is an observation
+
+A message with a picture on it is a multi-line message — the paths on their own
+line, the caption underneath — and multi-line text is delivered to a TUI as a
+bracketed paste rather than as keystrokes, because every Return in the middle of
+one would otherwise submit half of it. A TUI that asked for bracketed paste
+collects the whole run between the brackets and commits it to its input box on
+its own schedule, and a Return arriving on the paste's heels is swallowed along
+with it: the text lands in the composer and nothing is sent.
+
+Both halves of that write succeed, so `submitted` used to be a lie — the flag
+the method had been asked for, echoed back. `agents.send`, `agents.attach` and
+`agents.command` now read the pane's composer before typing and again after the
+Return, on the two roads that own a pane (`tmux`, `herdr`); a composer that is
+empty afterwards, or unchanged from what it already held, is a message that
+left. Anything else answers `submitted: false`, and the session is **not** moved
+to `working`, because nothing was asked. A phone that gets `submitted: false`
+should keep the text and the attachments and say so, rather than drawing a
+working agent for a message still sitting in a composer.
+
+On the `wtype` road the desktop owns no pane and can observe nothing, so
+`submitted` there remains the flag it was given — one more thing that road
+cannot promise, alongside the focus it borrows.
 
 Nothing deletes a drop when the agent is done with it, because nothing knows
 when that is — a conversation comes back to a screenshot ten minutes later as
