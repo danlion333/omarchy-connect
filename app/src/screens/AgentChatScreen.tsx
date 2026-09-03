@@ -17,7 +17,7 @@ import { Feather } from '@expo/vector-icons'
 import { useAudioRecorder } from 'expo-audio'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import { focusAgent } from '../api/alerts'
 import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } from '../api/client'
 import * as attach from '../api/attach'
@@ -550,7 +550,7 @@ function Header({
   onToggleRaw?: () => void
   onStatus?: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const insets = useSafeAreaInsets()
   const vitals = session.vitals ?? null
 
@@ -648,7 +648,7 @@ function Pulse({ tone, on, size: dot = 8 }: { tone: string; on?: boolean; size?:
  * say yet.
  */
 function LiveText({ text }: { text: string }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   return (
     <Text
       style={{
@@ -664,7 +664,7 @@ function LiveText({ text }: { text: string }) {
 }
 
 function Working() {
-  const { palette } = useConnection()
+  const palette = usePalette()
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
       <Pulse tone={palette.green} on size={6} />
@@ -742,7 +742,7 @@ function ToolRun({
   expanded: Record<number, string>
   onExpand: (block: AgentBlock) => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const [unfolded, setUnfolded] = useState(false)
   const hidden = live || unfolded ? 0 : Math.max(0, rows.length - RUN_TAIL)
   const shown = hidden ? rows.slice(hidden) : rows
@@ -796,7 +796,7 @@ function ToolLine({
   expanded?: string
   onExpand: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const status = result?.status
   const tone =
     status === 'error' ? palette.red : status === 'interrupted' ? palette.orange : status ? palette.green : palette.muted
@@ -898,7 +898,7 @@ function Row({
   onExpand: () => void
   onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const [thought, setThought] = useState(false)
 
   if (block.kind === 'text') {
@@ -994,7 +994,7 @@ function QuestionCard({
   result?: AgentBlock
   onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const questions = block.questions || []
   const answered = result?.answers
   const tone = answered ? palette.muted : palette.orange
@@ -1049,7 +1049,7 @@ function Question({
   picked: string[] | null
   onAnswer: (choices: number[]) => Promise<{ labels: string[] }>
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   // Only ever set on a multi-select: a single-choice list submits on the tap,
   // so there is no moment between choosing and having chosen.
   const [checked, setChecked] = useState<number[]>([])
@@ -1171,7 +1171,7 @@ function Option({
   enabled: boolean
   onPress: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   return (
     <Pressable
       onPress={onPress}
@@ -1229,7 +1229,7 @@ const MAX_SHOTS = 6
  * is worse than a message that goes without it.
  */
 function Thumbnail({ shot, onRemove }: { shot: Attachment; onRemove: () => void }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const settling = !shot.path && !shot.error
   return (
     <Pressable onPress={onRemove} style={{ width: 56, height: 56 }}>

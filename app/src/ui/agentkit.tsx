@@ -1,7 +1,7 @@
 import React from 'react'
 import { StyleSheet, Text, View } from 'react-native'
 
-import { useConnection } from '../state/ConnectionContext'
+import { usePalette } from '../state/ConnectionContext'
 import type { AgentLimit, AgentLimits, AgentSession, AgentVitals } from '../api/client'
 import { Meter } from './kit'
 import { alpha, font, radius, size, space } from '../theme'
@@ -86,7 +86,7 @@ export function since(at: number | null | undefined): string | null {
 }
 
 /** Green until it matters, then orange, then red. */
-export function fillTone(palette: ReturnType<typeof useConnection>['palette'], percent: number) {
+export function fillTone(palette: ReturnType<typeof usePalette>, percent: number) {
   if (percent >= 90) return palette.red
   if (percent >= 75) return palette.orange
   return palette.accent
@@ -116,7 +116,7 @@ const MODES: Record<string, { label: string; tone: 'warn' | 'note' }> = {
  * the only part whose value is in its length.
  */
 export function StatusLine({ vitals, dense }: { vitals: AgentVitals | null | undefined; dense?: boolean }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   if (!vitals) return null
 
   const model = modelLabel(vitals.model)
@@ -187,7 +187,7 @@ export function Badge({ label, tone }: { label: string; tone: string }) {
  * them is the one that will actually stop you.
  */
 export function LimitRow({ limit }: { limit: AgentLimit }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const tone = fillTone(palette, limit.percent)
   // A stale row's own age is the more useful of the two facts, and printing
   // both would crowd a line that has a percentage to fit as well.
@@ -237,7 +237,7 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
  * screen that is true whether or not anything is running.
  */
 export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   if (!limits?.limits?.length) return null
   // Normally every row here was measured seconds ago: the desktop asks the
   // account service outright, and it answers each window at once. A row only

@@ -3,7 +3,7 @@ import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, 
 import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentSession, AgentSkill } from '../api/client'
 import { Body, Caps } from '../ui/kit'
 import { Badge } from '../ui/agentkit'
@@ -209,7 +209,7 @@ function SkillRow({
   disabled: boolean
   onPress: () => void
 }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   return (
     <Pressable
       onPress={onPress}

@@ -22,6 +22,8 @@ import {
 } from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
 import { orderCandidates } from '../lib/retry'
+import { reduceAgents } from '../lib/agents'
+import { merged } from '../lib/state'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
@@ -166,8 +168,17 @@ class Link {
     }
   }
 
+  /**
+   * Writes the changes down and tells everybody — unless there is nothing to
+   * tell. `merged` hands back the state it was given when every field already
+   * holds what the change says, and a state that did not move is not news: no
+   * new object goes out, so no context value changes and no screen re-renders
+   * for an event that only repeated itself.
+   */
   private patch(changes: Partial<LinkState>) {
-    this.state = { ...this.state, ...changes }
+    const next = merged(this.state, changes)
+    if (next === this.state) return
+    this.state = next
     for (const subscriber of this.subscribers) {
       try {
         subscriber(this.state)
@@ -581,13 +592,13 @@ class Link {
   private async rememberEndpoints(advertised: Hello['endpoints'] | null) {
     const desktop = this.state.desktop
     if (!desktop || !Array.isArray(advertised)) return
-    const merged = mergeEndpoints(
+    const addresses = mergeEndpoints(
       desktop.endpoints,
       advertised.map((entry) => ({ ...entry, source: 'hello' as const })),
     )
-    this.client?.setEndpoints(merged)
-    if (JSON.stringify(desktop.endpoints ?? []) === JSON.stringify(merged)) return
-    const next = { ...desktop, endpoints: merged }
+    this.client?.setEndpoints(addresses)
+    if (JSON.stringify(desktop.endpoints ?? []) === JSON.stringify(addresses)) return
+    const next = { ...desktop, endpoints: addresses }
     await saveDesktop(next).catch(() => {})
     this.patch({ desktop: next })
   }
@@ -877,6 +888,12 @@ class Link {
    * arrived as an event or as a fresh `agents.list` after a reconnect.
    */
   private setAgents(agents: AgentSession[]) {
+    // `reduceAgents` hands back the array it was given for every frame that is
+    // not about the list — the draft of the sentence an agent is typing, which
+    // arrives twice a second while it works. Nothing downstream of the list
+    // has changed then, so neither the state nor the notification shade is
+    // touched; the chat reads block traffic straight off the client.
+    if (agents === this.state.agents) return
     this.patch({ agents })
     syncAgentAlerts(agents)
   }
@@ -934,25 +951,6 @@ class Link {
       noteFileAlert(token, name, `not saved — ${(error as Error)?.message || 'the phone refused it'}`)
     }
   }
-}
-
-function reduceAgents(previous: AgentSession[], data: AgentEvent): AgentSession[] {
-  if (data.kind === 'session') {
-    const rest = previous.filter((s) => s.id !== data.id)
-    // A finished session is announced by its state change; a session frame
-    // carrying `gone` must not put it back in the list.
-    if (data.removed || !data.session || data.session.state === 'gone') return rest
-    return [...rest, data.session]
-  }
-  if (data.kind === 'state') {
-    if (data.state === 'gone') return previous.filter((s) => s.id !== data.id)
-    return previous.map((s) =>
-      s.id === data.id
-        ? { ...s, state: data.state, prompt: data.prompt, preview: data.preview, lastActivity: data.lastActivity }
-        : s,
-    )
-  }
-  return previous
 }
 
 /**

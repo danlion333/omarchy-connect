@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { RefreshControl, View } from 'react-native'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useConnection, useStats } from '../state/ConnectionContext'
 import { Body, Caps, Card, CardHeader, DataGrid, Divider, Meter, Screen, Segmented, StatusDot, Value, toneFor } from '../ui/kit'
 import { bytes, duration, ms, percent, rate } from '../lib/format'
 import { size, space } from '../theme'
@@ -16,7 +16,8 @@ const DNS_OPTIONS = [
 type DnsProvider = (typeof DNS_OPTIONS)[number]['value']
 
 export function DashboardScreen() {
-  const { stats, hello, palette, status, call, can, latencyMs, watchStats } = useConnection()
+  const { hello, palette, status, call, can, latencyMs, watchStats } = useConnection()
+  const stats = useStats()
   const [dns, setDns] = useState<DnsProvider | null>(null)
   const [dnsError, setDnsError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)

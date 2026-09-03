@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react'
 import { Pressable, RefreshControl, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 
-import { useConnection } from '../state/ConnectionContext'
+import { useAgents, useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentCapabilities, AgentJob, AgentSession } from '../api/client'
 import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, StatusDot } from '../ui/kit'
 import { Limits, StatusLine, inPane, tokens } from '../ui/agentkit'
@@ -25,7 +25,8 @@ import { space } from '../theme'
  * and the second is the only place a `--bg` session appears at all.
  */
 export function AgentsScreen({ open: requested, onOpened }: { open?: string | null; onOpened?: () => void } = {}) {
-  const { agents, agentLimits, agentJobs, refreshAgents, refreshAgentJobs, palette, status, hello } = useConnection()
+  const { refreshAgents, refreshAgentJobs, palette, status, hello } = useConnection()
+  const { agents, agentLimits, agentJobs } = useAgents()
   const [openId, setOpenId] = useState<string | null>(null)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -199,7 +200,7 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
 }
 
 function SessionRow({ session, onPress }: { session: AgentSession; onPress: () => void }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   const tone =
     session.state === 'waiting' ? palette.orange : session.state === 'working' ? palette.green : palette.muted
 
@@ -268,7 +269,7 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
  * anywhere, so this line is the only running commentary it has.
  */
 function JobRow({ job }: { job: AgentJob }) {
-  const { palette } = useConnection()
+  const palette = usePalette()
   // The state file outlives the process, so `working` on a dead job is
   // history, not status — a daemon that knows says so, and the row goes grey
   // rather than keep a pulse going for an agent that is not there.
