@@ -111,7 +111,13 @@ expires, which is why the desktop client drives it from a floating terminal.
 `send --pick` opens the GTK file chooser instead of taking a path.
 
 Configuration lives in `~/.config/omarchy-connect/config.json` (mode 0600 —
-it holds the device tokens).
+it holds the device tokens). More than one process writes it — the long-lived
+daemon, and a CLI or panel command that lives for a second — so a write is a
+merge rather than a replacement: each process puts back only the fields it
+changed itself, onto whatever is on disk at that moment, and the daemon
+re-reads the file whenever it has moved. That is what makes
+`omarchy-connect tls enable` survive the daemon's next write, and
+`omarchy-connect agent spawn on` land on the running daemon without a restart.
 
 ## The desktop client
 

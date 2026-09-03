@@ -27,7 +27,8 @@
     "test:dictation": "node test/dictation.mjs",
     "test:upload-names": "node test/upload-names.mjs",
     "test:local-auth": "node test/local-auth.mjs",
-    "test:hygiene": "node test/hygiene.mjs"
+    "test:hygiene": "node test/hygiene.mjs",
+    "test:config": "node test/config.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
