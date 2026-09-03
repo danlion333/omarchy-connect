@@ -92,6 +92,15 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
    * this screen missed instead of the whole window again.
    */
   const cursor = useRef<number | null>(null)
+  /**
+   * Which run of the desktop's numbering that cursor was dealt from.
+   *
+   * Block numbers restart at one, and a daemon that was restarted while the
+   * phone was away deals the same numbers out again — so the number alone is
+   * not enough to resume from. This is handed straight back, and a desktop
+   * that does not recognise it answers with the window instead.
+   */
+  const epoch = useRef<string | null>(null)
 
   /* Open the session, then let the daemon push the rest. */
   useEffect(() => {
@@ -101,11 +110,13 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     setExpanded({})
     setLive('')
     cursor.current = null
-    call<{ blocks: AgentBlock[]; cursor?: number }>('agents.open', { id: session.id, limit: 120 })
+    epoch.current = null
+    call<{ blocks: AgentBlock[]; cursor?: number; epoch?: string }>('agents.open', { id: session.id, limit: 120 })
       .then((res) => {
         if (!live) return
         setBlocks(res.blocks || [])
         if (typeof res.cursor === 'number') cursor.current = res.cursor
+        epoch.current = res.epoch ?? null
         setError(null)
       })
       .catch((err) => live && setError((err as Error).message))
@@ -114,6 +125,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     return () => {
       live = false
       cursor.current = null
+      epoch.current = null
       // Closing is what stops the desktop tailing a transcript nobody reads.
       call('agents.close', { id: session.id }).catch(() => {})
     }
@@ -135,13 +147,15 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   useEffect(() => {
     if (!client) return
     return client.on('hello', () => {
-      call<{ blocks: AgentBlock[]; cursor?: number; resumed?: boolean }>('agents.open', {
+      call<{ blocks: AgentBlock[]; cursor?: number; epoch?: string; resumed?: boolean }>('agents.open', {
         id: session.id,
         limit: 120,
         since: cursor.current,
+        epoch: epoch.current,
       })
         .then((res) => {
           if (typeof res.cursor === 'number') cursor.current = res.cursor
+          epoch.current = res.epoch ?? null
           const fresh = res.blocks || []
           // A daemon too old to know about `since` answers without `resumed`
           // and with the whole window, which is the behaviour this replaces —

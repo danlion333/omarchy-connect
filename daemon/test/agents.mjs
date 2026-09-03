@@ -232,17 +232,26 @@ process.on('exit', () => {
   fs.rmSync(sandbox, { recursive: true, force: true })
 })
 
-/** A paired phone with request/response correlation and an event log. */
-async function connect() {
+/**
+ * A paired phone with request/response correlation and an event log.
+ *
+ * `known` is the token an earlier connection was given: a phone that has been
+ * here before comes back with it rather than pairing again, which is what the
+ * real app does and the only way to raise a *second* socket for the same
+ * device — pairing codes are spent on the first one.
+ */
+async function connect(known = null) {
   const info = await (await fetch(`${base}/api/info`)).json()
-  const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
+  const pair = known
+    ? { code: null }
+    : await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
   const phone = connectPhone(PORT, info.publicKey)
   const pending = new Map()
   const events = []
   let seq = 0
   // The upload endpoint is HTTP and authenticates on its own, so the token
   // pairing issues has to be caught as it goes past.
-  let token = null
+  let token = known
 
   const req = (method, params = {}) =>
     new Promise((resolve, reject) => {
@@ -255,7 +264,11 @@ async function connect() {
   const hello = await new Promise((resolve, reject) => {
     phone.ready
       .then(() =>
-        phone.send({ t: 'hello', pairCode: pair.code, device: { id: 'agents-test', name: 'Agents Phone', platform: 'android' } }),
+        phone.send({
+          t: 'hello',
+          ...(known ? { token: known } : { pairCode: pair.code }),
+          device: { id: 'agents-test', name: 'Agents Phone', platform: 'android' },
+        }),
       )
       .catch(reject)
     phone.on((msg) => {
@@ -1374,7 +1387,7 @@ check(
 // back, because the desktop stopped tailing them when the socket died. Doing
 // that without a cursor means refetching the whole window over a link that has
 // only just returned, so `agents.open` takes one.
-const settled = await req('agents.open', { id: session.id, limit: 200, since: afterAnswer.cursor })
+const settled = await req('agents.open', { id: session.id, limit: 200, since: afterAnswer.cursor, epoch: afterAnswer.epoch })
 check('a resume from the current cursor brings nothing back', settled.resumed === true && settled.blocks.length === 0,
   `resumed=${settled.resumed} blocks=${settled.blocks.length}`)
 check('and the cursor has not moved', settled.cursor === afterAnswer.cursor, `${settled.cursor} vs ${afterAnswer.cursor}`)
@@ -1384,13 +1397,21 @@ fs.appendFileSync(
   line({ type: 'user', timestamp: at, message: { role: 'user', content: 'and now write the tests' } }),
 )
 await settle(600)
-const resumed = await req('agents.open', { id: session.id, limit: 200, since: settled.cursor })
+const resumed = await req('agents.open', { id: session.id, limit: 200, since: settled.cursor, epoch: settled.epoch })
 check(
   'a resume brings back only what arrived while the phone was away',
   resumed.resumed === true && resumed.blocks.length === 1 && JSON.stringify(resumed.blocks).includes('write the tests'),
   `${resumed.blocks.length} blocks`,
 )
 check('every block it does bring is past the cursor', resumed.blocks.every((b) => b.seq > settled.cursor))
+check(
+  'a cursor without the numbering it came from is not a cursor',
+  (await req('agents.open', { id: session.id, limit: 200, since: settled.cursor })).resumed === false,
+)
+check(
+  'nor is one from somebody else\'s numbering',
+  (await req('agents.open', { id: session.id, limit: 200, since: settled.cursor, epoch: 'deadbeef.0' })).resumed === false,
+)
 check('and the cursor moves on', resumed.cursor > settled.cursor, `${settled.cursor} → ${resumed.cursor}`)
 
 // The whole window, for comparison — and for the phone that has no cursor.
@@ -1399,15 +1420,15 @@ check('an open without a cursor is the reload it always was',
   whole.resumed === false && whole.blocks.length > resumed.blocks.length, `${whole.blocks.length} blocks`)
 check(
   'a cursor from the future is answered with the window rather than nothing',
-  (await req('agents.open', { id: session.id, limit: 200, since: whole.cursor + 1000 })).resumed === false,
+  (await req('agents.open', { id: session.id, limit: 200, since: whole.cursor + 1000, epoch: whole.epoch })).resumed === false,
 )
 check(
   'so is one from before the ring starts',
-  (await req('agents.open', { id: session.id, limit: 200, since: 0 })).blocks.length === whole.blocks.length,
+  (await req('agents.open', { id: session.id, limit: 200, since: 0, epoch: whole.epoch })).blocks.length === whole.blocks.length,
 )
 // Five opens above the one the screen holds; the tail must not be left with a
 // reference count that keeps it open after the screen closes.
-for (let i = 0; i < 5; i += 1) await req('agents.close', { id: session.id })
+for (let i = 0; i < 7; i += 1) await req('agents.close', { id: session.id })
 
 await req('agents.close', { id: session.id })
 const before = events.length
@@ -1423,6 +1444,63 @@ check(
 )
 
 close()
+
+/* ── the phone drops off the network for a moment ──────────────────────── */
+
+// The reason `agents.open` takes a cursor at all. A dropped socket takes the
+// last subscriber off the `agent` bus, and the desktop stops tailing every
+// session it was tailing for that phone — which is right, nobody is reading
+// them. What was wrong was throwing away what the phone already had along with
+// the tail: block numbering restarted from zero, so the re-open on the way
+// back could only ever be a full reload of a conversation that had not changed.
+{
+  const B = '99999999-8888-7777-6666-555555555555'
+  const transcriptB = path.join(projects, `${B}.jsonl`)
+  fs.writeFileSync(
+    transcriptB,
+    [line({ type: 'user', timestamp: at, message: { role: 'user', content: 'first thing' } })].join(''),
+  )
+  await hook('SessionStart', { session_id: B, transcript_path: transcriptB })
+
+  const before = await connect(token)
+  const opened = await before.req('agents.open', { id: `claude:${B}`, limit: 200, since: null })
+  check('a session opens on the first phone', opened.blocks.length === 1 && opened.resumed === false, `${opened.blocks.length} blocks`)
+
+  before.close()
+  // Longer than the poll that notices the bus has gone quiet.
+  await settle(3000)
+  fs.appendFileSync(
+    transcriptB,
+    line({ type: 'user', timestamp: at, message: { role: 'user', content: 'said while nobody was listening' } }),
+  )
+  await settle(500)
+
+  const after = await connect(token)
+  const resumed = await after.req('agents.open', { id: `claude:${B}`, limit: 200, since: opened.cursor, epoch: opened.epoch })
+  check(
+    'a phone that comes back resumes rather than reloading',
+    resumed.resumed === true && resumed.blocks.length === 1,
+    `resumed=${resumed.resumed} ${resumed.blocks.length} blocks`,
+  )
+  check(
+    'and what it gets is what it missed',
+    JSON.stringify(resumed.blocks).includes('said while nobody was listening'),
+  )
+  // The tail has to be running again, or the resume would be the last thing
+  // the phone ever heard about this session.
+  fs.appendFileSync(
+    transcriptB,
+    line({ type: 'user', timestamp: at, message: { role: 'user', content: 'and now it is listening' } }),
+  )
+  check(
+    'the desktop is tailing it again without being asked twice',
+    Boolean(await waitFor(after.events, (e) => e.kind === 'blocks' && JSON.stringify(e.blocks).includes('and now it is listening'))),
+  )
+  await after.req('agents.close', { id: `claude:${B}` })
+  await hook('SessionEnd', { session_id: B, transcript_path: transcriptB })
+  after.close()
+}
+
 await stopDaemon()
 
 /* ── a CLI newer than the daemon it is talking to ──────────────────────── */
