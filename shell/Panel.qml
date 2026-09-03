@@ -350,20 +350,45 @@ Panel {
     bar: root.bar
     text: Model.deviceGlyph(root.phone ? root.phone.platform : "")
     foreground: bridge.ringing ? root.urgent : root.barIconColor
-    active: root.pairing
+    // A file held over the icon lights it the way a live pairing code does.
+    // The icon has one way of saying "this is about to do something" and
+    // borrowing it costs nothing; a drag has no tooltip to read instead,
+    // because the pointer is holding a file rather than hovering.
+    active: root.pairing || fileDrop.containsDrag
     tooltipText: {
       if (!bridge.loaded) return "Omarchy Connect is not set up"
       if (!bridge.running) return "Omarchy Connect is stopped"
       if (bridge.ringing) return Model.callWho(root.call) + " is calling"
       if (root.talking) return "On call with " + Model.callWho(root.call)
       if (root.pairing) return "Waiting for a phone to pair"
-      if (root.linked) return root.phone.name + " is connected"
+      if (root.linked) return root.phone.name + " is connected — drop a file here to send it"
       return root.paired ? root.phone.name + " is offline" : "No phone paired yet"
     }
     onPressed: function (buttonCode) {
       if (buttonCode === Qt.RightButton) bridge.pair()
       else if (buttonCode === Qt.MiddleButton) bridge.refresh()
       else root.toggle()
+    }
+
+    /**
+     * Drag a file onto the icon and it goes to the phone.
+     *
+     * `text/uri-list` is what every file manager on this desktop puts on a
+     * drag, and it is the only thing accepted here: with the key set, a drag
+     * carrying anything else never enters, so the icon does not light up for
+     * something it would refuse anyway. Whether there is a phone to send to is
+     * a different question and deliberately not asked until the drop — a drag
+     * that silently declines to land tells the user nothing, and the point of
+     * the refusal is that it can be read.
+     */
+    DropArea {
+      id: fileDrop
+      anchors.fill: parent
+      keys: ["text/uri-list"]
+      onDropped: function (drop) {
+        bridge.sendPaths(drop.hasUrls ? drop.urls : [])
+        drop.acceptProposedAction()
+      }
     }
   }
 

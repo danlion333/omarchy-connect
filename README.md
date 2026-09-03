@@ -45,7 +45,7 @@ the desktop and the app repaints in the same palette.
 | **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **From anywhere** | Off by default. Switched on, the desktop tells the phone the address its tunnel gave it — Tailscale, Headscale, WireGuard, ZeroTier, NetBird, whatever is already there — and the phone keeps that beside the home address and dials whichever one it can reach. No tunnel of ours, no relay, no account: the desktop reports what your own overlay handed it. Calls and messages stay at home — every telephony surface is switched off on a remote link, because hands-free is a radio link to a handset in this room and mirroring a text to a desktop the phone cannot see is carrying private mail somewhere nobody will read it. |
-| **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox. The counters and the two switches fold away until you ask for them. |
+| **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox — or a file dropped straight onto the bar icon. The counters and the two switches fold away until you ask for them. |
 
 ## Install the daemon
 
@@ -108,7 +108,9 @@ omarchy-connect install-service             write a systemd user unit
 
 `pair --wait` holds the QR code on screen until a phone uses it or the code
 expires, which is why the desktop client drives it from a floating terminal.
-`send --pick` opens the GTK file chooser instead of taking a path.
+`send --pick` opens the GTK file chooser instead of taking a path. The bar
+widget takes a path the shortest way there is: drop a file on the icon and it
+runs `send <file>` once per file dropped.
 
 Configuration lives in `~/.config/omarchy-connect/config.json` (mode 0600 —
 it holds the device tokens). More than one process writes it — the long-lived
@@ -1106,8 +1108,7 @@ Adapters for the other coding agents — Codex, Gemini CLI — and a raw
 the platforms that cannot pin a certificate (iOS and Expo Go), so TLS is not
 the only way to close that gap; a real scroll wheel without
 depending on `ydotool`; replying to a mirrored message from the desktop
-notification itself rather than from the CLI; and drag-and-drop onto the bar
-widget to send a file.
+notification itself rather than from the CLI.
 
 The one gap that is not on this list is sending a message from an iPhone. It is
 not a matter of effort — iOS exposes no way to do it, to anyone.

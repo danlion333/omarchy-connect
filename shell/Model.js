@@ -125,6 +125,56 @@ function command(status, args) {
   return exec.concat(args || [])
 }
 
+/** The last segment of a path, for a line that has no room for the rest. */
+function fileName(filePath) {
+  var parts = String(filePath || "").split("/")
+  return parts[parts.length - 1] || String(filePath || "")
+}
+
+/**
+ * What a drag carries, as paths the `send` CLI would take.
+ *
+ * A `text/uri-list` drop hands over URIs, not filenames: the file manager
+ * writes `file:///home/me/holiday%20photo.png`, and the CLI wants
+ * `/home/me/holiday photo.png`. So the scheme comes off, the escapes are
+ * undone, and what is left is a path — the same one argument `send <file>`
+ * already accepts, with no shell in between to re-mangle the spaces.
+ *
+ * Anything that is not a local file is dropped rather than guessed at. A URL
+ * dragged out of a browser is `https://…`, and offering the phone a file named
+ * after a web address would be a worse answer than doing nothing. A `file://`
+ * URI naming another host is somebody else's disk; only the empty host (and
+ * `localhost`, which is how some file managers spell it) is this machine.
+ * Duplicates collapse because a drop can list the same file twice and sending
+ * it twice would be two notifications for one gesture.
+ */
+function dropPaths(urls) {
+  var items = Array.isArray(urls) ? urls : []
+  var paths = []
+  for (var i = 0; i < items.length; i++) {
+    var raw = String(items[i] || "").trim()
+    if (raw === "") continue
+    var found = ""
+    if (raw.toLowerCase().indexOf("file:") === 0) {
+      var rest = raw.substring(5).replace(/^\/\//, "")
+      var slash = rest.indexOf("/")
+      if (slash < 0) continue
+      var host = rest.substring(0, slash).toLowerCase()
+      if (host !== "" && host !== "localhost") continue
+      found = rest.substring(slash)
+      // A name with a stray `%` is a name, not a broken escape: keep the
+      // characters rather than throwing the whole file away.
+      try { found = decodeURIComponent(found) } catch (e) { }
+    } else if (raw.charAt(0) === "/") {
+      found = raw
+    } else {
+      continue
+    }
+    if (found !== "" && paths.indexOf(found) < 0) paths.push(found)
+  }
+  return paths
+}
+
 function onlineDevices(status) {
   if (!isObject(status) || !Array.isArray(status.devices)) return []
   return status.devices.filter(function (d) { return d && d.online === true })

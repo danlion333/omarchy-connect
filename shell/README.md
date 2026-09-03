@@ -33,6 +33,13 @@ bar's neighbours along with it once a minute. The count already has a home —
 the notification card is up for exactly as long as the call is, says the same
 number, and is what you were looking at when you answered.
 
+The icon is also the shortest way to send a file: drag one out of the file
+manager and drop it on the glyph. The icon lights the way it does for a live
+pairing code while the file is over it, each dropped file becomes one
+`omarchy-connect send <file>`, and the CLI's own "Sent to phone" card reports
+each one. Nothing to send to — the daemon stopped, or no phone connected — is
+a card that says so rather than a file that quietly went nowhere.
+
 ## Panel
 
 The panel is built around one rule: the top of it answers the question you

@@ -365,6 +365,73 @@ Item {
     note("Pick a file to send")
   }
 
+  /**
+   * Files dropped on the bar icon.
+   *
+   * The same road as `sendFile()`, minus the picker: one `send <path>` per
+   * file, because that is the only shape the CLI has and this is not the place
+   * to invent another one. What is different is that a drop can name ten files
+   * at once, so they go through a queue and one process rather than ten
+   * processes racing each other — a file's own notification then arrives in
+   * the order the files were dropped, and the panel can still say something
+   * while the rest are on their way.
+   *
+   * The refusals are said out loud. A drop is a gesture at a bar icon with no
+   * panel open, so a status line nobody can see is the same as saying nothing,
+   * and a file that vanishes into a desktop that looks like it accepted it is
+   * the worst outcome available here.
+   */
+  function sendPaths(urls) {
+    var paths = Model.dropPaths(urls)
+    if (paths.length === 0) return refuseDrop("Only files can be dropped here")
+    if (!root.running) return refuseDrop("Omarchy Connect is not running")
+    if (root.online.length === 0) return refuseDrop("No phone is connected — nothing to send to")
+    root.sendQueue = root.sendQueue.concat(paths)
+    note(paths.length === 1 ? "Sending " + Model.fileName(paths[0]) + "…" : "Sending " + paths.length + " files…")
+    sendNext()
+  }
+
+  /** The queue of dropped files still waiting for their turn at the CLI. */
+  property var sendQueue: []
+
+  function sendNext() {
+    if (sender.running || root.sendQueue.length === 0) return
+    sender.command = Model.command(root.status, ["send", String(root.sendQueue[0])])
+    sender.running = true
+  }
+
+  /** Nothing was sent, and the person who let go of the mouse should know. */
+  function refuseDrop(reason) {
+    note(reason)
+    // `--` for the same reason the daemon uses it: a filename is not a flag,
+    // whatever it starts with.
+    detach(["notify-send", "-a", "Omarchy Connect", "--", "Not sent", reason])
+  }
+
+  Process {
+    id: sender
+    running: false
+    command: []
+    stdout: StdioCollector { id: senderOut; waitForEnd: true }
+    stderr: StdioCollector { id: senderErr; waitForEnd: true }
+    onExited: function (exitCode) {
+      var queue = root.sendQueue.slice()
+      var file = String(queue.shift() || "")
+      root.sendQueue = queue
+      // A success already announced itself: the CLI, with no terminal to print
+      // its card into, raises the "Sent to phone" card itself. Only a failure
+      // is this panel's to report.
+      if (exitCode !== 0) {
+        var why = root.elide(String(senderErr.text || senderOut.text || "")) || "the command failed"
+        refuseDrop(Model.fileName(file) + " — " + why)
+      }
+      root.refresh()
+      // Not straight from the exit handler: the process this is running inside
+      // is the one the next file would be started on.
+      if (root.sendQueue.length > 0) Qt.callLater(root.sendNext)
+    }
+  }
+
   function openInbox() {
     var inbox = (root.status && root.status.inbox) ? String(root.status.inbox) : ""
     if (inbox === "") return
