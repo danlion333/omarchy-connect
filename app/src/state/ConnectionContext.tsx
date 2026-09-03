@@ -44,6 +44,12 @@ type ConnectionValue = {
   addEndpoint: (host: string, port: number) => Promise<{ ok: boolean; error?: string }>
   removeEndpoint: (host: string, port: number) => Promise<void>
   can: (plugin: string, feature: string) => boolean
+  /**
+   * Says "somebody is reading the stats" for as long as the returned function
+   * has not been called. Nothing is subscribed to the desktop's 1 Hz sampler
+   * while no screen is holding one.
+   */
+  watchStats: () => () => void
 }
 
 const ConnectionContext = createContext<ConnectionValue | null>(null)
@@ -78,6 +84,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
   const refreshAgentJobs = useCallback(() => link.refreshAgentJobs(), [])
+  const watchStats = useCallback(() => link.watchStats(), [])
 
   const can = useCallback(
     (plugin: string, feature: string) => Boolean((state.hello?.capabilities?.[plugin] as any)?.[feature]),
@@ -107,6 +114,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       addEndpoint,
       removeEndpoint,
       can,
+      watchStats,
     }),
     [
       state,
@@ -122,6 +130,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       addEndpoint,
       removeEndpoint,
       can,
+      watchStats,
     ],
   )
 

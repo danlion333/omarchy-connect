@@ -110,6 +110,8 @@ export type LinkState = {
 const MAX_FILE_EVENTS = 30
 /** After this many failed retries we stop trusting the stored address. */
 const RELOCATE_AFTER = 3
+/** The one subscription that is held by a screen rather than by the socket. */
+const STATS = 'stats'
 
 const INITIAL: LinkState = {
   ready: false,
@@ -143,6 +145,17 @@ class Link {
   private relocatingNow = false
   private wakingNow = false
   private listening = false
+  /**
+   * How many screens are asking for the per-second stats snapshot.
+   *
+   * Counted rather than a flag because the answer has to survive two screens
+   * overlapping: React mounts the incoming one before it unmounts the one
+   * going away, and a boolean would be turned off by the departure and stay
+   * off. Nothing is holding this most of the time, which is the point.
+   */
+  private statsWatchers = 0
+  /** Whether the desktop has been told, so it is told once per change. */
+  private statsWanted = false
 
   /* ── subscription ────────────────────────────────────────────────── */
 
@@ -234,6 +247,67 @@ class Link {
     this.client = client
     this.unwire = this.wire(client)
     this.patch({ client })
+    // A fresh client starts out subscribed to the always-on events and
+    // nothing else, so whatever is on screen right now has to ask again.
+    this.statsWanted = false
+    this.syncStats()
+  }
+
+  /**
+   * Asks for the stats feed while something is on screen to read it.
+   *
+   * The daemon samples CPU, memory, disk and network once a second and sends
+   * the lot to every subscribed phone. That is worth paying for while the
+   * dashboard is in front of somebody and worth nothing at all otherwise — on
+   * another tab, or with the phone in a pocket and the link held open by the
+   * foreground service. The subscription is therefore held by the screen that
+   * reads it rather than by the socket, and released when it goes away.
+   *
+   * Returns the release, which is idempotent: an effect cleanup that runs
+   * twice must not take somebody else's watch down with it.
+   */
+  watchStats(): () => void {
+    this.statsWatchers += 1
+    this.syncStats()
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.statsWatchers -= 1
+      this.syncStats()
+    }
+  }
+
+  /**
+   * Brings the desktop's idea of the stats subscription in line with ours.
+   *
+   * Two things decide it: whether a screen is holding a watch, and whether the
+   * app is in front of anybody at all. The second matters as much as the
+   * first — the dashboard stays mounted while the phone is face-down on a
+   * table, which is exactly the case this is for.
+   *
+   * `appState` is passed in from the listener rather than read here, because
+   * the change event is the earliest anything knows and there is no reason to
+   * trust that the global has caught up yet.
+   */
+  private syncStats(appState: string = AppState.currentState) {
+    const wanted = this.statsWatchers > 0 && appState === 'active'
+    if (wanted === this.statsWanted) return
+    this.statsWanted = wanted
+    if (!wanted) return this.client?.unsubscribe([STATS])
+    this.client?.subscribe([STATS])
+    // The tick is a whole second wide and the numbers on screen are whatever
+    // the dashboard was last showing, so returning to it would otherwise mean
+    // up to a second of visibly old figures. One question answers that
+    // straight away; the feed takes over from the next tick.
+    this.client
+      ?.call<Stats>('system.stats', {})
+      .then((data) => {
+        if (this.statsWanted) this.patch({ stats: data })
+      })
+      .catch(() => {
+        /* the subscription is the real source; a missed one-shot costs a tick */
+      })
   }
 
   private wire(client: ConnectClient) {
@@ -343,6 +417,11 @@ class Link {
 
     AppState.addEventListener('change', (state) => {
       if (state === 'active') this.client?.reconnectNow()
+      // Going away drops the stats feed even with the dashboard still mounted;
+      // coming back picks it up again. Every other subscription is untouched,
+      // because everything else on the list is news the phone wants precisely
+      // when nobody is looking at it.
+      this.syncStats(state)
     })
 
     const native = linkService()
