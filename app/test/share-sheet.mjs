@@ -44,8 +44,8 @@ check('a link with something after it is not one either', !isLink('https://a.b s
 {
   const { log, sinks } = desktop()
   const out = await deliverShare({ text: 'https://omarchy.org', files: [] }, sinks)
-  check('a shared link is opened on the desktop', log.urls[0] === 'https://omarchy.org')
-  check('and nothing is put on the clipboard', log.texts.length === 0)
+  check('a shared link lands on the desktop clipboard', log.texts[0] === 'https://omarchy.org')
+  check('and is opened there as well', log.urls[0] === 'https://omarchy.org')
   check('the summary names it', shareSummary(out) === 'sent the link')
 }
 
@@ -85,6 +85,22 @@ check('a link with something after it is not one either', !isLink('https://a.b s
   check('the four that went are counted', out.sent.length === 4 && !out.sent.includes('c.jpg'))
   check('the one that did not is named', out.failed.length === 1 && out.failed[0].label === 'c.jpg')
   check('and it is named to the user too', shareSummary(out).includes('c.jpg'))
+}
+
+{
+  // A desktop with no browser willing to answer has still been handed the link.
+  const log = []
+  const sinks = {
+    openUrl: async () => {
+      throw new Error('no handler')
+    },
+    copyText: async (text) => log.push(text),
+    upload: async () => {},
+  }
+  const out = await deliverShare({ text: 'https://omarchy.org', files: [] }, sinks)
+  check('a link that will not open is still on the clipboard', log[0] === 'https://omarchy.org')
+  check('and counts as delivered', out.sent[0] === 'the link')
+  check('with the opening named as the part that failed', out.failed[0].label === 'opening the link')
 }
 
 /* ── a caption alongside a picture is not thrown away ───────────────────── */

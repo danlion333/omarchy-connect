@@ -78,6 +78,11 @@ export function shareBlocked(state: { paired: boolean; connected: boolean }): st
  * Text arriving alongside files is sent as well rather than discarded. Some
  * apps attach a caption to a picture, and dropping it would be exactly the
  * silent loss this is written to avoid; it shows up in the summary either way.
+ *
+ * A link does both things: it lands on the desktop clipboard like any other
+ * text, and then it is opened. The clipboard is the delivery — it is what is
+ * still there in ten minutes, whatever the browser did with the tab — so a
+ * desktop with nothing willing to open a URL has still received the link.
  */
 export async function deliverShare(payload: SharePayload, sinks: ShareSinks): Promise<ShareOutcome> {
   const sent: string[] = []
@@ -96,11 +101,17 @@ export async function deliverShare(payload: SharePayload, sinks: ShareSinks): Pr
   if (text) {
     const link = isLink(text)
     try {
-      if (link) await sinks.openUrl(text)
-      else await sinks.copyText(text)
+      await sinks.copyText(text)
       sent.push(link ? 'the link' : 'the text')
     } catch (err) {
       failed.push({ label: link ? 'the link' : 'the text', error: (err as Error).message || 'send failed' })
+    }
+    if (link) {
+      try {
+        await sinks.openUrl(text)
+      } catch (err) {
+        failed.push({ label: 'opening the link', error: (err as Error).message || 'the desktop would not open it' })
+      }
     }
   }
 
