@@ -38,7 +38,7 @@ const base = {
   agents: [session('a'), session('b', 'waiting')],
   agentLimits: null,
   agentJobs: [],
-  clipboard: null,
+  clipboard: [],
   files: [],
   latencyMs: 12,
   relocating: false,

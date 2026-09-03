@@ -53,7 +53,7 @@ export type StatusSlice = {
   error: string | null
   desktop: SavedDesktop | null
   hello: Hello | null
-  clipboard: ClipboardEvent | null
+  clipboard: ClipboardEvent[]
   files: FileEvent[]
   latencyMs: number | null
   relocating: boolean
