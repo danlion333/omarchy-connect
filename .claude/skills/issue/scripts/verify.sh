@@ -38,17 +38,12 @@ if ! phone_present; then
   exit 0
 fi
 
-if grep -q daemon <<<"$areas" || grep -q shell <<<"$areas"; then
-  "$SKILL_DIR/scripts/daemon-from.sh" "$wt" || fail+=("daemon did not start from worktree")
-  echo "waiting for the phone to redial…"
-  ok=""
-  for _ in $(seq 1 30); do
-    sleep 1
-    journalctl --user -u "$UNIT" --since "-45s" --no-pager -o cat | grep -q "connected from" && { ok=1; break; }
-  done
-  [ -n "$ok" ] && echo "phone connected to the worktree daemon" || fail+=("phone never connected to the worktree daemon")
-  node "$wt/daemon/bin/omarchy-connect.js" status 2>&1 | head -20
-fi
+# The phone will not bring the link up with the screen off, and a link proven
+# before the new APK is installed is the *previous* build's link. So: wake the
+# screen, install the build under test, start the worktree daemon, and only
+# then relaunch the app and wait for it to dial in.
+hdr "wake the screen"
+wake_phone || fail+=("screen would not wake — the app cannot dial and the screenshot is black")
 
 if [ "$class" = apk ] || grep -q '^app' <<<"$(git -C "$wt" diff --name-only master...HEAD | grep -v '^app/test')"; then
   hdr "release apk"
@@ -56,11 +51,28 @@ if [ "$class" = apk ] || grep -q '^app' <<<"$(git -C "$wt" diff --name-only mast
     (cd "$wt/app/android" && ./gradlew -q assembleRelease 2>&1) \
       && adb install -r "$wt/app/android/app/build/outputs/apk/release/app-release.apk" \
       || fail+=("release apk build/install")
-    adb shell am force-stop $PKG; adb shell am start -n $PKG/.MainActivity >/dev/null
-    sleep 8
   else
     echo "app changed but no native project in the worktree (class is $class, not apk) — JS was not run on the phone"
   fi
+fi
+
+if grep -q daemon <<<"$areas" || grep -q shell <<<"$areas"; then
+  "$SKILL_DIR/scripts/daemon-from.sh" "$wt" || fail+=("daemon did not start from worktree")
+fi
+
+hdr "the phone dials the worktree daemon"
+adb shell am force-stop $PKG
+adb shell am start -n $PKG/.MainActivity >/dev/null 2>&1
+since_mark="$(date -u +%Y-%m-%d\ %H:%M:%S)"
+ok=""
+for _ in $(seq 1 30); do
+  sleep 1
+  journalctl --user -u "$UNIT" --since "$since_mark" --no-pager -o cat | grep -q "connected from" && { ok=1; break; }
+done
+[ -n "$ok" ] && echo "phone connected after the app under test was launched" \
+             || fail+=("phone never connected to the worktree daemon")
+if grep -q daemon <<<"$areas" || grep -q shell <<<"$areas"; then
+  node "$wt/daemon/bin/omarchy-connect.js" status 2>&1 | head -20
 fi
 
 hdr "phone state"

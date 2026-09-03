@@ -62,3 +62,18 @@ touched_areas() {
 }
 
 phone_present() { adb get-state >/dev/null 2>&1; }
+
+# The app will not bring the link up while the screen is off, and a screenshot
+# taken then is a black rectangle. Wake and unlock before anything on-phone.
+wake_phone() {
+  local state
+  state="$(adb shell dumpsys display 2>/dev/null | grep -m1 -o 'mScreenState=[A-Z_]*')"
+  echo "screen before: ${state:-unknown}"
+  grep -q 'ON' <<<"$state" || adb shell input keyevent 224   # KEYCODE_WAKEUP
+  sleep 1
+  adb shell input keyevent 82                                # dismiss the keyguard
+  sleep 1
+  state="$(adb shell dumpsys display 2>/dev/null | grep -m1 -o 'mScreenState=[A-Z_]*')"
+  echo "screen after: ${state:-unknown}"
+  grep -q 'ON' <<<"$state"
+}
