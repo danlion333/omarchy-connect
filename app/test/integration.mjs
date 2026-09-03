@@ -133,8 +133,15 @@ check('clipboard through the client', clip.text === 'integration test')
 const failure = await client.call('theme.set', { name: 'no-such-theme' }).catch((e) => e.message)
 check('errors surface as rejections', typeof failure === 'string' && failure.length > 0, String(failure).slice(0, 60))
 
+// Asked for rather than assumed: the stats feed is subscribed by whatever is
+// on screen to read it and by nothing else, so a client nobody is looking at
+// gets none. `stats-pause` is the suite about that; this one only wants to see
+// an event channel carry something end to end.
+const statsFrom = events.filter((e) => e.event === 'stats').length
+client.subscribe(['stats'])
 await sleep(2200)
-check('stats events reach the client', events.filter((e) => e.event === 'stats').length >= 2)
+check('stats events reach the client once asked for', events.filter((e) => e.event === 'stats').length - statsFrom >= 2)
+client.unsubscribe(['stats'])
 
 // Reconnect: the token from pairing must be enough on its own.
 const second = new ConnectClient({
