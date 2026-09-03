@@ -9,7 +9,12 @@ import { font, radius, size, space } from '../theme'
 
 type Mode = 'scan' | 'find' | 'manual'
 
-export function PairScreen() {
+/**
+ * `notice` is the one thing this screen says that is not about pairing: a
+ * share arrived from another app and there is no desktop to send it to yet.
+ * Saying so here is the difference between a refusal and a disappearance.
+ */
+export function PairScreen({ notice }: { notice?: string | null } = {}) {
   const { pair, palette } = useConnection()
   const [mode, setMode] = useState<Mode>('scan')
   const [busy, setBusy] = useState(false)
@@ -35,6 +40,11 @@ export function PairScreen() {
       <View style={{ marginBottom: space.xl }}>
         <Title style={{ fontSize: 26 }}>Omarchy Connect</Title>
         <Caps style={{ marginTop: space.xs }}>pair with your desktop</Caps>
+        {notice ? (
+          <Body tone={palette.orange} style={{ marginTop: space.md, fontSize: size.label }}>
+            {notice}
+          </Body>
+        ) : null}
       </View>
 
       <View style={{ marginBottom: space.lg }}>

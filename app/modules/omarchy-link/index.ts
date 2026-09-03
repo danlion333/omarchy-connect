@@ -2,6 +2,7 @@ import { requireNativeModule, NativeModule } from 'expo'
 import { Platform } from 'react-native'
 
 import type { NetworkFacts } from '../../src/lib/retry'
+import type { SharePayload } from '../../src/lib/share'
 
 export type LinkStatusText = string
 
@@ -26,6 +27,14 @@ type Events = {
    * beyond "found".
    */
   onLocateFound: () => void
+  /**
+   * Another app shared something to this one while it was already running.
+   *
+   * Carries nothing: the share itself is fetched with `takeShareIntent`,
+   * because reading it copies every attachment out of the sharing app and
+   * that is not work to do on the way past an event.
+   */
+  onShareIntent: () => void
 }
 
 /**
@@ -73,6 +82,7 @@ declare class OmarchyLink extends NativeModule<Events> {
   isBatteryOptimized(): boolean
   openBatterySettings(): Promise<void>
   sendDatagram(payload: string, host: string, port: number): Promise<number>
+  takeShareIntent(): Promise<SharePayload | null>
 }
 
 /**
@@ -101,6 +111,36 @@ export function linkService(): OmarchyLink | null {
 }
 
 export const backgroundLinkSupported = () => linkService() !== null
+
+/* ── the system share sheet ──────────────────────────────────────────── */
+
+/**
+ * The share this app was opened with, taken rather than read.
+ *
+ * `null` on every platform without the native module, and on every launch
+ * that was not a share. Taking it spends it: asking twice does not deliver
+ * the same photo twice, which matters because the activity is `singleTask`
+ * and its launching intent outlives the share by the whole session.
+ */
+export async function takeSharedIntent(): Promise<SharePayload | null> {
+  try {
+    return (await linkService()?.takeShareIntent()) ?? null
+  } catch {
+    return null
+  }
+}
+
+/** Fires when a share arrives at an app that is already open. */
+export function onSharedIntent(handler: () => void): () => void {
+  const native = linkService()
+  if (!native) return () => {}
+  try {
+    const subscription = native.addListener('onShareIntent', handler)
+    return () => subscription.remove()
+  } catch {
+    return () => {}
+  }
+}
 
 /** Whether the link is wanted while the app is closed. */
 export function backgroundLinkEnabled(): boolean {

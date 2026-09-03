@@ -14,6 +14,8 @@ import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { FALLBACK_PALETTE, font, size, space } from './src/theme'
+import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
+import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
 
 type TabKey = 'stats' | 'remote' | 'agents' | 'share' | 'setup'
 
@@ -53,6 +55,8 @@ function Shell() {
   const [tab, setTab] = useState<TabKey>('stats')
   const route = useRequestedRoute()
   const [opening, setOpening] = useState<string | null>(null)
+  const [shared, setShared] = useState<SharePayload | null>(null)
+  useIncomingShare(setShared)
 
   // A tapped notification should land where its news is, not on whatever
   // screen the app happened to be left on. `useURL` covers both the cold start
@@ -63,8 +67,17 @@ function Shell() {
     if (route.agent) setOpening(route.agent)
   }, [route])
 
+  // Somebody shared to this app from another one: whatever they were looking
+  // at, the screen that says what is happening to it is the Share screen.
+  useEffect(() => {
+    if (shared) setTab('share')
+  }, [shared])
+
   if (!ready) return <Splash />
-  if (!desktop) return <PairScreen />
+  // A share that arrives before there is anywhere to send it must not vanish
+  // into a pairing screen without a word: the whole point of the share sheet
+  // is that nobody is watching the app afterwards.
+  if (!desktop) return <PairScreen notice={shared ? shareBlocked({ paired: false, connected: false }) : null} />
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
@@ -72,12 +85,38 @@ function Shell() {
         {tab === 'stats' ? <DashboardScreen /> : null}
         {tab === 'remote' ? <RemoteScreen /> : null}
         {tab === 'agents' ? <AgentsScreen open={opening} onOpened={() => setOpening(null)} /> : null}
-        {tab === 'share' ? <ShareScreen /> : null}
+        {tab === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={() => setShared(null)} /> : null}
         {tab === 'setup' ? <SettingsScreen /> : null}
       </View>
       <TabBar current={tab} onChange={setTab} />
     </View>
   )
+}
+
+/**
+ * Whatever another app has just shared to this one.
+ *
+ * Two arrivals, one handler: a cold start, where the share is the intent the
+ * activity was created with and is there to be collected as soon as the tree
+ * is up, and a share into an app that was already open, which Android
+ * delivers as a new intent and the native module announces. Taking a share
+ * spends it, so a resumed app does not re-send the last photo.
+ */
+function useIncomingShare(onShare: (payload: SharePayload) => void) {
+  useEffect(() => {
+    let alive = true
+    const collect = () => {
+      takeSharedIntent().then((payload) => {
+        if (alive && payload && !isEmptyShare(payload)) onShare(payload)
+      })
+    }
+    collect()
+    const off = onSharedIntent(collect)
+    return () => {
+      alive = false
+      off()
+    }
+  }, [onShare])
 }
 
 /**

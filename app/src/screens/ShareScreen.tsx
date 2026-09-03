@@ -25,6 +25,13 @@ import { bytes, clock } from '../lib/format'
 import { downloadOffer } from '../lib/download'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind } from '../lib/media'
+import {
+  deliverShare,
+  describeShare,
+  shareBlocked,
+  shareSummary,
+  type SharePayload,
+} from '../lib/share'
 import { alpha, font, radius, size, space } from '../theme'
 
 type InboxItem = { name: string; size: number; at: number }
@@ -49,7 +56,16 @@ const preview = (text: string) => {
   return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat || '(blank)'
 }
 
-export function ShareScreen() {
+/**
+ * `incoming` is a share another app handed over through the system share
+ * sheet. It is taken once — `onIncomingTaken` says so — and then held here
+ * until there is a desktop answering, because a cold start from a share is
+ * always a second or two ahead of the socket.
+ */
+export function ShareScreen({
+  incoming,
+  onIncomingTaken,
+}: { incoming?: SharePayload | null; onIncomingTaken?: () => void } = {}) {
   const { call, client, clipboard, files, palette, status } = useConnection()
   const [draft, setDraft] = useState('')
   const [inbox, setInbox] = useState<InboxItem[]>([])
@@ -62,6 +78,8 @@ export function ShareScreen() {
   const [busy, setBusy] = useState<string | null>(null)
   /** The history entry last tapped, so its row can say so. */
   const [copied, setCopied] = useState<string | null>(null)
+  /** A share from another app, waiting for a desktop that will take it. */
+  const [queued, setQueued] = useState<SharePayload | null>(null)
 
   const connected = status === 'connected'
 
@@ -247,6 +265,57 @@ export function ShareScreen() {
     }
   }, [loadInbox, upload])
 
+  /* ── the system share sheet ────────────────────────────────────────── */
+
+  /**
+   * Send a share on, and say what became of it.
+   *
+   * Cleared from the queue first, on purpose: the outcome — including a file
+   * that would not upload — is reported rather than retried forever, and the
+   * one thing that must never happen is the same photo going twice because a
+   * re-render found it still waiting.
+   */
+  const deliver = useCallback(
+    async (payload: SharePayload) => {
+      setQueued(null)
+      setBusy('incoming')
+      try {
+        const outcome = await deliverShare(payload, {
+          openUrl: (url) => call('system.openUrl', { url }),
+          copyText: (text) => call('share.text', { text, action: 'clipboard' }),
+          upload: (item) => upload(item.uri, item.name),
+        })
+        if (outcome.failed.length) {
+          setError(shareSummary(outcome))
+          setNote(null)
+        } else {
+          report(shareSummary(outcome))
+        }
+        loadInbox()
+      } catch (err) {
+        fail(err)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [call, loadInbox, upload],
+  )
+
+  // Taken from the tree above as soon as it appears, so that a second render
+  // does not see the same share again.
+  useEffect(() => {
+    if (!incoming) return
+    setQueued(incoming)
+    onIncomingTaken?.()
+  }, [incoming, onIncomingTaken])
+
+  // Held until the socket is up. A share that arrived with the app cold is
+  // ahead of the link by a second or two, and refusing it in that second
+  // would be refusing nearly every share.
+  useEffect(() => {
+    if (queued && connected) deliver(queued)
+  }, [connected, deliver, queued])
+
   /* ── files in ──────────────────────────────────────────────────────── */
 
   /**
@@ -382,6 +451,30 @@ export function ShareScreen() {
         <Body tone={palette.red} style={{ marginBottom: space.md, fontSize: size.label }}>
           {error}
         </Body>
+      ) : null}
+      {busy === 'incoming' ? (
+        <Body tone={palette.muted} style={{ marginBottom: space.md, fontSize: size.label }}>
+          sending what was shared…
+        </Body>
+      ) : null}
+
+      {queued ? (
+        <Card>
+          <CardHeader icon="share-2" title="Shared to Omarchy Connect" subtitle={describeShare(queued)} />
+          <Body tone={palette.orange} style={{ marginBottom: space.md, fontSize: size.label }}>
+            {shareBlocked({ paired: true, connected })}
+          </Body>
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <Button
+              icon="refresh-cw"
+              label="Try again"
+              onPress={() => deliver(queued)}
+              disabled={!connected}
+              style={{ flex: 1 }}
+            />
+            <Button icon="x" label="Discard" onPress={() => setQueued(null)} style={{ flex: 1 }} />
+          </View>
+        </Card>
       ) : null}
 
       <Card>
