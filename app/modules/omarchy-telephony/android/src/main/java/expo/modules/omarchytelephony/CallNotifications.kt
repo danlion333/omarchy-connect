@@ -108,6 +108,9 @@ class CallNotifications : NotificationListenerService() {
     val dialler = try {
       (getSystemService(Context.TELECOM_SERVICE) as? android.telecom.TelecomManager)?.defaultDialerPackage
     } catch (error: Exception) {
+      // Without a dialler package every card that is not telecom's own is
+      // discarded, so a phone whose caller ID has gone quiet starts here.
+      Trace.warn("dialler.unknown", "error" to error.javaClass.simpleName)
       null
     }
     return dialler != null && sbn.packageName == dialler
@@ -115,8 +118,16 @@ class CallNotifications : NotificationListenerService() {
 
   override fun onNotificationPosted(sbn: StatusBarNotification) {
     val notification = sbn.notification ?: return
+    // Nothing is written above this line on purpose. A notification listener
+    // sees every card on the phone — mail, chats, the lot — and a log line per
+    // card would be both a torrent and a record of what the user is doing.
     if (notification.category != Notification.CATEGORY_CALL) return
-    if (!ours(sbn)) return
+    if (!ours(sbn)) {
+      // A VoIP app's call card, deliberately ignored. Worth a debug line: it
+      // is the honest answer to "why did the desktop not name this caller".
+      Trace.detail("notif.foreign", "pkg" to sbn.packageName)
+      return
+    }
 
     // Before the caller, because these are two independent things this card
     // can be carrying and a post with no name on it may still be the post that
@@ -132,13 +143,27 @@ class CallNotifications : NotificationListenerService() {
     // notification goes up before the address book has been consulted. Passing
     // either on as a name would put the number on the desktop twice and, worse,
     // convince the module the caller is already known.
-    if (Caller.isNumber(name)) {
+    val titleWasNumber = Caller.isNumber(name)
+    if (titleWasNumber) {
       if (number == null) number = name
       name = null
     }
     if (name == null && number != null) name = Contacts.nameFor(this, number)
-    if (name == null && number == null) return
+    if (name == null && number == null) {
+      // The dialler posted a call card carrying neither. Common for the first
+      // instant of a call and harmless then; persistent, it is the reason a
+      // desktop shows an anonymous ring.
+      Trace.detail("notif.call.bare", "hadTitle" to (title != null))
+      return
+    }
 
+    Trace.evt(
+      "notif.call",
+      "named" to (name != null),
+      "number" to (number != null),
+      "titleWasNumber" to titleWasNumber,
+      "from" to Trace.mark(number),
+    )
     PhoneStateReceiver.identify(this, name, number)
   }
 

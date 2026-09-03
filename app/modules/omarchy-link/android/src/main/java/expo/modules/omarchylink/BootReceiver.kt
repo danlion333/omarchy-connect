@@ -23,7 +23,14 @@ class BootReceiver : BroadcastReceiver() {
       Intent.ACTION_MY_PACKAGE_REPLACED -> Unit
       else -> return
     }
-    if (!LinkPrefs.isEnabled(context)) return
+    if (!LinkPrefs.isEnabled(context)) {
+      // A phone that comes back from a reboot without its link, because the
+      // user turned it off weeks ago, is indistinguishable from this receiver
+      // never running — until one of them says so.
+      Trace.evt("boot.skipped", "action" to intent.action, "reason" to "link-disabled")
+      return
+    }
+    Trace.evt("boot", "action" to intent.action)
     // The socket is not up yet and the notification is drawn before any
     // JavaScript runs, so say what is actually true.
     LinkPrefs.setStatus(context, "connecting")
@@ -32,6 +39,7 @@ class BootReceiver : BroadcastReceiver() {
       LinkService.start(context)
     } catch (error: Exception) {
       /* the app reconnects the next time it is opened */
+      Trace.fail("boot.start.failed", error)
     }
   }
 }

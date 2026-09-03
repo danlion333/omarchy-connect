@@ -28,18 +28,27 @@ object Backlog {
     val list = readRaw(context)
     list.put(JSONObject(entry))
     // Drop from the front: the oldest unseen event is the one worth losing.
-    while (list.length() > LIMIT) list.remove(0)
+    while (list.length() > LIMIT) {
+      list.remove(0)
+      // A message the desktop will now never see. The buffer is bounded on
+      // purpose, but reaching the bound means the phone has been unable to
+      // speak for a long time, and that is news.
+      Trace.warn("backlog.overflow", "limit" to LIMIT)
+    }
     prefs(context).edit().putString(KEY, list.toString()).apply()
+    Trace.detail("backlog.add", "kind" to entry["kind"], "held" to list.length())
   }
 
   @Synchronized
   fun drain(context: Context): List<Map<String, Any?>> {
     val list = readRaw(context)
     prefs(context).edit().remove(KEY).apply()
-    return (0 until list.length()).mapNotNull { index ->
+    val held = (0 until list.length()).mapNotNull { index ->
       val item = list.optJSONObject(index) ?: return@mapNotNull null
       item.keys().asSequence().associateWith { key -> if (item.isNull(key)) null else item.get(key) }
     }
+    if (held.isNotEmpty()) Trace.evt("backlog.drain", "count" to held.size)
+    return held
   }
 
   @Synchronized
@@ -49,6 +58,9 @@ object Backlog {
     try {
       JSONArray(prefs(context).getString(KEY, "[]") ?: "[]")
     } catch (error: Exception) {
+      // Everything held is lost at this point, and this is the only notice of
+      // it that will ever be given.
+      Trace.warn("backlog.unreadable", "error" to error.javaClass.simpleName)
       JSONArray()
     }
 }

@@ -55,11 +55,15 @@ class OmarchyLinkModule : Module() {
      * it is null.
      */
     OnCreate {
+      // The window in which a broadcast receiver has somewhere to send its
+      // work. Everything the outbox holds was queued outside one of these.
+      Trace.evt("runtime.up", "service" to LinkService.running)
       LinkActionReceiver.listener = { event, payload ->
         try {
           this@OmarchyLinkModule.sendEvent(event, payload)
         } catch (error: Exception) {
           /* the runtime went away mid-broadcast; the backlog still has it */
+          Trace.warn("runtime.send.failed", "event" to event, "error" to error.javaClass.simpleName)
         }
       }
       // The phone going quiet is news for the desktop that asked it to shout,
@@ -76,6 +80,7 @@ class OmarchyLinkModule : Module() {
     OnStartObserving { watchNetwork() }
     OnStopObserving { unwatchNetwork() }
     OnDestroy {
+      Trace.evt("runtime.down", "service" to LinkService.running, "locating" to Locator.ringing)
       LinkActionReceiver.listener = null
       Locator.onFound = null
       unwatchNetwork()

@@ -32,6 +32,9 @@ object LinkPrefs {
   fun hasChoice(context: Context): Boolean = prefs(context).contains(KEY_ENABLED)
 
   fun setEnabled(context: Context, value: Boolean) {
+    if (prefs(context).getBoolean(KEY_ENABLED, false) != value || !hasChoice(context)) {
+      Trace.evt("link.enabled", "value" to value)
+    }
     prefs(context).edit().putBoolean(KEY_ENABLED, value).apply()
   }
 
@@ -61,6 +64,10 @@ object LinkPrefs {
   fun isConnected(context: Context): Boolean = prefs(context).getBoolean(KEY_CONNECTED, false)
 
   fun setConnected(context: Context, value: Boolean) {
+    // The edge and not the level. This is written on a schedule by the client
+    // above it, so logging every write would bury the two moments anybody ever
+    // asks about — when the socket came up, and when it went away.
+    if (isConnected(context) != value) Trace.evt("link.connected", "value" to value)
     prefs(context).edit().putBoolean(KEY_CONNECTED, value).apply()
   }
 
@@ -77,6 +84,10 @@ object LinkPrefs {
   fun isWaiting(context: Context): Boolean = prefs(context).getBoolean(KEY_WAITING, false)
 
   fun setWaiting(context: Context, value: Boolean) {
+    // Parking is the difference between a phone that is trying and failing and
+    // one that has stopped trying on purpose, and from the outside — and from
+    // the notification — those look far too much alike.
+    if (isWaiting(context) != value) Trace.evt("link.waiting", "value" to value)
     prefs(context).edit().putBoolean(KEY_WAITING, value).apply()
   }
 

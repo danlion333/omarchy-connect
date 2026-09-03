@@ -125,8 +125,19 @@ class PhoneStateReceiver : BroadcastReceiver() {
     fun timed(context: Context, at: Long) {
       if (at <= 0L || at == chronometer) return
       chronometer = at
-      if (connectedAt() == null) return
-      if (lastState != "active") return
+      // Both refusals below are the guard working as designed — a card raised
+      // while the phone was still ringing, or one arriving before the
+      // broadcast — and both look from the desktop like a call whose timer
+      // simply never started. Saying which is which is the whole point.
+      if (connectedAt() == null) {
+        Trace.detail("call.timed.rejected", "reason" to "before-offhook", "offHook" to (offHookAt > 0L))
+        return
+      }
+      if (lastState != "active") {
+        Trace.detail("call.timed.rejected", "reason" to "not-active", "state" to lastState)
+        return
+      }
+      Trace.evt("call.timed", "call" to Trace.mark(callId), "since" to (at - offHookAt))
       OmarchyTelephonyModule.deliver(context, "onCall", callEvent("active"))
     }
 
@@ -174,12 +185,37 @@ class PhoneStateReceiver : BroadcastReceiver() {
       if (!named() && ringingNumber != null) {
         Contacts.nameFor(context, ringingNumber)?.let { ringingName = it }
       }
-      if (ringingNumber == hadNumber && ringingName == hadName) return
-      if (namedOut) return
-      if (lastState != "ringing") return
-      if (System.currentTimeMillis() - announcedAt > ENRICH_WINDOW_MS) return
+      // Four ways to learn nothing new, and a desktop showing a number where a
+      // name should be has hit exactly one of them. Which one it was is not
+      // recoverable after the fact from anywhere else.
+      if (ringingNumber == hadNumber && ringingName == hadName) {
+        Trace.detail("call.identify.skipped", "reason" to "nothing-new")
+        return
+      }
+      if (namedOut) {
+        Trace.detail("call.identify.skipped", "reason" to "already-named")
+        return
+      }
+      if (lastState != "ringing") {
+        Trace.detail("call.identify.skipped", "reason" to "not-ringing", "state" to lastState)
+        return
+      }
+      val age = System.currentTimeMillis() - announcedAt
+      if (age > ENRICH_WINDOW_MS) {
+        // Past the window the desktop would draw this as a second call rather
+        // than as the first one, named — so the name is kept for the ending.
+        Trace.evt("call.identify.late", "afterMs" to age, "window" to ENRICH_WINDOW_MS)
+        return
+      }
       announcedAt = System.currentTimeMillis()
       namedOut = named()
+      Trace.evt(
+        "call.identify",
+        "call" to Trace.mark(callId),
+        "from" to Trace.mark(ringingNumber),
+        "named" to namedOut,
+        "afterMs" to age,
+      )
       OmarchyTelephonyModule.deliver(context, "onCall", callEvent("ringing"))
     }
   }
@@ -195,7 +231,10 @@ class PhoneStateReceiver : BroadcastReceiver() {
       else -> return
     }
     // The broadcast fires more than once for the same state on some devices.
-    if (state == lastState) return
+    if (state == lastState) {
+      Trace.detail("call.state.repeat", "state" to state)
+      return
+    }
     lastState = state
 
     if (state == "ringing") {
@@ -225,8 +264,22 @@ class PhoneStateReceiver : BroadcastReceiver() {
     }
     // A process Android started for the IDLE of a call it never saw begin still
     // has a call to report; it just cannot say which way that one went.
-    if (state == "ended" && callId == null) begin(null)
+    if (state == "ended" && callId == null) {
+      Trace.evt("call.orphan.ended", "reason" to "no-beginning-seen")
+      begin(null)
+    }
 
+    // One line per transition, carrying the token the three reports of a
+    // single call share. Reading a log back, this is what turns three
+    // anonymous broadcasts into one conversation.
+    Trace.evt(
+      "call.state",
+      "state" to state,
+      "call" to Trace.mark(callId),
+      "direction" to direction,
+      "from" to Trace.mark(ringingNumber),
+      "named" to named(),
+    )
     OmarchyTelephonyModule.deliver(context, "onCall", callEvent(state))
 
     if (state == "ended") {

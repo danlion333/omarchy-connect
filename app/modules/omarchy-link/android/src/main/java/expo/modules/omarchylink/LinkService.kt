@@ -76,6 +76,11 @@ class LinkService : Service() {
       } catch (error: SecurityException) {
         // Notifications not granted on API 33+. The service still runs; the
         // user simply does not see it, which is their choice to make.
+        //
+        // Worth a line all the same, because from the outside this is
+        // indistinguishable from the link being down: no notification, no
+        // sign of the app, and a service quietly doing its job behind both.
+        Trace.warn("notification.refused", "reason" to "post-notifications-denied")
       }
     }
 
@@ -178,6 +183,7 @@ class LinkService : Service() {
   override fun onCreate() {
     super.onCreate()
     running = true
+    Trace.evt("service.create", "enabled" to LinkPrefs.isEnabled(this))
     // A fresh service instance means a fresh process and no socket: whatever
     // the last incarnation wrote about being connected — the flags and the
     // line of prose alike — is stale by definition, and the notification is
@@ -191,9 +197,14 @@ class LinkService : Service() {
 
   override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
     if (intent?.action == ACTION_STOP) {
+      Trace.evt("service.stop.asked")
       stopSelf()
       return START_NOT_STICKY
     }
+    // A null intent is Android restarting this after a kill rather than anyone
+    // asking for it, and that difference is most of what a morning-after
+    // reading of the log is trying to establish.
+    Trace.evt("service.start", "startId" to startId, "restart" to (intent == null))
     goForeground()
     ensureTask()
     // Restarted by Android with a null intent after a kill: the flag in
@@ -211,10 +222,17 @@ class LinkService : Service() {
           ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
         else 0,
       )
+      Trace.detail("service.foreground", "ok" to true)
     } catch (error: Exception) {
       // Android 12 forbids starting a foreground service from the background
       // outside a handful of exemptions. Losing the service is survivable —
       // the app reconnects the next time it is opened — crashing is not.
+      //
+      // This is the one failure in the module that looks exactly like nothing
+      // happening, so it is the one that most needs saying out loud: the link
+      // is not down because the network is bad, it is down because the service
+      // was never allowed to start.
+      Trace.fail("service.foreground.refused", error)
       stopSelf()
     }
   }
@@ -226,22 +244,36 @@ class LinkService : Service() {
    * torn down underneath it.
    */
   private fun ensureTask() {
-    val host = host ?: return
+    val host = host
+    if (host == null) {
+      // Not a React application, which should be impossible in this app and is
+      // therefore worth hearing about rather than returning from in silence.
+      Trace.warn("task.host.missing")
+      return
+    }
     val context = host.currentReactContext
     if (context != null) {
       startTask(context)
       return
     }
-    if (pendingListener != null) return
+    if (pendingListener != null) {
+      Trace.detail("task.waiting", "reason" to "already-listening")
+      return
+    }
     val listener = object : ReactInstanceEventListener {
       override fun onReactContextInitialized(context: ReactContext) {
         host.removeReactInstanceEventListener(this)
         pendingListener = null
+        Trace.evt("task.context.ready")
         startTask(context)
       }
     }
     pendingListener = listener
     host.addReactInstanceEventListener(listener)
+    // The gap between here and `task.context.ready` is the runtime coming back
+    // from nothing, and it is long enough that a log without both ends of it
+    // reads as the service having done nothing at all.
+    Trace.evt("task.context.starting")
     UiThreadUtil.runOnUiThread { host.start() }
   }
 
@@ -249,12 +281,20 @@ class LinkService : Service() {
     UiThreadUtil.runOnUiThread {
       val tasks = HeadlessJsTaskContext.getInstance(context)
       val current = taskId
-      if (current != null && tasks.isTaskRunning(current)) return@runOnUiThread
+      if (current != null && tasks.isTaskRunning(current)) {
+        Trace.detail("task.already", "id" to current)
+        return@runOnUiThread
+      }
       taskId = try {
         // No timeout, and allowed in the foreground: the task's whole job is
         // to outlive every transition between foreground and background.
         tasks.startTask(HeadlessJsTaskConfig(TASK, Arguments.createMap(), 0, true))
+          .also { Trace.evt("task.start", "id" to it) }
       } catch (error: Exception) {
+        // Without the task the process survives and the timers do not, so the
+        // link stays up exactly as long as the screen does. That is the
+        // subtlest way this module can fail and it deserves a line.
+        Trace.fail("task.start.failed", error)
         null
       }
     }
@@ -267,10 +307,12 @@ class LinkService : Service() {
     UiThreadUtil.runOnUiThread {
       val tasks = HeadlessJsTaskContext.getInstance(context)
       if (tasks.isTaskRunning(current)) tasks.finishTask(current)
+      Trace.detail("task.finish", "id" to current)
     }
   }
 
   override fun onDestroy() {
+    Trace.evt("service.destroy", "task" to taskId)
     running = false
     LinkPrefs.forgetConnection(this)
     // Nothing is left that could carry an answer to the desktop, or fetch a

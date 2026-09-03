@@ -51,13 +51,28 @@ class OmarchyTelephonyModule : Module() {
       if (module != null && module.observing) {
         try {
           module.sendEvent(event, payload)
+          // Which road an event took is the first question asked of every
+          // report that did not reach the desktop, and the only place it can
+          // be answered is here.
+          Trace.evt("deliver", "event" to event, "road" to "live")
           return
         } catch (error: Exception) {
           // The bridge went away between the check and the send. Fall through
           // and keep the event rather than dropping it.
+          Trace.warn("deliver.bridge.gone", "event" to event, "error" to error.javaClass.simpleName)
         }
       }
       Backlog.add(context.applicationContext, payload)
+      Trace.evt(
+        "deliver",
+        "event" to event,
+        "road" to "backlog",
+        "reason" to when {
+          module == null -> "no-module"
+          !module.observing -> "not-observing"
+          else -> "send-failed"
+        },
+      )
     }
   }
 
@@ -79,14 +94,29 @@ class OmarchyTelephonyModule : Module() {
 
     Events("onMessage", "onCall")
 
-    OnCreate { live = this@OmarchyTelephonyModule }
+    OnCreate {
+      live = this@OmarchyTelephonyModule
+      // Read through `appContext` rather than the `context` property below:
+      // that one throws when there is no React context, and a module reporting
+      // its own arrival is the last place that should be able to fail.
+      Trace.evt("module.create", "backlog" to appContext.reactContext?.let(Backlog::size))
+    }
     OnDestroy {
       observing = false
       if (live === this@OmarchyTelephonyModule) live = null
+      Trace.evt("module.destroy")
     }
 
-    OnStartObserving { observing = true }
-    OnStopObserving { observing = false }
+    // The window in which the live road is open. Every `deliver road=backlog`
+    // sits between one of these and the next.
+    OnStartObserving {
+      observing = true
+      Trace.evt("observing", "value" to true)
+    }
+    OnStopObserving {
+      observing = false
+      Trace.evt("observing", "value" to false)
+    }
 
     Function("isAvailable") { true }
 

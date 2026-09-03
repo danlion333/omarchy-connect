@@ -142,13 +142,45 @@ the app broken. `adb shell input keyevent KEYCODE_WAKEUP` first, and confirm wit
 adb logcat -c                                             # clear, then reproduce
 adb logcat -d --pid=$(adb shell pidof dev.omarchy.connect | tr -d '\r')
 adb logcat -d -s ReactNativeJS:V                          # JS console.*
+adb logcat -d -s OmarchyLink:V OmarchyTelephony:V         # the native modules
 adb logcat -d | grep -i omarchy                           # system's view of the app
 ```
 
-**The Kotlin modules currently emit no `Log.*` at all.** A filtered logcat comes back
-empty and that is not evidence of anything. Until logging is added, fall back to
-`dumpsys` for service state, and say plainly that the native path is unobservable rather
-than concluding it did not run.
+The two Kotlin modules speak under their own tags, one line per fact, in a shape
+meant to be grepped as much as read:
+
+```
+evt=service.start startId=1 restart=true
+evt=deliver event=onCall road=backlog reason=not-observing
+evt=call.state state=ringing call=3f9a21 direction=incoming from=8c14bd named=true
+```
+
+`evt=` names what happened and the rest are `key=value`. Nothing the user owns is
+in there — no message bodies, no numbers, no names. `from=8c14bd` is a salted
+digest drawn fresh each process: it says two lines are about the same number and
+nothing else, so it correlates a call across `ringing` and `ended` without being
+reversible. Lengths (`chars=42`) stand in for content.
+
+Levels carry meaning. `I` is a fact worth asserting on and is always there. `W`
+and `E` are the failures these modules deliberately swallow — a foreground
+service Android refused to start, an outbox that overflowed, a bridge that went
+away mid-send — and every one of those used to be silent. `D` is off until asked:
+
+```bash
+adb shell setprop log.tag.OmarchyLink DEBUG
+adb shell setprop log.tag.OmarchyTelephony DEBUG
+```
+
+Useful entry points when something looks broken: `evt=service.foreground.refused`
+(the link is down because the service never started, not because of the network),
+`evt=deliver road=backlog` (the event was kept rather than sent, and `reason=`
+says why), `evt=notification.refused` (the service is running and invisible,
+which looks identical to being dead), `evt=link.connected` (the socket's own
+edges, not the notification's opinion of them).
+
+An empty filtered logcat is now evidence — it means the code did not run. Before
+these tags existed it meant nothing at all, so a session that predates a build
+carrying them should still fall back to `dumpsys`.
 
 ### Service and permission state
 
