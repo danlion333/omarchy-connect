@@ -10,6 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { FAKE_TUI } from './fake-tui.mjs'
 import { connectPhone } from './phone.mjs'
 import { localHeaders } from './sandbox.mjs'
 
@@ -1161,6 +1162,48 @@ if (!hasTmux) {
   // it must never do is type a path the phone made up.
   const escaped = await req('agents.attach', { id: session.id, paths: ['/etc/passwd'] }).then(() => null, (e) => e.message)
   check('a path outside the drop directory is refused', String(escaped).includes('not one this phone handed over'), escaped)
+
+  /* ── a message the agent never took ─────────────────────────────────── */
+
+  // The bug this whole road was rewritten for: a picture and a caption make a
+  // multi-line body, a multi-line body reaches a TUI as a bracketed paste, and
+  // a TUI that swallowed the Return along with the paste left the message in
+  // its own composer. Both halves of the write had succeeded, so the daemon
+  // said `submitted: true` and flipped the row to `working` — and the phone,
+  // which had already cleared its composer, had thrown away the only copy.
+  //
+  // `fake-tui.mjs --deaf` is a terminal that never submits anything, so what
+  // is asserted here is the daemon's honesty rather than its typing.
+  const deafLog = path.join(sandbox, 'deaf.log')
+  fs.writeFileSync(deafLog, '')
+  tmux(['new-session', '-d', '-s', 'oc-deaf', '-x', '100', '-y', '30', `${process.execPath} ${FAKE_TUI} ${deafLog} deaf 100`])
+  await settle(600)
+  const deafPanePid = Number(tmux(['list-panes', '-t', 'oc-deaf', '-F', '#{pane_pid}']))
+  // tmux runs a command with no shell metacharacters in it directly, so the
+  // pane's own process is already the fake TUI and there is no child to find.
+  let deafPid = deafPanePid
+  try {
+    deafPid = Number(execFileSync('pgrep', ['-P', String(deafPanePid)], { encoding: 'utf8' }).trim().split('\n')[0]) || deafPanePid
+  } catch {
+    deafPid = deafPanePid
+  }
+  // The session moves to the pane its own hook says it is running in.
+  await hook('UserPromptSubmit', { pid: deafPid })
+  await hook('Stop')
+  await settle(400)
+  const beforeDeaf = (await req('agents.list')).sessions.find((s) => s.id === session.id)
+  check('the session is on the deaf pane and not working', beforeDeaf?.state !== 'working', String(beforeDeaf?.state))
+
+  const unheard = await req('agents.attach', { id: session.id, paths: [uploaded.path], text: 'did this land?' })
+  check('a send that never left says so', unheard.submitted === false, JSON.stringify(unheard))
+  await settle(300)
+  const afterDeaf = (await req('agents.list')).sessions.find((s) => s.id === session.id)
+  check('and the row does not claim the agent is working', afterDeaf?.state !== 'working', String(afterDeaf?.state))
+  check('nothing was submitted to it', fs.readFileSync(deafLog, 'utf8') === '', JSON.stringify(fs.readFileSync(deafLog, 'utf8')))
+  const deafScreen = await req('agents.screen', { id: session.id, lines: 20 })
+  check('the message is still sitting in the composer', deafScreen.screen.includes('did this land?'))
+  tmux(['kill-session', '-t', 'oc-deaf'])
+  await settle(300)
 
   tmux(['kill-session', '-t', 'oc-test'])
   await settle(300)

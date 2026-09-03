@@ -946,7 +946,11 @@ class Link {
 
   private async deliverReply(id: string, text: string) {
     try {
-      await this.call('agents.send', { id, text })
+      // `submitted: false` is the desktop saying it typed the answer and
+      // watched it stay in the agent's composer. Nothing was asked, so the
+      // notification must not say the answer went through.
+      const result = await this.call<{ submitted?: boolean }>('agents.send', { id, text })
+      if (result?.submitted === false) throw new Error('it is still sitting in the composer on the desktop')
       noteAgentAlert(id, `sent: ${text}`)
     } catch (error) {
       noteAgentAlert(id, `not sent — ${(error as Error)?.message || 'the desktop did not take it'}`)

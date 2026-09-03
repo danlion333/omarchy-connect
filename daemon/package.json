@@ -19,7 +19,7 @@
     "test:otp": "node test/otp.mjs",
     "test:locate": "node test/locate.mjs",
     "test:ios": "node test/ios.mjs",
-    "test:agents": "node test/agents.mjs && node test/agent-status.mjs && node test/agent-draft.mjs && node test/remote.mjs",
+    "test:agents": "node test/agents.mjs && node test/agent-status.mjs && node test/agent-draft.mjs && node test/agent-submit.mjs && node test/remote.mjs",
     "test:hostname": "node test/hostname.mjs",
     "test:wol": "node test/wol.mjs",
     "test:overlay": "node test/overlay.mjs",

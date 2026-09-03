@@ -1,5 +1,6 @@
 import { has, run } from '../lib/exec.js'
 import * as hypr from '../lib/hypr.js'
+import { composerOf, submitted as leftTheComposer } from './composer.js'
 import * as herdr from './herdr.js'
 import * as tmux from './tmux.js'
 import { ADAPTERS } from './index.js'
@@ -49,6 +50,24 @@ const RETURN_SETTLE_MS = 40
  * is still repainting from.
  */
 const KEY_GAP_MS = 40
+/**
+ * …and between a bracketed paste and the Return that submits it.
+ *
+ * This one is not politeness, it is the bug it was written for. A multi-line
+ * message goes to tmux as a paste, and a TUI that asked for bracketed paste
+ * does not treat a paste as keystrokes: it collects the whole run between the
+ * brackets and commits it to its input box on its own schedule. A Return
+ * written into the pty on the paste's heels arrives while that is still
+ * happening and is swallowed with it — the text lands in the composer, nothing
+ * is submitted, and the write itself reports success because both halves went
+ * out. The gap gives the paste time to become a composer's worth of text
+ * before the key that sends it arrives.
+ */
+const PASTE_SETTLE_MS = 250
+/** How long to let the screen redraw before reading the composer back. */
+const SUBMIT_SETTLE_MS = 320
+/** …and again, more patiently, when the first reading says nothing left. */
+const RETRY_SETTLE_MS = 700
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -280,21 +299,76 @@ async function wtype(args) {
 }
 
 /**
+ * The composer as it stands, for a road that can see one; `null` otherwise.
+ *
+ * Never throws. This is an observation taken on the side of a write that has
+ * already happened, and a capture that fails is a thing not known — not a
+ * message to be reported as lost.
+ */
+async function peek(entry) {
+  if (!isPane(entry.writable) || !entry.pane) return null
+  try {
+    const raw = entry.writable === 'herdr' ? await herdr.capture(entry, 40) : await tmux.capture(entry.pane, 40)
+    return composerOf(raw)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Press Return, then look at whether it did anything.
+ *
+ * The Return goes into a pty and nothing comes back out of it, so the only
+ * evidence that a message was accepted is the composer that no longer holds
+ * it. A screen this cannot read — a bare shell, a pager, a capture that failed
+ * — yields `true`, because the alternative is telling somebody their message
+ * failed on no evidence at all.
+ *
+ * The second press is not a workaround for the first: it is what a person does
+ * when a TUI was still busy with a paste, and it costs nothing on a composer
+ * that is already empty.
+ */
+async function submitAndConfirm(entry, before, press) {
+  await press()
+  if (before === null) return true
+
+  await sleep(SUBMIT_SETTLE_MS)
+  if (leftTheComposer(before, await peek(entry))) return true
+
+  await press()
+  await sleep(RETRY_SETTLE_MS)
+  return leftTheComposer(before, await peek(entry))
+}
+
+/**
  * Send a message, and by default submit it.
  *
  * `submit` is separate from the text because the two quick answers a phone
  * gives most — a bare Enter to accept, a digit to pick an option — are keys,
  * and because a long message is worth putting in front of the agent to look at
  * before it runs.
+ *
+ * `submitted` in the answer is an observation, not an echo of the argument.
+ * It used to be the flag it was asked for, which made it worth nothing: a
+ * message pasted into a TUI and left sitting there unsent came back saying
+ * `submitted: true`, the session was flipped to `working`, and the phone had
+ * thrown the text away. Now the composer is read before and after, and a
+ * `false` here means the daemon watched the message stay put.
  */
 export async function send(entry, text, { submit = true } = {}) {
   const body = String(text ?? '').replace(/\r\n/g, '\n').replace(/\n+$/, '')
   if (!body && !submit) throw new Error('nothing to send')
 
   if (entry.writable === 'tmux') {
+    // Taken before anything is typed, so that whatever the empty box already
+    // draws — a placeholder, a hint — is on both sides of the comparison.
+    const before = submit ? await peek(entry) : null
+    const pasted = body.includes('\n')
     if (body) await tmux.type(entry.pane, body)
-    if (submit) await tmux.key(entry.pane, 'Enter')
-    return { via: 'tmux', pane: entry.pane, submitted: submit }
+    if (!submit) return { via: 'tmux', pane: entry.pane, submitted: false }
+    if (pasted) await sleep(PASTE_SETTLE_MS)
+    const ok = await submitAndConfirm(entry, before, () => tmux.key(entry.pane, 'Enter'))
+    return { via: 'tmux', pane: entry.pane, submitted: ok }
   }
 
   // The message and the Return that submits it go in one request, which is
@@ -302,10 +376,27 @@ export async function send(entry, text, { submit = true } = {}) {
   // between the text and the Enter for a dropped connection to land in, and
   // no half a message left in somebody's composer when one does.
   if (entry.writable === 'herdr') {
+    const before = submit ? await peek(entry) : null
     await herdr.input(entry, { text: body, keys: submit ? ['enter'] : [] })
-    return { via: 'herdr', pane: entry.pane, submitted: submit }
+    if (!submit) return { via: 'herdr', pane: entry.pane, submitted: false }
+    // One request carried both halves, so there is nothing to press again
+    // unless the composer says the Return was eaten anyway — which a TUI in
+    // the middle of a paste will do to herdr exactly as it does to tmux.
+    if (before === null) return { via: 'herdr', pane: entry.pane, submitted: true }
+    await sleep(SUBMIT_SETTLE_MS)
+    let ok = leftTheComposer(before, await peek(entry))
+    if (!ok) {
+      await herdr.key(entry, 'enter')
+      await sleep(RETRY_SETTLE_MS)
+      ok = leftTheComposer(before, await peek(entry))
+    }
+    return { via: 'herdr', pane: entry.pane, submitted: ok }
   }
 
+  // Nothing to read back on this road: the compositor types into a window
+  // whose contents nobody here owns, so `submitted` stays the flag it was
+  // asked for. That is the same road that already warns the phone before its
+  // first send, and this is one more thing it cannot promise.
   if (entry.writable === 'wtype') {
     await borrowFocus(entry.window, async () => {
       if (body) await wtype(['--', body])

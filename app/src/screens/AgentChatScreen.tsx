@@ -1367,8 +1367,14 @@ function Composer({
     setShots([])
     void guard(async () => {
       try {
-        if (paths.length) await call('agents.attach', { id: session.id, paths, text: body })
-        else await call('agents.send', { id: session.id, text: body })
+        const result = paths.length
+          ? await call<{ submitted?: boolean }>('agents.attach', { id: session.id, paths, text: body })
+          : await call<{ submitted?: boolean }>('agents.send', { id: session.id, text: body })
+        // The desktop typed it and watched it stay in the agent's composer.
+        // Optimism ends here: a message that was not asked is worse than an
+        // error, because the row goes on saying the agent is working and the
+        // text this field threw away is the only copy there was.
+        if (result?.submitted === false) throw new Error('typed, but the agent did not take it — it is still in the composer on the desktop')
       } catch (err) {
         setText(body)
         setShots(ready)
