@@ -233,6 +233,29 @@ Item {
     action.running = true
   }
 
+  /* ── messages ─────────────────────────────────────────────────────── */
+
+  /**
+   * Answer a mirrored message from the panel rather than from a terminal.
+   *
+   * Worth waiting on, like answering a call: the desktop has no radio, so the
+   * daemon holds the request open until the handset says the message actually
+   * went out, and a failure — no phone connected, no permission on the
+   * handset, a number the radio would not take — is a sentence the person who
+   * just pressed Enter needs to see. `invoke` already puts that sentence on
+   * the panel; all this adds is the argv.
+   *
+   * Both halves are trimmed and an empty one sends nothing: the field can be
+   * submitted with a stray space in it, and a blank SMS is not something to
+   * bother the phone about.
+   */
+  function sendSms(to, message) {
+    var number = String(to || "").trim()
+    var body = String(message || "").trim()
+    if (number === "" || body === "") return
+    invoke(Model.smsCommand(root.status, number, body), "Sending…")
+  }
+
   /* ── calls ────────────────────────────────────────────────────────── */
 
   /**

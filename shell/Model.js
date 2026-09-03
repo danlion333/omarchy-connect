@@ -205,6 +205,36 @@ function phoneWho(entry) {
   return entry.name || entry.from || "unknown"
 }
 
+/**
+ * The number to answer, on a row worth answering — and an empty string on
+ * every other row.
+ *
+ * Only a mirrored SMS has somebody on the other end of it. An app's
+ * notification is the app talking, not a person; a missed call is a person,
+ * but answering one is a call rather than a message and the issue that asked
+ * for this said so. And a message can name somebody without giving a number:
+ * an iPhone's notification comes down the low-energy road as a title and a
+ * line of text, with no address anywhere in it, so there is nothing to send
+ * an SMS *to* however clearly the panel can say who wrote. Those rows get no
+ * field rather than a field that would fail on Enter.
+ */
+function phoneReplyTo(entry) {
+  if (!entry || entry.kind !== "sms") return ""
+  return String(entry.from || "").trim()
+}
+
+/**
+ * The argv that answers one message, for the same `invoke` the rest of the
+ * panel's actions go through.
+ *
+ * The message is one argument whatever is in it — the CLI joins the words it
+ * is given, so handing it a sentence pre-split would only lose the spacing
+ * somebody typed.
+ */
+function smsCommand(status, to, message) {
+  return command(status, ["sms", String(to || ""), String(message || "")])
+}
+
 /** The one line of detail that fits beside the name. */
 function phoneDetail(entry, now) {
   if (!entry) return ""
