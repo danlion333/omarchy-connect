@@ -29,7 +29,8 @@
     "test:local-auth": "node test/local-auth.mjs",
     "test:hygiene": "node test/hygiene.mjs",
     "test:clipboard-image": "node test/clipboard-image.mjs",
-    "test:config": "node test/config.mjs"
+    "test:config": "node test/config.mjs",
+    "test:replay": "node test/replay.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"

@@ -63,6 +63,28 @@ const PENDING_TTL = 60 * 1000
 const SWEEP_MS = 5000
 /** Two roads to the same phone means the same call can arrive twice. */
 const DEDUPE_MS = 6000
+/**
+ * How late a report may be and still be worth interrupting somebody over.
+ *
+ * A phone off the network keeps its calls and messages in a backlog and hands
+ * the whole pile over on the next `hello`. Storing all of it is right — the
+ * history and the counters are the desktop's copy of what happened. Raising a
+ * desktop notification for each one is not: coming home became a wall of
+ * cards about calls that were answered and messages that were read on the
+ * handset hours earlier, and a phone that rang at breakfast would set the
+ * desktop ringing at six in the evening.
+ *
+ * So the age of the report decides, not the fact that it arrived in a batch —
+ * the same batch usually carries the message that landed a second ago, and
+ * that one is still news. Two minutes is a reconnect's worth of slack: long
+ * enough that an event which arrived while the socket was being re-dialled
+ * still announces itself, short enough that nothing anybody has already dealt
+ * with on the phone gets a second life on the desktop.
+ *
+ * Only a report that stamps its own `at` can be judged; every road that does
+ * not carry a clock (hands-free, ANCS) is happening now by definition.
+ */
+const REPLAY_MS = 2 * 60 * 1000
 /** Long enough to reach the desk, short enough that voicemail wins after. */
 const RING_TIMEOUT_MS = 45_000
 /** About as long as the code on it is good for. */
@@ -779,9 +801,16 @@ const ROADS = new Set(['bluetooth', 'ancs', 'app'])
  * `fresh` is false for a call we had already heard about down another road:
  * the entry it returns is the original, now filled in, so a caller can
  * republish it without raising a second notification for one ringing phone.
+ *
+ * `stale` is about this report and not about the entry it lands on, which
+ * matters for a conversation that outlives the window: a call that rang
+ * twenty minutes ago and has just been hung up keeps the ring's `at` on the
+ * merged entry, and judging the hang-up by that would leave the card counting
+ * and the ringtone playing forever. Every report is asked how old *it* is.
  */
 function record(raw, device) {
   const kind = KINDS.has(raw.kind) ? raw.kind : 'sms'
+  const stale = Number.isFinite(raw.at) && Date.now() - raw.at > REPLAY_MS
   const entry = {
     id: crypto.randomUUID(),
     kind,
@@ -818,7 +847,7 @@ function record(raw, device) {
     const already = twin(entry)
     if (already) {
       const { entry: merged, named, advanced, retimed } = enrich(already, entry)
-      return { entry: merged, fresh: false, named, advanced, retimed }
+      return { entry: merged, fresh: false, stale, named, advanced, retimed }
     }
     // Once per conversation, wherever in its life the desktop caught it. It
     // used to skip anything that arrived `active` or `ended` to avoid counting
@@ -829,7 +858,7 @@ function record(raw, device) {
   }
   history.unshift(entry)
   history.length = Math.min(history.length, HISTORY)
-  return { entry, fresh: true }
+  return { entry, fresh: true, stale }
 }
 
 /**
@@ -843,9 +872,16 @@ function record(raw, device) {
  *
  * A call arriving over Bluetooth is its own proof that the link is up, so it
  * asks for nothing.
+ *
+ * A replayed ring pages nothing. Going and getting a Bluetooth link so that a
+ * call can be answered on the desktop is only sensible while the phone is
+ * still ringing; doing it for a conversation that ended hours ago would raise
+ * the profile, steal the handset's call audio and wait out `RING_TIMEOUT_MS`
+ * for an Answer nobody can press. Standing the link down is the other half of
+ * the same argument and stays: a teardown that arrives late is still right.
  */
-function anticipate(entry) {
-  if (entry.state === 'ringing' && entry.via !== 'bluetooth' && !handsfree.connected) {
+function anticipate(entry, stale = false) {
+  if (!stale && entry.state === 'ringing' && entry.via !== 'bluetooth' && !handsfree.connected) {
     handsfree.raise('ring').catch(() => {})
     return
   }
@@ -855,10 +891,10 @@ function anticipate(entry) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh, named, advanced, retimed } = record(raw, device)
+  const { entry, fresh, stale, named, advanced, retimed } = record(raw, device)
   if (entry.kind === 'call') {
     remember(entry)
-    anticipate(entry)
+    anticipate(entry, stale)
   }
   // A phone that is still ringing is announced again once its caller becomes
   // known: `ring` rewrites the notification already on screen, so "unknown
@@ -868,9 +904,13 @@ function ingest(raw, device = null) {
   // A clock corrected mid-conversation is news of the same shape: the card is
   // already up and counting from the wrong second, and `notify` is what hands
   // the timer the right one.
-  if (fresh || advanced || retimed || (named && entry.state === 'ringing')) notify(entry)
+  //
+  // None of which applies to a report that has been sitting in the phone's
+  // backlog: it is written down, counted and published to the panel like any
+  // other, and simply not announced. See `REPLAY_MS`.
+  if (!stale && (fresh || advanced || retimed || (named && entry.state === 'ringing'))) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
-  return { entry, fresh }
+  return { entry, fresh, stale }
 }
 
 export function recent(limit = 10) {
@@ -1691,7 +1731,13 @@ export default {
       if (!Array.isArray(events)) throw new Error('events must be an array')
       const stored = events.slice(0, 100).map((raw) => ingest(raw || {}, ctx.device))
       const fresh = stored.filter((r) => r.fresh).length
+      // Said out loud because the alternative — a batch that lands in the
+      // history and raises nothing — looks exactly like mirroring being broken
+      // to whoever is reading the journal.
+      const replayed = stored.filter((r) => r.stale).length
       if (fresh) log.info(`phone reported ${fresh} telephony event(s)`)
+      if (replayed)
+        log.info(`${replayed} event(s) in that batch had already been sitting on the phone — recorded, not announced`)
       return { ok: true, stored: fresh }
     },
 
