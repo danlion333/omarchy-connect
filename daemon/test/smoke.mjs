@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 const PORT = Number(process.env.PORT || 8799)
 const base = `http://127.0.0.1:${PORT}`
@@ -16,6 +16,10 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 // An isolated config root: the test pairs devices, and those must not end up
 // in the user's own ~/.config/omarchy-connect.
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-test-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 // A stand-in for libnotify ahead of the real one on PATH: the mirroring checks
 // below would otherwise throw real notifications onto the screen of whoever is
 // running the suite. It also makes what the desktop was asked to show something
@@ -67,7 +71,7 @@ check('GET /api/info', info.app === 'omarchy-connect', `${info.name} v${info.ver
 check('/api/info publishes an identity key', /^[0-9a-f]{64}$/.test(info.publicKey || ''), info.fingerprint)
 check('encryption is required by default', info.encryption === 'required')
 
-const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
 check('POST /api/pair-code', /^\d{6}$/.test(pair.code), pair.code)
 
 // A plaintext socket must be turned away before it can say anything.
@@ -241,7 +245,7 @@ const offerSource = new URL('./smoke.mjs', import.meta.url).pathname
 const offer = await (
   await fetch(`${base}/api/offer`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify({ path: offerSource }),
   })
 ).json()
@@ -342,7 +346,7 @@ const outbox = new Promise((resolve) => {
 })
 const smsResponse = await fetch(`${base}/api/sms`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: local(),
   body: JSON.stringify({ to: '+15551234567', body: 'on my way' }),
 })
 const instruction = await outbox
@@ -358,7 +362,7 @@ check('a missed call is raised as urgent', /-u critical.*Missed call/.test(mirro
 // With a phone paired there is no second way in: the daemon refuses to mint a
 // code at all, and a socket arriving with a stale one is turned away rather
 // than quietly displacing the phone already in someone's pocket.
-const secondCode = await fetch(`${base}/api/pair-code`, { method: 'POST' })
+const secondCode = await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })
 check('a second pairing code is refused while a phone is paired', secondCode.status === 409)
 check('and it names the phone in the way', (await secondCode.json()).device?.name === 'Smoke Phone')
 
@@ -379,13 +383,13 @@ check('and the desktop still holds the first', readStatus().devices.length === 1
 
 const unpairRemote = await fetch(`${base}/api/unpair`, {
   method: 'POST',
-  headers: { 'content-type': 'application/json' },
+  headers: local(),
   body: JSON.stringify({ id: 'smoke-test-device' }),
 })
 check('POST /api/unpair drops the device', unpairRemote.ok)
 check('the unpaired phone leaves the status file', readStatus().devices.length === 0)
 
-const freedCode = await fetch(`${base}/api/pair-code`, { method: 'POST' })
+const freedCode = await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })
 check('and the desktop can pair again once it is free', freedCode.status === 200)
 
 ws.close()

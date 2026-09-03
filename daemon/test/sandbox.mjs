@@ -48,3 +48,24 @@ export function quietBluetooth(configHome, extra = {}) {
   )
   return file
 }
+
+/**
+ * The headers a suite needs to be allowed through a local route.
+ *
+ * The daemon gates everything that used to be "localhost only" on a secret it
+ * publishes in its own status file, so a suite reaches those routes the same
+ * way the CLI does: by reading the file. The read happens on every call rather
+ * than once, because the secret is minted per daemon and a suite that restarts
+ * one would otherwise keep presenting the dead daemon's password.
+ */
+export function localHeaders(stateDir = process.env.OMARCHY_CONNECT_STATE) {
+  let secret = null
+  try {
+    secret = JSON.parse(fs.readFileSync(path.join(stateDir, 'status.json'), 'utf8')).localSecret
+  } catch {
+    // A suite that asks before the daemon has published gets the plain
+    // headers and a 403 that says so, which is a clearer failure than a
+    // throw from inside a helper.
+  }
+  return { 'content-type': 'application/json', ...(secret ? { 'x-oc-local': secret } : {}) }
+}

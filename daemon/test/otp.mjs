@@ -22,7 +22,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 import { connectPhone } from './phone.mjs'
 import { extractCode, explain } from '../src/lib/otp.js'
 
@@ -30,6 +30,10 @@ const PORT = Number(process.env.PORT || 8799)
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-otp-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 
 const results = []
 const check = (name, ok, detail = '') => {
@@ -250,7 +254,7 @@ for (let i = 0; i < 40; i += 1) {
 const post = async (pathname, body) => {
   const res = await fetch(`${base}${pathname}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify(body),
   })
   return { status: res.status, data: await res.json() }
@@ -261,7 +265,7 @@ const notifications = () => (fs.existsSync(notifyLog) ? fs.readFileSync(notifyLo
 /* ── a phone on the socket, mirroring messages ───────────────────────── */
 
 const info = await (await fetch(`${base}/api/info`)).json()
-const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()
+const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
 const phone = connectPhone(PORT, info.publicKey)
 const clipboardEvents = []
 let nextId = 1

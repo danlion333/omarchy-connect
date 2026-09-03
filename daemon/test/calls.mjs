@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 import { connectPhone } from './phone.mjs'
 import { handsfree, Handsfree } from '../src/lib/handsfree.js'
@@ -26,6 +26,10 @@ const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-calls-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 
 /**
  * A stand-in for libnotify, ahead of the real one on PATH.
@@ -172,7 +176,7 @@ const check = (name, ok, detail = '') => {
 const post = async (pathname, body) => {
   const res = await fetch(`${base}${pathname}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: local(),
     body: JSON.stringify(body),
   })
   return { status: res.status, data: await res.json() }
@@ -687,7 +691,7 @@ const nonsense = await post('/api/call', { op: 'teleport' })
 check('an unknown action is refused', nonsense.status === 400, nonsense.data.error)
 
 const info = await (await fetch(`${base}/api/info`)).json()
-const code = (await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()).code
+const code = (await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()).code
 const phone = connectPhone(PORT, info.publicKey)
 
 const pending = new Map()

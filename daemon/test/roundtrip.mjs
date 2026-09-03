@@ -35,13 +35,17 @@ import { fileURLToPath } from 'node:url'
 
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
-import { quietBluetooth } from './sandbox.mjs'
+import { quietBluetooth, localHeaders } from './sandbox.mjs'
 
 const PORT = Number(process.env.PORT || 8806)
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-roundtrip-'))
+
+// The local HTTP routes are gated on the secret the daemon publishes in its
+// own status file, so every post below reads it the way the CLI does.
+const local = () => localHeaders(path.join(sandbox, 'state'))
 quietBluetooth(sandbox)
 
 const daemon = spawn(
@@ -115,7 +119,7 @@ const info = await (await fetch(`${base}/api/info`)).json()
 
 /* ── a phone that has ───────────────────────────────────────────────────── */
 
-const code = (await (await fetch(`${base}/api/pair-code`, { method: 'POST' })).json()).code
+const code = (await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()).code
 const phone = connectPhone(PORT, info.publicKey)
 const heard = inbox(phone)
 

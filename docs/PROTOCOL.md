@@ -1176,6 +1176,26 @@ These answer only on `127.0.0.1`, because they are the CLI, a coding agent's
 own hook, and the desktop client talking to a daemon they already share a
 machine with.
 
+Loopback is not on its own a boundary, though: every process the user runs
+shares it, and a page in a browser can make the machine send a `no-cors` form
+POST to it. These routes send an SMS from the paired phone, mint a pairing
+code, unpair it and flip the remote and agent switches, so each of them asks
+for four things and answers `403 { error: "localhost only" }` — the same
+sentence whichever one is missing — otherwise:
+
+- the connection arrived on loopback;
+- `x-oc-local: <secret>`, where the secret is `localSecret` from the status
+  file, `~/.local/state/omarchy-connect/status.json`, which is written `0600`
+  and is already the file both callers read. It is minted fresh on every start,
+  and a stopped daemon publishes it as `null`;
+- `content-type: application/json`, which a form post cannot claim;
+- no `Origin` header at all, which a request from a web page cannot avoid
+  sending.
+
+The phone-facing `x-oc-token` auth, the ticketed file routes and `/api/info`
+are untouched by this: `/api/info` is how a phone finds this desktop and is
+deliberately open.
+
 | Endpoint | Body | Effect |
 | --- | --- | --- |
 | `POST /api/pair-code` | — | Mints a fresh six-digit code, valid three minutes. `409 { error, device }` while a phone is paired. |

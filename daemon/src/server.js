@@ -69,6 +69,56 @@ const json = (res, status, body) => {
 
 const isLoopback = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)
 
+/**
+ * A secret this daemon mints for itself, once, at start.
+ *
+ * The routes below used to be guarded by the peer address alone, and a peer
+ * address says only "something on this machine" — which is every process the
+ * user runs, every Flatpak with network access, and, for a `no-cors` POST, a
+ * web page in a browser on the same box. Those callers can send an SMS from
+ * the paired phone, mint a pairing code or unpair it, so "local" was never the
+ * boundary the comments claimed it was.
+ *
+ * The secret goes into `status.json`, which is already 0600 and is already the
+ * file both readers — the CLI and the shell panel, which drives everything
+ * through the CLI — open before they talk to the daemon. So nothing that could
+ * not read that file can drive the phone, and rotating it on every start costs
+ * nothing: both readers read the file again on their next command.
+ */
+const LOCAL_SECRET = crypto.randomBytes(32).toString('hex')
+
+/** Compared without leaking, through the timing, how much of it was right. */
+const secretMatches = (given) => {
+  if (typeof given !== 'string' || given.length !== LOCAL_SECRET.length) return false
+  return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(LOCAL_SECRET))
+}
+
+/**
+ * The gate on every route that used to say "localhost only", answering the
+ * request itself when it refuses so a caller gets one 403 and no clue about
+ * which of the four conditions it tripped.
+ *
+ * Three things beyond the secret, each aimed at the browser case. A page can
+ * be made to POST to loopback without ever reading the answer, but it cannot
+ * set a header of our choosing, it cannot send `application/json` on a form
+ * post, and it cannot suppress its own `Origin` — so a request that carries an
+ * `Origin` at all is a request from a web page and is refused whatever else it
+ * is holding.
+ */
+function localOnly(req, res) {
+  if (!isLoopback(req)) return refuseLocal(res)
+  if (req.headers.origin !== undefined) return refuseLocal(res)
+  const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase()
+  if (type !== 'application/json') return refuseLocal(res)
+  if (!secretMatches(req.headers['x-oc-local'])) return refuseLocal(res)
+  return true
+}
+
+const refuseLocal = (res) => {
+  json(res, 403, { error: 'localhost only' })
+  return false
+}
+
 export function createServer({ port, version = '0.1.0' } = {}) {
   const cfg = loadConfig()
   const listenPort = port || cfg.port || 8765
@@ -115,6 +165,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       ...base,
       running: true,
       pid: process.pid,
+      // The password to this daemon's own local routes. It leaves here for a
+      // 0600 file and for nowhere else — nothing that goes to the phone is
+      // built from this snapshot.
+      localSecret: LOCAL_SECRET,
       host: localAddress,
       pairing: activePairing(),
       firewall: firewallState,
@@ -377,7 +431,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     // Localhost only: the CLI asks the running daemon for a fresh pairing code.
     if (req.method === 'POST' && url.pathname === '/api/pair-code') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       const pairing = createPairingCode()
       if (!pairing.ok) {
         return json(res, 409, { error: pairing.error, device: publicDevice(pairing.device) })
@@ -391,7 +445,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     // removal take effect now — the running process holds a cached config and
     // an open socket that both have to be told.
     if (req.method === 'POST' && url.pathname === '/api/unpair') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -419,7 +473,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     // Localhost only: `omarchy-connect send <file>` offers a desktop file to phones.
     if (req.method === 'POST' && url.pathname === '/api/offer') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -441,7 +495,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     // Localhost only: the desktop cannot send an SMS, so this asks the phone
     // to and answers with whatever the phone said back.
     if (req.method === 'POST' && url.pathname === '/api/sms') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -468,7 +522,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * daemon acts through the hands-free profile, which needs no app at all.
      */
     if (req.method === 'POST' && url.pathname === '/api/call') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -494,7 +548,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * rather than one that arrived, so nothing private crosses this route.
      */
     if (req.method === 'POST' && url.pathname === '/api/otp') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -520,7 +574,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * where the handset is rather than where the keyboard is.
      */
     if (req.method === 'POST' && url.pathname === '/api/locate') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -547,7 +601,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * anything reachable over the network.
      */
     if (req.method === 'POST' && url.pathname === '/api/ios') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -584,7 +638,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * like it failed.
      */
     if (req.method === 'POST' && url.pathname === '/api/agent/hook') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -609,7 +663,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * the switch means something on a daemon that is already running.
      */
     if (req.method === 'POST' && url.pathname === '/api/remote/control') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
@@ -646,7 +700,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * change to take effect and the phone keeps its link across it.
      */
     if (req.method === 'POST' && url.pathname === '/api/agent/control') {
-      if (!isLoopback(req)) return json(res, 403, { error: 'localhost only' })
+      if (!localOnly(req, res)) return undefined
       let body = ''
       req.on('data', (c) => {
         body += c
