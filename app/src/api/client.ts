@@ -476,11 +476,24 @@ export class ConnectClient {
    */
   private askNetwork: (() => NetworkFacts | null) | null = null
   /**
+   * Everything this client currently wants to be told about.
+   *
    * `phone` is not optional decoration: it is the channel the desktop uses to
    * ask this handset to answer a call or send a message. Leaving it out makes
    * every such request time out on the desktop with no sign anything is wrong.
+   *
+   * `stats` is deliberately *not* here. It is the one event on the list that
+   * costs something to produce — a per-second sample of CPU, memory, disk and
+   * network on the desktop, delivered to a phone in a pocket — and the only
+   * thing that reads it is a screen. So it is asked for by whoever is looking
+   * at it (`watchStats` in `api/link`) and dropped again the moment nobody is.
+   *
+   * A set rather than a list because it is edited from both ends now, and
+   * because it is re-sent whole after every handshake: a screen that was
+   * watching stats when the socket dropped is watching them again when it
+   * comes back, without having to notice that anything happened.
    */
-  private subscriptions: string[] = ['stats', 'clipboard', 'theme', 'file', 'agent', 'phone', 'endpoints']
+  private subscriptions = new Set<string>(['clipboard', 'theme', 'file', 'agent', 'phone', 'endpoints'])
 
   /**
    * Probes racing the socket that is being opened right now.
@@ -1118,7 +1131,7 @@ export class ConnectClient {
         )
         this.setStatus('connected', null)
         this.emit('hello', msg)
-        this.subscribe(this.subscriptions)
+        this.subscribe([...this.subscriptions])
         this.startPing()
         return
       }
@@ -1169,12 +1182,42 @@ export class ConnectClient {
     this.ws.send(frame.buffer as ArrayBuffer)
   }
 
+  /**
+   * Asks the desktop for these events, and remembers that it was asked.
+   *
+   * Additive: it says "also send me these", never "send me only these". The
+   * daemon's own handler is additive in exactly the same way, and the set kept
+   * here has to agree with the set kept there or a reconnect would quietly
+   * hand back a subscription somebody had switched off.
+   */
   subscribe(events: string[]) {
-    this.subscriptions = events
+    events.forEach((event) => this.subscriptions.add(event))
+    this.tell('sub', events)
+  }
+
+  /**
+   * The other half, which the client never had: a way to say "stop".
+   *
+   * Subscriptions are reference-counted on the desktop, so this is not a
+   * request to switch a producer off — it is this phone letting go of it, and
+   * the sampler stops only once nobody at all is holding it.
+   */
+  unsubscribe(events: string[]) {
+    events.forEach((event) => this.subscriptions.delete(event))
+    this.tell('unsub', events)
+  }
+
+  /** What this client believes it is subscribed to, for tests and diagnosis. */
+  get subscribed(): string[] {
+    return [...this.subscriptions]
+  }
+
+  private tell(t: 'sub' | 'unsub', events: string[]) {
+    if (events.length === 0) return
     try {
-      this.send({ t: 'sub', events })
+      this.send({ t, events })
     } catch {
-      /* re-subscribed on the next successful handshake */
+      /* the whole set is re-sent on the next successful handshake */
     }
   }
 

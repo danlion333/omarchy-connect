@@ -16,7 +16,7 @@ const DNS_OPTIONS = [
 type DnsProvider = (typeof DNS_OPTIONS)[number]['value']
 
 export function DashboardScreen() {
-  const { stats, hello, palette, status, call, can, latencyMs } = useConnection()
+  const { stats, hello, palette, status, call, can, latencyMs, watchStats } = useConnection()
   const [dns, setDns] = useState<DnsProvider | null>(null)
   const [dnsError, setDnsError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -34,6 +34,16 @@ export function DashboardScreen() {
   useEffect(() => {
     if (status === 'connected') loadDns()
   }, [status, loadDns])
+
+  /**
+   * Mounted is looked at.
+   *
+   * The shell renders this screen only while its tab is the current one, so
+   * mounting and unmounting is the whole of "is anybody reading the numbers"
+   * — and the link takes the other half, the phone being awake at all. Until
+   * one of the two says yes, the desktop is not sampling and not sending.
+   */
+  useEffect(() => watchStats(), [watchStats])
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true)

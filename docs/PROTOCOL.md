@@ -232,12 +232,26 @@ wins the moment it has one.
 ### Events
 
 ```jsonc
-{ "t": "sub", "events": ["stats", "clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
+{ "t": "sub", "events": ["clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
+{ "t": "unsub", "events": ["stats"] }
+{ "t": "sub.ok", "events": ["clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
 { "t": "ev", "event": "stats", "data": { … } }
 ```
 
+Both `sub` and `unsub` are additive edits to what one socket wants, not a
+replacement for it, and both are answered with `sub.ok` carrying the socket's
+whole list. `unsub` with no `events` drops everything. Dropping a subscription
+the socket never had is not an error and changes nothing.
+
 Subscriptions are reference-counted: the 1 Hz stats sampler only runs while at
-least one phone is subscribed.
+least one phone is subscribed. `stats` is the one event the app does not ask
+for on connect — it is subscribed while the dashboard is on screen and the app
+is in the foreground, and unsubscribed as soon as either stops being true, so a
+phone in a pocket costs the desktop nothing. Everything else on the list is
+news the phone wants precisely when nobody is looking at it, and stays
+subscribed for the life of the socket. A `system.stats` request still answers
+whether or not the event is subscribed, which is how a returning screen fills
+itself without waiting for the next tick.
 
 | Event | Fires when |
 | --- | --- |
