@@ -3,6 +3,7 @@ import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import { Directory, File, Paths } from 'expo-file-system'
 
+import { fileUriIn } from '../lib/filename'
 import type { ConnectClient } from './client'
 
 /**
@@ -111,7 +112,7 @@ export async function upload(client: ConnectClient, picked: Picked): Promise<str
 function scratchFile(name: string): File {
   const dir = new Directory(Paths.cache, 'omarchy-connect')
   if (!dir.exists) dir.create({ intermediates: true })
-  const file = new File(dir, name)
+  const file = new File(fileUriIn(dir.uri, name))
   if (file.exists) file.delete()
   file.create()
   return file
