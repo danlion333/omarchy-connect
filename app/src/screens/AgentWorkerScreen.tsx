@@ -318,11 +318,18 @@ function WorkerComposer({
           )}
         </Pressable>
       </View>
-      {keyboard ? null : (
+      {/* The receipt stays up with the keyboard; only the standing hint gets
+          out of its way. The moment the queued line is worth reading is the
+          moment just after the send, and the keyboard is up for all of it —
+          hiding it there left the phone showing a field that had emptied
+          itself and nothing at all about where the message went. */}
+      {queued ? (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          {queued
-            ? `Queued with ${session.title} — it has to pick this up and continue the worker`
-            : 'Goes to the session that spawned this worker, for it to pass on'}
+          {`Queued with ${session.title} — it has to pick this up and continue the worker`}
+        </Text>
+      ) : keyboard ? null : (
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+          Goes to the session that spawned this worker, for it to pass on
         </Text>
       )}
     </View>
