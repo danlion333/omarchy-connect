@@ -349,6 +349,25 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     bus.emit('presence', [...clients].some((client) => client.device && client.via !== 'remote'))
   }
 
+  /**
+   * A device that no longer has a socket here at all.
+   *
+   * Told apart from `presence` on purpose: presence is "is any phone in the
+   * room", and this is "*this* phone's connection is gone" — which is what
+   * anything holding state on behalf of one device needs, and the telephony
+   * plugin holds exactly that in a call it is only mirroring. A phone that
+   * reconnected before the old socket finished closing has not gone anywhere,
+   * so a device still on another client says nothing.
+   *
+   * Same shape as `presence`: what a socket lifecycle means to anybody else is
+   * their business, and the server announces rather than reaches.
+   */
+  const announceDeparture = (device) => {
+    if (!device?.id) return
+    if ([...clients].some((client) => client.device?.id === device.id)) return
+    bus.emit('device-gone', device)
+  }
+
   async function refreshEnvironment() {
     const net = await sysinfo.network().catch(() => null)
     const ip = net?.ip || null
@@ -1074,6 +1093,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       clients.delete(client)
       if (client.device) {
         log.info(`${client.device.name} disconnected`)
+        announceDeparture(client.device)
         publishState()
         announcePresence()
       }
