@@ -384,7 +384,8 @@ iPhone announcing itself down two Bluetooth roads at once.
 An event is either
 
 ```jsonc
-{ "kind": "sms",  "at": 1724600000000, "from": "+1555…", "name": "Mum", "body": "dinner at eight" }
+{ "kind": "sms",  "at": 1724600000000, "from": "+1555…", "name": "Mum", "body": "dinner at eight",
+  "key": "a stable identifier for this message" }
 { "kind": "call", "at": 1724600000000, "from": "+1555…", "name": null,
   "state": "dialing" | "ringing" | "active" | "ended", "missed": true,
   "direction": "incoming" | "outgoing" | "missed", "seconds": 154,
@@ -403,6 +404,29 @@ whatever landed while it was closed in a single request when it reconnects. The
 desktop raises a notification for every message, for a ringing phone (urgent —
 a late one is useless) and for a missed call, and keeps the last 50 in memory
 for the bar panel. It is not an archive: the phone already has one.
+
+A report is idempotent, and `key` is how. The phone takes a batch out of its
+queue, sends it in one `phone.report` and puts it back if the answer never
+came — and the answer not coming says nothing about whether the desktop
+ingested it: a socket that dies mid-request and a request that outlives the
+app's own timeout look identical from the phone, so the batch is sent again on
+the next connection. `key` is what the desktop recognises it by. The app mints
+one on every SMS at the moment the broadcast arrives, before the message is
+either sent or written to the backlog, so the live event and the copy that
+survives a process death carry the same one; a message reported twice is one
+row in the history, one tick on the counter and one notification, and `stored`
+in the second answer counts it as nothing new.
+
+An event that carries no `key` — an older app, an event already sitting in a
+backlog written before this existed, or the desktop's own ANCS road — is
+recognised by a digest of what it is instead: its kind, its `at`, its
+correspondent, its app and its text. A report with neither a `key` nor an `at`
+is recorded as it stands; that is the clockless roads, hands-free and ANCS,
+which do not replay batches. The desktop remembers the last few hundred
+messages per device for this — well past the fifty rows the panel keeps, and
+bounded, so a handset that mirrors all day does not grow the daemon. `call`
+events are not keyed: one conversation is already folded into one line by the
+rules below.
 
 `at` is the phone's own clock, and the desktop reads it: a report stamped more
 than two minutes ago is written into the history and the counters and

@@ -3,6 +3,16 @@ import { Platform } from 'react-native'
 
 export type SmsEvent = {
   kind: 'sms'
+  /**
+   * This message's own identifier, minted by the receiver that first saw it.
+   *
+   * A batch whose answer was lost with the socket is sent again — the queue
+   * puts it back because nothing here can know whether the desktop got it —
+   * and this is what lets the desktop recognise the second copy rather than
+   * mirroring the message twice. Absent on messages read back out of the
+   * phone's own inbox, which are not reported.
+   */
+  key?: string
   at: number
   from: string | null
   name: string | null
