@@ -1,26 +1,25 @@
 # The order /issue next takes the open issues. Bare numbers only; # lines are notes.
-# Written by /issue-plan on 2026-09-03.
+# Written by /issue-plan on 2026-09-04. Попередня черга (#1–#18) закрита цілком.
+# Усі сім відкритих issue міняють JS або нативну частину застосунку, тож клас
+# один — harness:apk: реліз-APK на телефоні, критерії знімаються через adb.
 
-# --- foundations: protocol, transport, security. Features are written once, on top.
-7    # daemon survives a malformed upload name — small, calibrates the contract
-3    # app rejects unencrypted text frames
-4    # relocate persists an address only after hello.ok
-6    # upload/download by one-shot ticket, token out of URLs
-8    # localhost-only routes behind a shared secret
-12   # argument hygiene (--), bond agent only says yes to its own device
-5    # CLI config writes go through the daemon / merge with disk
-9    # stale socket handlers, chat re-open on reconnect
+# --- фундамент: спільна конвенція, на якій пишеться решта UI
+22   # один читабельний спосіб показати помилку — error boundary + нормалізатор
+     # + спільний компонент на семи екранах. Іде першим: доки #21 не полагоджено,
+     # у нього є живий репродюсер (нативний стек із .torrent), і всі наступні
+     # екранні роботи одразу лягають на готову поверхню замість власного setError.
 
-# --- app features: release APK on the phone, exercised over adb
-16   # pause stats subscription when nothing watches
-10   # split ConnectionContext
-17   # clipboard history
-18   # clipboard images desktop -> phone
-11   # SMS backlog off Auto Backup, bounded JS queue
-15   # share-sheet target
+# --- малі та середні поодинокі роботи
+21   # S: ім'я файлу з [ ] # ? кидає IllegalArgumentException замість відкриття.
+     # Після #22 його повідомлення про відмову пишеться один раз, правильно.
+24   # M: нотифікація «агент чекає» піднімається і зникає за 2 секунди.
+     # Незалежний від #23, але той самий район (plugins/agents.js + alerts.ts) —
+     # робиться до нього, бо менший і псує саме той канал, заради якого екран є.
 
-# --- needs a person: a real call, a real SMS, a real drag onto the bar
-2    # dictated message with a photo — dictation is a voice
-1    # stale notifications replay — needs real events on the phone
-14   # drop a file onto the bar icon — a real drag in Hyprland
-13   # reply to an SMS from the panel — sends from the user's number
+# --- буфер обміну: ланцюг, друге стоїть на першому
+19   # M: бінарна подія буфера піднімає нотифікацію з прев'ю та кнопкою Save
+20   # M–L: кнопка Copy кладе саму картинку в буфер телефона; без #19 їй нема де жити
+
+# --- воркери: найбільший блок, тому останній; #25 стоїть на #23
+23   # L: список воркерів сесії, їхній стан і транскрипт (read-only)
+25   # M: відповісти воркеру через композер батьківської сесії; вимагає #23
