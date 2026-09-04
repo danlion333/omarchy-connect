@@ -320,6 +320,10 @@ const emitState = (entry) =>
  */
 function setState(entry, state, { prompt = null } = {}) {
   if (entry.state === state && entry.prompt === prompt) return false
+  // When the question started standing there. Everything that clears
+  // `waiting` has to be able to say it happened *after* the question was
+  // asked, and a transcript line carries its own timestamp — see `ingest`.
+  if (state === 'waiting' && entry.state !== 'waiting') entry.waitingAt = Date.now()
   entry.state = state
   entry.prompt = state === 'waiting' ? prompt : null
   // Nothing is being written any more, so nothing half-written is true.
@@ -493,8 +497,31 @@ function ingest(entry, text, { backfill = false } = {}) {
   // Reading a file for the first time is not the transcript moving, though:
   // a session opened while it waits has to still be waiting once it is on
   // screen, rather than flip to `working` for having been looked at.
-  else if (entry.state === 'waiting' && !backfill) setState(entry, 'working')
+  //
+  // And "again" has to mean *after the question*. The turn that asks for a
+  // permission is written to the transcript before the prompt is drawn — the
+  // tool call is what the prompt is about — so the very first tail read after
+  // a `PermissionRequest` delivers a line that is older than the wait it was
+  // about to cancel. That is a card raised on the phone and taken down by the
+  // next poll two seconds later, which is what this comparison is here to
+  // stop. A prompt answered at the keyboard writes its result *now*, and
+  // clears the wait exactly as it always did.
+  else if (entry.state === 'waiting' && !backfill && movedSince(fresh, entry.waitingAt)) {
+    setState(entry, 'working')
+  }
   return fresh
+}
+
+/**
+ * Was any of this written after the moment given?
+ *
+ * A block with no timestamp of its own is stamped as it is read, so an
+ * unstamped line is by definition news; only a line that says when it was
+ * written can turn out to be older than the question it seems to answer.
+ */
+function movedSince(blocks, since) {
+  if (!since) return true
+  return blocks.some((block) => !Number.isFinite(block.at) || block.at > since)
 }
 
 /** How far back a question can be and still be the thing the agent is on. */
@@ -1230,6 +1257,24 @@ export function hook(payload = {}) {
     via: 'hook',
   })
   entry.lastActivity = Date.now()
+
+  /*
+   * Whose hands this is. A subagent's tool calls fire the same hooks as the
+   * session's own — under the *session's* id and transcript, because a
+   * sidechain has neither of its own — and the only thing that tells the two
+   * apart is that a worker's payload carries `agent_id` and `agent_type` and
+   * the session's own carries neither (verified on Claude Code 2.1.258).
+   *
+   * That difference decides whether a session is still stopped at a question.
+   * A session that fanned five workers out is answering a permission prompt
+   * *and* collecting tool results at the same time, and every one of those
+   * results used to arrive here as "this session is working again" — which on
+   * a phone is the card being taken away a second or two after it appeared,
+   * over and over, under `/loop`. Work a worker does is not an answer to a
+   * question its session is standing at, so it does not clear one.
+   */
+  const worker = Boolean(payload.agent_id) && event !== 'SubagentStart' && event !== 'SubagentStop'
+
   if (created) {
     log.debug(`agent session registered by hook: ${id}`)
     emitSession(entry)
@@ -1248,6 +1293,14 @@ export function hook(payload = {}) {
     // buzzes while you still remember what you asked for and one that is
     // always a beat behind the desktop. In a mode that answers its own
     // prompts nothing is on screen and there is nothing to say.
+    //
+    // Only the mode is filtered, and deliberately only that one. A prompt an
+    // allow rule decides fires no `PermissionRequest` at all — the hook runs
+    // where a person would have been asked, not where a permission was merely
+    // checked (verified on 2.1.258 by running an allow-listed tool with a
+    // logging hook installed: `PostToolUse` fired, this did not). Widening the
+    // filter to `acceptEdits` would therefore silence the real Bash prompts
+    // that mode still stops at, rather than the imaginary ones it does not.
     if (payload.permission_mode !== 'bypassPermissions') {
       const tool = String(payload.tool_name || '').trim()
       const what = permissionSubject(payload.tool_input)
@@ -1262,7 +1315,7 @@ export function hook(payload = {}) {
     entry.subagents = Math.max(0, (entry.subagents || 0) + (event === 'SubagentStart' ? 1 : -1))
     entry.lastActivity = Date.now()
     if (event === 'SubagentStart' && entry.state !== 'waiting') setState(entry, 'working')
-  } else if (event === 'PostToolUse') {
+  } else if (event === 'PostToolUse' && !worker) {
     // Answered — at the keyboard or from the phone, it makes no difference
     // here. This is what keeps the card from being put back on a screen the
     // agent has already moved past, and it is the only thing that clears
@@ -1277,7 +1330,7 @@ export function hook(payload = {}) {
   // Both hooks fire for the same stop, and "Which fruit should I pick?" is
   // worth more on a phone than "Claude needs your permission".
   const message = String(payload.message || '').slice(0, 400) || null
-  const next = event === 'Notification' ? notificationState(entry, payload, message) : HOOK_STATE[event]
+  const next = worker ? null : event === 'Notification' ? notificationState(entry, payload, message) : HOOK_STATE[event]
   if (next === 'gone') {
     setState(entry, 'gone')
     entry.goneAt = Date.now()
