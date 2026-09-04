@@ -150,6 +150,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   let localBroadcast = null
   // Alive only across the start-up burst, and torn down with the listener.
   let announcer = null
+  // Whether the desktop has managed to say it is up. Not "whether it tried":
+  // a daemon that came up before its network did had nothing to announce on.
+  let announced = false
+  // Set once `start()` is through, so the environment tick can tell "the
+  // daemon has not announced itself yet" from "it is announcing itself now".
+  let started = false
   let firewallState = { blocked: false, tool: null, command: null, remoteCommand: null }
   let firewallCheckedAt = 0
   // What a phone would need to wake this desktop. Answered while the daemon
@@ -304,6 +310,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       log.debug('no subnet to announce on — nothing to broadcast to')
       return
     }
+    announced = true
     const key = identity().publicKey.toString('hex')
     announcer?.stop()
     announcer = createAnnouncer({ port: target.port })
@@ -385,6 +392,17 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       }
       firewallState = next
     }
+
+    // The one case where the announcement is not made by `start()`: the unit
+    // is ordered after `graphical-session.target` and after nothing else, so
+    // a cold boot can perfectly well run this daemon before NetworkManager
+    // has an address on any interface — and a desktop with no subnet has
+    // nowhere to announce itself. This is still the start-up announcement,
+    // made at the first moment there is a wire to make it on, and it happens
+    // once: `announced` is never cleared, so a desktop that changes address
+    // later does not shout about it again.
+    if (started && !announced) announceSelf()
+
     return changed
   }
 
@@ -1278,6 +1296,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // Last, and only after `refreshEnvironment`: the packet carries the
       // address this desktop is on, and that address is what was just read.
       announceSelf()
+      started = true
       if (certificate) log.ok(`TLS on — pin ${certificate.pin}`)
       return listenPort
     },
@@ -1288,6 +1307,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // subnet this desktop is up while it is being taken down.
       announcer?.stop()
       announcer = null
+      started = false
       state.clear()
       stopPlugins()
       for (const client of clients) client.ws.close(1001, 'server shutting down')

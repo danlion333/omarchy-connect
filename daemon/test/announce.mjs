@@ -117,6 +117,17 @@ check(
 )
 check('the default port is not the wake port', ANNOUNCE_PORT === 8766 && ANNOUNCE_PORT !== 9)
 
+// A desktop with no address has no subnet to shout across, which is the state
+// a daemon started at boot can genuinely be in — the unit is ordered after
+// `graphical-session.target` and after nothing about the network. Nothing is
+// sent, nothing throws, and the server tries again on the environment tick.
+const silent = createAnnouncer({ port: ear.port, schedule: [0] })
+const quiet = ear.heard.length
+check('a desktop with no subnet announces nothing', silent.announce(body, null) === 0 && !silent.live)
+await new Promise((r) => setTimeout(r, 300))
+check('and nothing turns up on the wire from it', ear.heard.length === quiet)
+silent.stop()
+
 /* ── the daemon's own start and stop ────────────────────────────────────── */
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-announce-'))
