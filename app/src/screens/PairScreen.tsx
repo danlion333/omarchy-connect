@@ -5,7 +5,8 @@ import { CameraView, useCameraPermissions } from 'expo-camera'
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Notice, Screen, Segmented, Title } from '../ui/kit'
 import { DEFAULT_PORT, parsePairingUrl, probeHost, scanSubnet, type Discovered, type PairingTarget } from '../api/discovery'
-import { font, radius, size, space } from '../theme'
+import { acceptsFrame, nextPhase, type ScanEvent, type ScanPhase } from '../lib/pair-scan'
+import { alpha, font, radius, size, space } from '../theme'
 
 type Mode = 'scan' | 'find' | 'manual'
 
@@ -20,20 +21,65 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
 
+  // The scanner's phase is held here, above the pane that draws the camera,
+  // and in two places on purpose. The state is what the screen renders; the
+  // ref is what `onBarcodeScanned` reads, because frames arrive several times a
+  // second and a state update that React has not committed yet would let the
+  // same code through twice. Both live in `PairScreen`, which stays mounted
+  // across an attempt — the pane below does not.
+  const phase = useRef<ScanPhase>('armed')
+  const [scanPhase, setScanPhase] = useState<ScanPhase>('armed')
+  const [invalid, setInvalid] = useState(false)
+
+  const moveScan = useCallback((event: ScanEvent) => {
+    const next = nextPhase(phase.current, event)
+    phase.current = next
+    setScanPhase(next)
+    return next
+  }, [])
+
   const attempt = useCallback(
-    async (target: PairingTarget) => {
+    async (target: PairingTarget, fromScan = false) => {
       setBusy(true)
       setError(null)
       try {
         await pair(target)
       } catch (err) {
         setError(err)
+        // The scanner stops itself here rather than on the way back into the
+        // pane: the QR is still in front of the lens, and anything that arms
+        // it without the user asking is the retry loop this screen used to be.
+        if (fromScan) moveScan('attempt-failed')
       } finally {
         setBusy(false)
       }
     },
-    [pair],
+    [moveScan, pair],
   )
+
+  /** One frame off the camera, and the only place a scan starts an attempt. */
+  const onFrame = useCallback(
+    (data: string) => {
+      if (!acceptsFrame(phase.current)) return
+      const parsed = parsePairingUrl(data)
+      if (!parsed) {
+        setInvalid(true)
+        moveScan('invalid-code')
+        return
+      }
+      setInvalid(false)
+      moveScan('valid-code')
+      void attempt(parsed, true)
+    },
+    [attempt, moveScan],
+  )
+
+  /** The gesture. Nothing else in this screen arms the camera again. */
+  const scanAgain = useCallback(() => {
+    setError(null)
+    setInvalid(false)
+    moveScan('scan-again')
+  }, [moveScan])
 
   return (
     <Screen>
@@ -56,7 +102,11 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
         />
       </View>
 
-      <Notice error={error} onDismiss={() => setError(null)} />
+      <Notice
+        error={error}
+        onDismiss={() => setError(null)}
+        action={mode === 'scan' && scanPhase === 'stopped' ? { label: 'Scan again', icon: 'refresh-cw', onPress: scanAgain } : null}
+      />
 
       {busy ? (
         <Card>
@@ -65,9 +115,18 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
             <Body>Pairing…</Body>
           </View>
         </Card>
-      ) : mode === 'scan' ? (
-        <ScanPane onPaired={attempt} />
-      ) : mode === 'find' ? (
+      ) : null}
+
+      {/*
+        In scan mode the pane stays mounted through an attempt, under the
+        "Pairing…" card rather than instead of it. Swapping it out was what
+        reset the camera's "already handled this" latch on every failure, and
+        it also cost a camera restart and a flash of "Checking camera access…"
+        between attempts.
+      */}
+      {mode === 'scan' ? (
+        <ScanPane phase={scanPhase} invalid={invalid} onFrame={onFrame} onScanAgain={scanAgain} />
+      ) : busy ? null : mode === 'find' ? (
         <FindPane onPaired={attempt} />
       ) : (
         <ManualPane onPaired={attempt} />
@@ -102,11 +161,26 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
 
 type PairFn = (target: PairingTarget) => void
 
-function ScanPane({ onPaired }: { onPaired: PairFn }) {
+/**
+ * The camera, and nothing else: whether a frame counts is decided above, so
+ * this pane owns no state that a remount could quietly reset. It draws what the
+ * phase says — live, waiting on an attempt, or stopped after one failed — and
+ * carries its own "Scan again" for the case where the error notice above it has
+ * been dismissed and its button went with it.
+ */
+function ScanPane({
+  phase,
+  invalid,
+  onFrame,
+  onScanAgain,
+}: {
+  phase: ScanPhase
+  invalid: boolean
+  onFrame: (data: string) => void
+  onScanAgain: () => void
+}) {
   const palette = usePalette()
   const [permission, requestPermission] = useCameraPermissions()
-  const [invalid, setInvalid] = useState(false)
-  const handled = useRef(false)
 
   if (!permission) {
     return (
@@ -131,7 +205,11 @@ function ScanPane({ onPaired }: { onPaired: PairFn }) {
 
   return (
     <Card>
-      <CardHeader icon="maximize" title="Scan" subtitle="point at the terminal" />
+      <CardHeader
+        icon="maximize"
+        title="Scan"
+        subtitle={phase === 'pairing' ? 'pairing…' : phase === 'stopped' ? 'stopped' : 'point at the terminal'}
+      />
       <View
         style={{
           height: 300,
@@ -145,19 +223,36 @@ function ScanPane({ onPaired }: { onPaired: PairFn }) {
           style={{ flex: 1 }}
           facing="back"
           barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-          onBarcodeScanned={({ data }) => {
-            if (handled.current) return
-            const parsed = parsePairingUrl(data)
-            if (!parsed) {
-              setInvalid(true)
-              return
-            }
-            handled.current = true
-            onPaired(parsed)
-          }}
+          onBarcodeScanned={({ data }) => onFrame(data)}
         />
+        {/*
+          A stopped scanner still shows the preview — the camera is exactly
+          where the user left it — but says so over the top, so that a code
+          sitting in frame and doing nothing reads as a decision rather than
+          as a broken app.
+        */}
+        {phase === 'stopped' ? (
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              right: 0,
+              bottom: 0,
+              alignItems: 'center',
+              justifyContent: 'center',
+              padding: space.lg,
+              backgroundColor: alpha(palette.background, 0.82),
+            }}
+          >
+            <Body tone={palette.muted} style={{ fontSize: size.label, textAlign: 'center', marginBottom: space.md }}>
+              Scanning stopped after that attempt. The same code will not be tried again on its own.
+            </Body>
+            <Button icon="refresh-cw" label="Scan again" variant="solid" onPress={onScanAgain} />
+          </View>
+        ) : null}
       </View>
-      {invalid ? (
+      {invalid && phase !== 'stopped' ? (
         <Body tone={palette.orange} style={{ marginTop: space.md, fontSize: size.label }}>
           That is not an Omarchy Connect code.
         </Body>
