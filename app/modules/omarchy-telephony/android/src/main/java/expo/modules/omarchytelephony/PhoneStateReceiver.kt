@@ -25,6 +25,15 @@ import android.telephony.TelephonyManager
  * and no number in any of them. A call that rang before it went off-hook came
  * in; one that went off-hook out of nowhere was placed from this handset.
  *
+ * None of that state survives the process it is held in, and Android ends
+ * this process whenever it wants the memory — often in the middle of a call,
+ * starting it again a minute later purely to deliver the `IDLE`. So the call
+ * in hand is written to disk as it moves ([LiveCall]) and picked back up by
+ * whoever wakes next; and when the ending arrives with nobody named after all,
+ * the phone's own call log is asked ([LastCall]). What used to happen instead
+ * was a fresh token minted for the ending alone, and a conversation the
+ * desktop had been following all along finishing as a blank second line.
+ *
  * The same silence is why a call this phone placed needs `timed`. Off-hook on
  * an outgoing call is the moment of dialling, and nothing is ever broadcast
  * for the moment the far end picks up — so a desktop counting from off-hook
@@ -61,6 +70,18 @@ class PhoneStateReceiver : BroadcastReceiver() {
     @Volatile private var namedOut = false
 
     /**
+     * Whether this process has already looked on disk for a call in progress.
+     *
+     * Everything above is process memory, and Android ends this process
+     * whenever it likes — including in the middle of a conversation, starting
+     * it again a minute later for nothing but the `IDLE` broadcast. The first
+     * thing that touches the call state in a new process therefore reads
+     * [LiveCall] first; after that the fields are the truth and the disk is
+     * only their copy.
+     */
+    @Volatile private var loaded = false
+
+    /**
      * The desktop folds a second report of the same ringing call into the
      * first one, but only for a few seconds after the previous one. Past that
      * window a re-announcement would show up as a second call rather than as
@@ -89,6 +110,91 @@ class PhoneStateReceiver : BroadcastReceiver() {
       direction = way
       offHookAt = 0L
       chronometer = 0L
+    }
+
+    /**
+     * Pick the conversation back up, if this process was started in the middle
+     * of one somebody else's process began.
+     *
+     * Runs once per process, from the broadcast and from nowhere else, and
+     * never for a call that is beginning: a record on disk when the phone
+     * starts ringing belongs to an older call, and [forget] drops it. What is
+     * left is the case this exists for — an `OFFHOOK` or an `IDLE` about a
+     * call this process never saw begin.
+     *
+     * It is deliberately not consulted by [identify] or [timed]. Those two are
+     * the dialler's notification, and the notification road has its own race
+     * with the broadcast: a card that arrives before the phone-state change is
+     * how a caller gets named at all. Letting it merge into a record left over
+     * from an earlier call would put the wrong person on this one, and the
+     * name it carries is written down by the broadcast a moment later anyway.
+     *
+     * `announcedAt` deliberately does not come back. It is the age of the
+     * ringing report *the desktop was sent*, and this process sent nothing —
+     * so a name arriving now is past the enrichment window by definition and
+     * belongs to the ending, which is exactly what leaving it at zero says.
+     */
+    private fun restore(context: Context) {
+      if (loaded) return
+      loaded = true
+      val held = LiveCall.read(context.applicationContext) ?: return
+      callId = held.callId
+      direction = held.direction
+      ringingNumber = held.from
+      ringingName = held.name
+      lastState = held.state
+      answered = held.answered
+      namedOut = held.namedOut
+      offHookAt = held.offHookAt
+      chronometer = held.chronometer
+      // The token cannot be compared against the last process's logs — the
+      // digest salt is drawn per process on purpose — so what this line is for
+      // is the fact of the recovery and what came back with it. The desktop is
+      // where the two halves of the call meet under one real token.
+      Trace.evt(
+        "call.restored",
+        "call" to Trace.mark(callId),
+        "state" to lastState,
+        "direction" to direction,
+        "named" to named(),
+        "ageMs" to (System.currentTimeMillis() - held.savedAt),
+      )
+    }
+
+    /**
+     * Drop whatever is on disk, and stop this process from looking again.
+     *
+     * A record still there when the next call starts means an ending that was
+     * never seen — the process was killed and Android never started it again
+     * for the `IDLE`. Worth a line: it is the one way a conversation can go
+     * unclosed on the desktop.
+     */
+    private fun forget(context: Context) {
+      if (!loaded) {
+        loaded = true
+        if (LiveCall.read(context.applicationContext) != null) Trace.warn("call.hold.abandoned")
+      }
+      LiveCall.clear(context.applicationContext)
+    }
+
+    /** Put the call in hand back on disk, wherever it has got to. */
+    private fun remember(context: Context) {
+      val id = callId ?: return
+      LiveCall.save(
+        context.applicationContext,
+        LiveCall.Held(
+          callId = id,
+          direction = direction,
+          from = ringingNumber,
+          name = ringingName,
+          state = lastState,
+          answered = answered,
+          namedOut = namedOut,
+          offHookAt = offHookAt,
+          chronometer = chronometer,
+          savedAt = 0L,
+        ),
+      )
     }
 
     /**
@@ -125,6 +231,10 @@ class PhoneStateReceiver : BroadcastReceiver() {
     fun timed(context: Context, at: Long) {
       if (at <= 0L || at == chronometer) return
       chronometer = at
+      // Held before the two refusals below: a card that is rejected as a
+      // report to the desktop is still the best reading of this call's clock
+      // there will ever be, and the process may not live to be asked again.
+      remember(context)
       // Both refusals below are the guard working as designed — a card raised
       // while the phone was still ringing, or one arriving before the
       // broadcast — and both look from the desktop like a call whose timer
@@ -185,6 +295,10 @@ class PhoneStateReceiver : BroadcastReceiver() {
       if (!named() && ringingNumber != null) {
         Contacts.nameFor(context, ringingNumber)?.let { ringingName = it }
       }
+      // Who is calling is the one thing the ending most needs and is least
+      // able to work out for itself, so it goes to disk the moment it is
+      // learned — before any of the reasons below to say nothing about it.
+      remember(context)
       // Four ways to learn nothing new, and a desktop showing a number where a
       // name should be has hit exactly one of them. Which one it was is not
       // recoverable after the fact from anywhere else.
@@ -209,6 +323,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
       }
       announcedAt = System.currentTimeMillis()
       namedOut = named()
+      remember(context)
       Trace.evt(
         "call.identify",
         "call" to Trace.mark(callId),
@@ -230,6 +345,11 @@ class PhoneStateReceiver : BroadcastReceiver() {
       TelephonyManager.EXTRA_STATE_IDLE -> "ended"
       else -> return
     }
+    // Before the state in memory is consulted for anything, including for the
+    // repeat check below: in a process Android started for this broadcast
+    // alone, the state in memory is empty and the call may be an hour old.
+    if (state != "ringing" && callId == null) restore(context)
+
     // The broadcast fires more than once for the same state on some devices.
     if (state == lastState) {
       Trace.detail("call.state.repeat", "state" to state)
@@ -238,6 +358,9 @@ class PhoneStateReceiver : BroadcastReceiver() {
     lastState = state
 
     if (state == "ringing") {
+      // A new conversation. Whatever is on disk is an older one — normally
+      // nothing, because a call clears its own record when it ends.
+      forget(context)
       begin("incoming")
       announcedAt = System.currentTimeMillis()
       // Empty on every modern build; kept because it costs nothing and is
@@ -262,11 +385,36 @@ class PhoneStateReceiver : BroadcastReceiver() {
       // dialling, and the dialler's card supplies the rest.
       offHookAt = System.currentTimeMillis()
     }
-    // A process Android started for the IDLE of a call it never saw begin still
-    // has a call to report; it just cannot say which way that one went.
-    if (state == "ended" && callId == null) {
-      Trace.evt("call.orphan.ended", "reason" to "no-beginning-seen")
-      begin(null)
+    if (state == "ended") {
+      // Whatever is still missing, the phone's own log may have it. Asked only
+      // when something is missing: a call the notification listener named is
+      // already better identified than the log will be in the first second
+      // after it ends.
+      if (ringingNumber == null || direction == null) {
+        val logged = LastCall.since(context, offHookAt)
+        if (logged != null) {
+          if (ringingNumber == null) ringingNumber = logged.from
+          if (!named()) ringingName = logged.name ?: ringingName
+          if (direction == null) direction = logged.direction
+          if (logged.missed) answered = false
+          Trace.evt(
+            "call.log.recovered",
+            "call" to Trace.mark(callId),
+            "from" to Trace.mark(ringingNumber),
+            "named" to named(),
+            "direction" to direction,
+          )
+        }
+      }
+      // Only now, with the disk and the log both asked, is a call with no
+      // beginning really a call with no beginning.
+      if (callId == null) {
+        // Nothing was held and the log had nothing to add, or the record was
+        // too old to believe. `call.hold.stale`, `call.log.miss` and
+        // `call.hold.unreadable` above say which of those it was.
+        Trace.evt("call.orphan.ended", "reason" to "no-beginning-seen", "logged" to (direction != null))
+        begin(direction)
+      }
     }
 
     // One line per transition, carrying the token the three reports of a
@@ -283,6 +431,7 @@ class PhoneStateReceiver : BroadcastReceiver() {
     OmarchyTelephonyModule.deliver(context, "onCall", callEvent(state))
 
     if (state == "ended") {
+      LiveCall.clear(context.applicationContext)
       ringingNumber = null
       ringingName = null
       answered = false
@@ -292,6 +441,8 @@ class PhoneStateReceiver : BroadcastReceiver() {
       chronometer = 0L
       callId = null
       direction = null
+    } else {
+      remember(context)
     }
   }
 }
