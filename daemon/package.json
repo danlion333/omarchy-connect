@@ -16,6 +16,7 @@
     "test": "node ../tools/run-tests.mjs daemon",
     "test:tls": "node test/tls.mjs",
     "test:calls": "node test/calls.mjs",
+    "test:call-close": "node test/call-close.mjs",
     "test:otp": "node test/otp.mjs",
     "test:locate": "node test/locate.mjs",
     "test:ios": "node test/ios.mjs",

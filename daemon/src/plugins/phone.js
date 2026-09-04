@@ -683,6 +683,18 @@ const sameParty = (a, b) =>
   (!a.from || !b.from || a.from === b.from) && (!a.name || !b.name || a.name === b.name)
 
 /**
+ * A report that says nothing about who the call was with.
+ *
+ * Which is most of what arrives when a conversation ends: Android broadcasts
+ * the end of a call without the number in it, and the app forwards what it was
+ * handed. A report like that is evidence that a call is over and evidence of
+ * nothing else — in particular it is not evidence that the call it is about is
+ * a different one from the call already on the desktop's screen, however the
+ * token on it reads. See `twin`.
+ */
+const anonymous = (entry) => !entry.from && !entry.name
+
+/**
  * The line in the history this report belongs to, if it belongs to one.
  *
  * Two different questions wear the same coat here. One is a call announced
@@ -709,10 +721,17 @@ function twin(entry) {
     const stamped = history.find((old) => old.kind === 'call' && old.call === entry.call)
     if (stamped) return stamped
   }
-  // Only for a report that carries no token of its own: one that does and
-  // matched nothing above is a new call, whoever it is with.
+  // A token that matched nothing above says "a new call" only on a report that
+  // also says something about the call. The handset does not always stamp one
+  // conversation with one token: a hang-up can arrive carrying a token this
+  // desktop has never seen and naming nobody, and taking that at its word used
+  // to open a second line — an `unknown` with no number, no name, no direction
+  // and no duration — for the conversation already up on the screen, and count
+  // it a second time. So a report that names nobody is read the way a
+  // tokenless one is: by the call that is up, and then by the clock.
+  const identified = Boolean(entry.call) && !anonymous(entry)
   if (
-    !entry.call &&
+    !identified &&
     live &&
     live.state !== 'ended' &&
     entry.state !== 'ringing' &&
@@ -720,6 +739,17 @@ function twin(entry) {
     sameParty(live, entry)
   ) {
     return live
+  }
+  // The same hang-up, after the desktop has stopped holding the call: a ring
+  // nobody reported again is dropped by the watchdog in `liveCall` after
+  // `RING_TIMEOUT_MS`, and a daemon restarted mid-conversation never held it at
+  // all. The line the call was written on is still open in the history, and an
+  // anonymous ending belongs on it rather than on a line of its own — a line
+  // whose state is still `ringing` or `active` is by definition a conversation
+  // this desktop was never told the end of.
+  if (entry.state === 'ended' && anonymous(entry)) {
+    const open = history.find((old) => old.kind === 'call' && old.state && old.state !== 'ended')
+    if (open) return open
   }
   const cutoff = entry.receivedAt - DEDUPE_MS
   return (
@@ -849,6 +879,24 @@ function record(raw, device) {
       const { entry: merged, named, advanced, retimed } = enrich(already, entry)
       return { entry: merged, fresh: false, stale, named, advanced, retimed }
     }
+    /**
+     * An ending that belongs to nothing, and says nothing about itself.
+     *
+     * No number, no name, no direction the road actually knew, no duration:
+     * every field a history line exists to carry is missing, and there is no
+     * open conversation for it to be the end of. Writing it down put a row
+     * reading `unknown` with nothing but a timestamp beside it into the panel
+     * — indistinguishable from a missed call from the same nobody — and moved
+     * the call counter for a conversation that either was never seen or was
+     * already counted.
+     *
+     * It is still ingested: `remember` takes the live call down and `notify`
+     * stops the clock and the ringtone, because a hang-up is true even when it
+     * is uninformative. It is only not remembered.
+     */
+    if (entry.state === 'ended' && anonymous(entry) && entry.seconds == null && !entry.missed) {
+      return { entry, fresh: false, stale, dropped: true }
+    }
     // Once per conversation, wherever in its life the desktop caught it. It
     // used to skip anything that arrived `active` or `ended` to avoid counting
     // a call three times — which meant an outgoing call, which never rings and
@@ -891,7 +939,7 @@ function anticipate(entry, stale = false) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh, stale, named, advanced, retimed } = record(raw, device)
+  const { entry, fresh, stale, named, advanced, retimed, dropped } = record(raw, device)
   if (entry.kind === 'call') {
     remember(entry)
     anticipate(entry, stale)
@@ -908,7 +956,11 @@ function ingest(raw, device = null) {
   // None of which applies to a report that has been sitting in the phone's
   // backlog: it is written down, counted and published to the panel like any
   // other, and simply not announced. See `REPLAY_MS`.
-  if (!stale && (fresh || advanced || retimed || (named && entry.state === 'ringing'))) notify(entry)
+  // `dropped` is a report that was ingested and not written down — an
+  // anonymous hang-up with nothing to attach to. It raises nothing, but it does
+  // have to reach `notify`, which is where the ringtone stops and the clock on
+  // an `ended` comes down.
+  if (!stale && (fresh || dropped || advanced || retimed || (named && entry.state === 'ringing'))) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
   return { entry, fresh, stale }
 }
