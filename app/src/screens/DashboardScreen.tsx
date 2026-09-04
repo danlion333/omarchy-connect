@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react'
 import { RefreshControl, View } from 'react-native'
 
 import { useConnection, useStats } from '../state/ConnectionContext'
-import { Body, Caps, Card, CardHeader, DataGrid, Divider, Meter, Screen, Segmented, StatusDot, Value, toneFor } from '../ui/kit'
+import { Body, Caps, Card, CardHeader, DataGrid, Divider, Meter, Notice, Screen, Segmented, StatusDot, Value, toneFor } from '../ui/kit'
 import { bytes, duration, ms, percent, rate } from '../lib/format'
 import { size, space } from '../theme'
 
@@ -19,7 +19,7 @@ export function DashboardScreen() {
   const { hello, palette, status, call, can, latencyMs, watchStats } = useConnection()
   const stats = useStats()
   const [dns, setDns] = useState<DnsProvider | null>(null)
-  const [dnsError, setDnsError] = useState<string | null>(null)
+  const [dnsError, setDnsError] = useState<unknown>(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const loadDns = useCallback(async () => {
@@ -61,7 +61,7 @@ export function DashboardScreen() {
         await call('dns.set', { provider })
       } catch (err) {
         setDns(previous)
-        setDnsError((err as Error).message)
+        setDnsError(err)
       }
     },
     [call, dns],
@@ -132,9 +132,7 @@ export function DashboardScreen() {
           disabled={!can('desktop', 'dns') || status !== 'connected'}
         />
         {dnsError ? (
-          <Body tone={palette.red} style={{ marginTop: space.sm, fontSize: size.label }}>
-            {dnsError}
-          </Body>
+          <Notice error={dnsError} style={{ marginTop: space.sm, marginBottom: 0 }} onDismiss={() => setDnsError(null)} />
         ) : net?.dns?.length ? (
           <Body tone={palette.muted} style={{ marginTop: space.sm, fontSize: size.label }}>
             {net.dns.join('  ')}

@@ -51,6 +51,8 @@ export type StatusSlice = {
   ready: boolean
   status: ConnectionStatus
   error: string | null
+  /** The desktop's last complaint, until the user dismisses it. */
+  serverError: string | null
   desktop: SavedDesktop | null
   hello: Hello | null
   clipboard: ClipboardEvent[]
@@ -66,6 +68,7 @@ export function statusSlice(state: LinkState): StatusSlice {
     ready: state.ready,
     status: state.status,
     error: state.error,
+    serverError: state.serverError,
     desktop: state.desktop,
     hello: state.hello,
     clipboard: state.clipboard,
@@ -84,6 +87,8 @@ export type AgentsSlice = {
   agentsWaiting: number
   agentLimits: AgentLimits | null
   agentJobs: AgentJob[]
+  /** Why the list is empty, when asking for it failed. */
+  agentsError: string | null
 }
 
 export function agentsSlice(state: LinkState): AgentsSlice {
@@ -92,5 +97,6 @@ export function agentsSlice(state: LinkState): AgentsSlice {
     agentsWaiting: state.agents.filter((a) => a.state === 'waiting').length,
     agentLimits: state.agentLimits,
     agentJobs: state.agentJobs,
+    agentsError: state.agentsError,
   }
 }

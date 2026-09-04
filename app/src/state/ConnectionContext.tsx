@@ -26,6 +26,8 @@ type Actions = {
   call: <T = any>(method: string, params?: Record<string, unknown>) => Promise<T>
   pair: (target: PairingTarget) => Promise<void>
   reconnect: () => void
+  /** Clears the desktop's last complaint once it has been read. */
+  dismissServerError: () => void
   /** Sends the magic packet, then waits for the desktop to answer again. */
   wake: () => Promise<boolean>
   forget: () => Promise<void>
@@ -96,6 +98,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const addEndpoint = useCallback((host: string, port: number) => link.addEndpoint(host, port), [])
   const removeEndpoint = useCallback((host: string, port: number) => link.removeEndpoint(host, port), [])
   const reconnect = useCallback(() => link.reconnectNow(), [])
+  const dismissServerError = useCallback(() => link.dismissServerError(), [])
   const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
   const refreshAgentJobs = useCallback(() => link.refreshAgentJobs(), [])
@@ -108,13 +111,26 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       call,
       pair,
       reconnect,
+      dismissServerError,
       wake,
       forget,
       addEndpoint,
       removeEndpoint,
       watchStats,
     }),
-    [refreshAgents, refreshAgentJobs, call, pair, reconnect, wake, forget, addEndpoint, removeEndpoint, watchStats],
+    [
+      refreshAgents,
+      refreshAgentJobs,
+      call,
+      pair,
+      reconnect,
+      dismissServerError,
+      wake,
+      forget,
+      addEndpoint,
+      removeEndpoint,
+      watchStats,
+    ],
   )
 
   const status = useSlice(statusSlice, state)

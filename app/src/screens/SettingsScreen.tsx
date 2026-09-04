@@ -4,7 +4,7 @@ import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Field, ListRow, Screen } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Field, ListRow, Notice, Screen } from '../ui/kit'
 import { clock, duration } from '../lib/format'
 import {
   canAnswerCalls,
@@ -39,7 +39,7 @@ export function SettingsScreen() {
   const [themes, setThemes] = useState<string[]>([])
   const [currentTheme, setCurrentTheme] = useState<string | null>(null)
   const [switching, setSwitching] = useState<string | null>(null)
-  const [themeError, setThemeError] = useState<string | null>(null)
+  const [themeError, setThemeError] = useState<unknown>(null)
 
   const connected = status === 'connected'
 
@@ -50,7 +50,7 @@ export function SettingsScreen() {
       setThemes(res.themes)
       setCurrentTheme(res.current)
     } catch (err) {
-      setThemeError((err as Error).message)
+      setThemeError(err)
     }
   }, [call, can, connected])
 
@@ -66,7 +66,7 @@ export function SettingsScreen() {
         await call('theme.set', { name })
         setCurrentTheme(name)
       } catch (err) {
-        setThemeError((err as Error).message)
+        setThemeError(err)
       } finally {
         setSwitching(null)
       }
@@ -122,11 +122,7 @@ export function SettingsScreen() {
         <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.xs }}>
           this is the desktop key your phone pinned — `omarchy-connect status` prints the same digest
         </Body>
-        {error ? (
-          <Body tone={palette.red} style={{ marginTop: space.md, fontSize: size.label }}>
-            {error}
-          </Body>
-        ) : null}
+        <Notice error={error} style={{ marginTop: space.md, marginBottom: 0 }} />
       </Card>
 
       {can('desktop', 'themes') ? (
@@ -147,11 +143,7 @@ export function SettingsScreen() {
               />
             ))}
           </View>
-          {themeError ? (
-            <Body tone={palette.red} style={{ marginTop: space.md, fontSize: size.label }}>
-              {themeError}
-            </Body>
-          ) : null}
+          <Notice error={themeError} style={{ marginTop: space.md, marginBottom: 0 }} />
         </Card>
       ) : null}
 
@@ -316,11 +308,7 @@ function RemoteAccess() {
         <>
           <Field label="Address" value={host} onChange={setHost} placeholder="100.101.102.103" />
           <Field label="Port" value={port} onChange={setPort} keyboardType="number-pad" maxLength={5} />
-          {outcome ? (
-            <Body tone={palette.red} style={{ fontSize: size.label, marginBottom: space.md }}>
-              {outcome}
-            </Body>
-          ) : null}
+          <Notice error={outcome} />
           <View style={{ flexDirection: 'row', gap: space.sm }}>
             <View style={{ flex: 1 }}>
               <Button

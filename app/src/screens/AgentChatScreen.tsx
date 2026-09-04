@@ -23,7 +23,8 @@ import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } 
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import * as dictate from '../api/dictate'
-import { Body, Button, Caps, Chip, Meter } from '../ui/kit'
+import { Body, Button, Caps, Chip, Meter, Notice } from '../ui/kit'
+import { errorLine } from '../lib/errors'
 import { StatusLine, inPane } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
@@ -46,7 +47,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   const { call, client, palette } = useConnection()
   const [blocks, setBlocks] = useState<AgentBlock[]>([])
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [expanded, setExpanded] = useState<Record<number, string>>({})
   // The terminal as it actually looks. A permission prompt is drawn on screen
   // and never written to the transcript, so the numbered options this phone is
@@ -119,7 +120,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         epoch.current = res.epoch ?? null
         setError(null)
       })
-      .catch((err) => live && setError((err as Error).message))
+      .catch((err) => live && setError(err))
       .finally(() => live && setLoading(false))
 
     return () => {
@@ -168,7 +169,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
           }
           setError(null)
         })
-        .catch((err) => setError((err as Error).message))
+        .catch((err) => setError(err))
     })
   }, [call, client, session.id])
 
@@ -210,7 +211,9 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         const res = await call<{ text: string }>('agents.detail', { id: session.id, seq: block.seq })
         setExpanded((prev) => ({ ...prev, [block.seq]: res.text }))
       } catch (err) {
-        setExpanded((prev) => ({ ...prev, [block.seq]: (err as Error).message }))
+        // The expander holds text rather than a thrown value; a failed
+        // detail must not arrive as a stack trace pretending to be output.
+        setExpanded((prev) => ({ ...prev, [block.seq]: errorLine(err, 'the desktop would not send this') }))
       }
     },
     [call, expanded, session.id],
@@ -321,7 +324,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         scrollEventThrottle={120}
       >
         {loading ? <ActivityIndicator color={palette.accent} style={{ marginTop: space.xl }} /> : null}
-        {error ? <Body tone={palette.red}>{error}</Body> : null}
+        <Notice error={error} onDismiss={() => setError(null)} />
         {!loading && !error && !groups.length ? (
           <Body tone={palette.muted} style={{ textAlign: 'center', marginTop: space.xl }}>
             Nothing in this transcript yet
@@ -684,14 +687,14 @@ function Working() {
 function RawScreen({ session }: { session: AgentSession }) {
   const { call, palette } = useConnection()
   const [screen, setScreen] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
 
   useEffect(() => {
     let live = true
     const pull = () =>
       call<{ screen: string }>('agents.screen', { id: session.id, lines: 80 })
         .then((res) => live && (setScreen(res.screen), setError(null)))
-        .catch((err) => live && setError((err as Error).message))
+        .catch((err) => live && setError(err))
     void pull()
     const timer = setInterval(pull, 2500)
     return () => {
@@ -705,7 +708,7 @@ function RawScreen({ session }: { session: AgentSession }) {
       style={{ flex: 1, backgroundColor: palette.darker_background }}
       contentContainerStyle={{ padding: space.md }}
     >
-      {error ? <Body tone={palette.red}>{error}</Body> : null}
+      <Notice error={error} />
       {screen === null && !error ? <ActivityIndicator color={palette.accent} /> : null}
       {screen !== null ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -1054,7 +1057,7 @@ function Question({
   // so there is no moment between choosing and having chosen.
   const [checked, setChecked] = useState<number[]>([])
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   // What this phone just sent, until the transcript catches up and says the
   // same thing. Without it the list stays live for the second or two the agent
   // takes to write the answer down, and a second tap is a stray digit typed
@@ -1073,7 +1076,7 @@ function Question({
         setChecked([])
         setSent(labels)
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setBusy(false)
       }
@@ -1142,11 +1145,7 @@ function Question({
           Reading only — this one has to be answered at the desktop
         </Text>
       ) : null}
-      {error ? (
-        <Body tone={palette.red} style={{ fontSize: size.label }}>
-          {error}
-        </Body>
-      ) : null}
+      <Notice error={error} style={{ marginBottom: 0 }} />
     </View>
   )
 }
@@ -1317,7 +1316,7 @@ function Composer({
   const insets = useSafeAreaInsets()
   const setText = onChangeText
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [acknowledged, setAcknowledged] = useState(false)
   const [shots, setShots] = useState<Attachment[]>([])
   const [sources, setSources] = useState(false)
@@ -1349,7 +1348,7 @@ function Composer({
       try {
         await what()
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setBusy(false)
       }
@@ -1401,7 +1400,7 @@ function Composer({
       try {
         picked = await pick()
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
         return
       }
       if (!picked) return
@@ -1412,7 +1411,7 @@ function Composer({
         const path = await attach.upload(client, picked)
         setShots((prev) => prev.map((s) => (s.key === key ? { ...s, path } : s)))
       } catch (err) {
-        setShots((prev) => prev.map((s) => (s.key === key ? { ...s, error: (err as Error).message } : s)))
+        setShots((prev) => prev.map((s) => (s.key === key ? { ...s, error: errorLine(err, 'the upload failed') } : s)))
       }
     },
     [client],
@@ -1435,7 +1434,7 @@ function Composer({
       setHeld(0)
       setListening(true)
     } catch (err) {
-      setError((err as Error).message)
+      setError(err)
     }
   }, [recorder])
 
@@ -1455,7 +1454,7 @@ function Composer({
       try {
         uri = await dictate.finish(recorder)
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
         return
       }
       if (!keep || !uri || !client) return
@@ -1465,7 +1464,7 @@ function Composer({
         if (said) setText(text.trim() ? `${text.trim()} ${said}` : said)
         else setError('the desktop heard nothing in that')
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setHearing(false)
       }
@@ -1537,7 +1536,7 @@ function Composer({
       }
       return (
         <View style={{ ...frame, gap: space.sm }}>
-          {error ? <Body tone={palette.red}>{error}</Body> : null}
+          <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: 0 }} />
           <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
             <TextInput
               value={text}
@@ -1624,11 +1623,7 @@ function Composer({
 
   return (
     <View style={frame}>
-      {error ? (
-        <Body tone={palette.red} style={{ marginBottom: space.sm }}>
-          {error}
-        </Body>
-      ) : null}
+      <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: space.sm }} />
 
       {/* Where a picture comes from, only while one is being chosen. Three
           sources rather than one because a screenshot is in a different place

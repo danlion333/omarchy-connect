@@ -13,6 +13,8 @@ import { ShareScreen } from './src/screens/ShareScreen'
 import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
+import { ErrorBoundary } from './src/ui/ErrorBoundary'
+import { Notice } from './src/ui/kit'
 import { FALLBACK_PALETTE, font, size, space } from './src/theme'
 import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
 import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
@@ -51,7 +53,7 @@ function Splash() {
 }
 
 function Shell() {
-  const { desktop, ready, palette } = useConnection()
+  const { desktop, ready, palette, serverError, dismissServerError } = useConnection()
   const [tab, setTab] = useState<TabKey>('stats')
   const route = useRequestedRoute()
   const [opening, setOpening] = useState<string | null>(null)
@@ -81,13 +83,31 @@ function Shell() {
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      <View style={{ flex: 1 }}>
-        {tab === 'stats' ? <DashboardScreen /> : null}
-        {tab === 'remote' ? <RemoteScreen /> : null}
-        {tab === 'agents' ? <AgentsScreen open={opening} onOpened={() => setOpening(null)} /> : null}
-        {tab === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={() => setShared(null)} /> : null}
-        {tab === 'setup' ? <SettingsScreen /> : null}
-      </View>
+      {/*
+        A screen that throws while rendering used to take the whole tree with
+        it and leave a blank window. It stops here now, and switching tabs —
+        which moves `resetKey` — puts the broken one back on its feet.
+      */}
+      <ErrorBoundary resetKey={tab}>
+        <View style={{ flex: 1 }}>
+          {tab === 'stats' ? <DashboardScreen /> : null}
+          {tab === 'remote' ? <RemoteScreen /> : null}
+          {tab === 'agents' ? <AgentsScreen open={opening} onOpened={() => setOpening(null)} /> : null}
+          {tab === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={() => setShared(null)} /> : null}
+          {tab === 'setup' ? <SettingsScreen /> : null}
+        </View>
+      </ErrorBoundary>
+      {/*
+        The desktop's own complaints. They belong to no screen — the request
+        that drew one may have been sent from a tab the user has since left —
+        so they are shown above the tab bar wherever the user happens to be,
+        and stay until dismissed.
+      */}
+      {serverError ? (
+        <View style={{ paddingHorizontal: space.lg }}>
+          <Notice error={serverError} tone="warning" onDismiss={dismissServerError} />
+        </View>
+      ) : null}
       <TabBar current={tab} onChange={setTab} />
     </View>
   )

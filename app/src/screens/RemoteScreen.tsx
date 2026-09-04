@@ -3,7 +3,7 @@ import { Alert, View } from 'react-native'
 import * as Haptics from 'expo-haptics'
 
 import { useConnection } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Chip, Divider, LevelBar, ListRow, Screen, Value } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Chip, Divider, LevelBar, ListRow, Notice, Screen, Value } from '../ui/kit'
 import { canWake } from '../api/wake'
 import { space, size } from '../theme'
 
@@ -24,7 +24,8 @@ export function RemoteScreen() {
   const [activeWorkspace, setActiveWorkspace] = useState<number | null>(null)
   const [windows, setWindows] = useState<Window[]>([])
   const [busy, setBusy] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  /** The thrown value itself; `Notice` turns it into a line a person reads. */
+  const [error, setError] = useState<unknown>(null)
 
   const connected = status === 'connected'
 
@@ -43,7 +44,7 @@ export function RemoteScreen() {
         setActiveWorkspace(w.activeId)
       }
     } catch (err) {
-      setError((err as Error).message)
+      setError(err)
     }
   }, [call, can, connected])
 
@@ -74,7 +75,7 @@ export function RemoteScreen() {
         }
         after?.()
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setBusy(null)
       }
@@ -123,7 +124,7 @@ export function RemoteScreen() {
             : 'no answer yet — it may still be starting up',
       )
     } catch (err) {
-      setError((err as Error).message)
+      setError(err)
     }
   }, [wake, desktop?.wake?.armed])
 
@@ -135,11 +136,7 @@ export function RemoteScreen() {
     <Screen>
       <Caps style={{ marginBottom: space.md }}>Remote control</Caps>
 
-      {error ? (
-        <Body tone={palette.red} style={{ marginBottom: space.md, fontSize: size.label }}>
-          {error}
-        </Body>
-      ) : null}
+      <Notice error={error} onDismiss={() => setError(null)} />
 
       <Card>
         <CardHeader

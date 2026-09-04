@@ -31,6 +31,7 @@ const base = {
   ready: true,
   status: 'connected',
   error: null,
+  serverError: null,
   desktop: { host: '10.0.0.2', port: 8765, token: 't', publicKey: 'k' },
   hello: { version: '1', capabilities: {} },
   palette: PALETTE,
@@ -38,6 +39,7 @@ const base = {
   agents: [session('a'), session('b', 'waiting')],
   agentLimits: null,
   agentJobs: [],
+  agentsError: null,
   clipboard: [],
   files: [],
   latencyMs: 12,
@@ -79,6 +81,16 @@ check(
 )
 check('so the palette is untouched', ticked.palette === base.palette)
 check('and the agent slice is unmoved too', shallowEqual(agentsSlice(base), agentsSlice(ticked)))
+
+// The desktop's own complaints and a session list that could not be fetched
+// are news to exactly one slice each — they are rendered by the tab shell and
+// by the agents screen, and by nothing that reads the stats.
+const complained = merged(base, { serverError: 'no such method' })
+check('a desktop complaint reaches the status slice', !shallowEqual(statusSlice(base), statusSlice(complained)))
+check('and nothing else', shallowEqual(agentsSlice(base), agentsSlice(complained)))
+const unlisted = merged(base, { agentsError: 'the desktop did not send its agents' })
+check('a failed agent list reaches the agents slice', !shallowEqual(agentsSlice(base), agentsSlice(unlisted)))
+check('and leaves the status alone', shallowEqual(statusSlice(base), statusSlice(unlisted)))
 
 // The other direction, so that the check above is a claim about stats rather
 // than about a slice that never changes for anything.

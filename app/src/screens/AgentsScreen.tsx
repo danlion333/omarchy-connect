@@ -4,7 +4,7 @@ import { Feather } from '@expo/vector-icons'
 
 import { useAgents, useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentCapabilities, AgentJob, AgentSession } from '../api/client'
-import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, StatusDot } from '../ui/kit'
+import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, StatusDot } from '../ui/kit'
 import { Limits, StatusLine, inPane, tokens } from '../ui/agentkit'
 import { AgentChatScreen } from './AgentChatScreen'
 import { AgentLaunchScreen } from './AgentLaunchScreen'
@@ -26,7 +26,7 @@ import { space } from '../theme'
  */
 export function AgentsScreen({ open: requested, onOpened }: { open?: string | null; onOpened?: () => void } = {}) {
   const { refreshAgents, refreshAgentJobs, palette, status, hello } = useConnection()
-  const { agents, agentLimits, agentJobs } = useAgents()
+  const { agents, agentLimits, agentJobs, agentsError } = useAgents()
   const [openId, setOpenId] = useState<string | null>(null)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -120,6 +120,10 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
           </Pressable>
         ) : null}
       </View>
+
+      {/* Asking the desktop for its sessions failed. Without this the screen
+          showed an empty list, which is what a quiet desktop looks like too. */}
+      <Notice error={agentsError} tone="warning" />
 
       {/* What the plan has left. First, because it is the number that decides
           whether starting something long is a good idea, and that decision is

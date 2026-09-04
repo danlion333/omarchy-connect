@@ -3,7 +3,7 @@ import { ActivityIndicator, View } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Screen, Segmented, Title } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Notice, Screen, Segmented, Title } from '../ui/kit'
 import { DEFAULT_PORT, parsePairingUrl, probeHost, scanSubnet, type Discovered, type PairingTarget } from '../api/discovery'
 import { font, radius, size, space } from '../theme'
 
@@ -18,7 +18,7 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
   const { pair, palette } = useConnection()
   const [mode, setMode] = useState<Mode>('scan')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
 
   const attempt = useCallback(
     async (target: PairingTarget) => {
@@ -27,7 +27,7 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
       try {
         await pair(target)
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setBusy(false)
       }
@@ -40,11 +40,7 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
       <View style={{ marginBottom: space.xl }}>
         <Title style={{ fontSize: 26 }}>Omarchy Connect</Title>
         <Caps style={{ marginTop: space.xs }}>pair with your desktop</Caps>
-        {notice ? (
-          <Body tone={palette.orange} style={{ marginTop: space.md, fontSize: size.label }}>
-            {notice}
-          </Body>
-        ) : null}
+        <Notice error={notice} tone="warning" style={{ marginTop: space.md }} />
       </View>
 
       <View style={{ marginBottom: space.lg }}>
@@ -60,13 +56,7 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
         />
       </View>
 
-      {error ? (
-        <Card>
-          <Body tone={palette.red} style={{ fontSize: size.body }}>
-            {error}
-          </Body>
-        </Card>
-      ) : null}
+      <Notice error={error} onDismiss={() => setError(null)} />
 
       {busy ? (
         <Card>

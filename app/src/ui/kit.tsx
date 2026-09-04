@@ -12,10 +12,12 @@ import {
   type ViewStyle,
 } from 'react-native'
 import { Feather } from '@expo/vector-icons'
+import * as Clipboard from 'expo-clipboard'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { alpha, font, radius, size, space, type Palette } from '../theme'
 import { usePalette } from '../state/ConnectionContext'
+import { problem } from '../lib/errors'
 
 /* ── text ────────────────────────────────────────────────────────────── */
 
@@ -376,6 +378,117 @@ export function Empty({ icon, text }: { icon: React.ComponentProps<typeof Feathe
       <Body tone={p.muted} style={{ marginTop: space.md, textAlign: 'center' }}>
         {text}
       </Body>
+    </View>
+  )
+}
+
+/**
+ * Something went wrong, said in one line.
+ *
+ * Every screen used to render its own failure as a bare red `Body` — nine
+ * `useState<string | null>` across seven screens, each with slightly different
+ * padding, each showing whatever message a cast to `Error` happened to find.
+ * When
+ * the throw came from the native side that was a Java stack trace, drawn onto
+ * the screen until it had pushed the rest of the app off it.
+ *
+ * This is the one surface for all of them. It takes the thrown value itself —
+ * not a string a caller squeezed out of it — normalises it through
+ * `lib/errors`, and shows the sentence. The rest of the trace is not thrown
+ * away: when there is more to read, the notice says so, and a tap opens it in
+ * a box of its own that scrolls rather than grows. Long-press copies the lot,
+ * because the place a stack trace belongs is a bug report.
+ *
+ * `tone` carries the meaning: `error` red, `warning` orange, `ok` green for
+ * the "it worked" note that lived beside the red one on the share screen.
+ */
+export function Notice({
+  error,
+  tone = 'error',
+  icon,
+  onDismiss,
+  style,
+}: {
+  error: unknown
+  tone?: 'error' | 'warning' | 'ok'
+  icon?: React.ComponentProps<typeof Feather>['name']
+  onDismiss?: () => void
+  style?: StyleProp<ViewStyle>
+}) {
+  const p = usePalette()
+  const [open, setOpen] = React.useState(false)
+  const [copied, setCopied] = React.useState(false)
+
+  // Nothing to say is not a notice. Screens hold `null` when all is well and
+  // render this unconditionally, so the empty case has to be silent.
+  if (error == null || (typeof error === 'string' && !error.trim())) return null
+
+  const { message, detail } = problem(error)
+  const colour = tone === 'ok' ? p.green : tone === 'warning' ? p.orange : p.red
+  const name = icon ?? (tone === 'ok' ? 'check-circle' : tone === 'warning' ? 'alert-triangle' : 'alert-circle')
+
+  const copy = () => {
+    void Clipboard.setStringAsync(detail || message)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <View
+      style={[
+        {
+          flexDirection: 'row',
+          alignItems: 'flex-start',
+          borderRadius: radius.sm,
+          borderLeftWidth: 2,
+          borderLeftColor: colour,
+          backgroundColor: alpha(colour, 0.1),
+          paddingVertical: space.md,
+          paddingHorizontal: space.md,
+          marginBottom: space.md,
+        },
+        style,
+      ]}
+    >
+      <Feather name={name} size={15} color={colour} style={{ marginTop: 2 }} />
+      <Pressable
+        onPress={() => detail && setOpen((was) => !was)}
+        onLongPress={copy}
+        style={{ flex: 1, marginLeft: space.sm }}
+      >
+        <Text
+          style={{ color: colour, fontFamily: font.regular, fontSize: size.label, lineHeight: 19 }}
+          numberOfLines={open ? undefined : 3}
+        >
+          {message}
+        </Text>
+        {detail ? (
+          <Text style={{ color: p.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
+            {copied ? 'copied' : open ? 'tap to hide · long-press to copy' : 'tap for details'}
+          </Text>
+        ) : null}
+        {open && detail ? (
+          <ScrollView
+            style={{
+              maxHeight: 160,
+              marginTop: space.sm,
+              backgroundColor: p.darker_background,
+              borderRadius: radius.sm,
+              padding: space.sm,
+            }}
+            nestedScrollEnabled
+          >
+            <Text selectable style={{ color: p.light_foreground, fontFamily: font.regular, fontSize: size.micro }}>
+              {detail}
+            </Text>
+          </ScrollView>
+        ) : null}
+      </Pressable>
+      {onDismiss ? (
+        <Pressable onPress={onDismiss} hitSlop={10} style={{ marginLeft: space.sm }}>
+          <Feather name="x" size={15} color={p.muted} />
+        </Pressable>
+      ) : null}
     </View>
   )
 }
