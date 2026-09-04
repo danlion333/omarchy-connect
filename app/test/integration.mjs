@@ -211,7 +211,13 @@ impostor.close()
   const { WebSocketServer } = require('ws')
   const { accept } = await import('../../daemon/src/lib/crypto.js')
 
-  const FAKE = PORT + 1
+  // Not `PORT + 1`: the suites run side by side, and `PORT + 1` is the port
+  // `daemon/test/agents.mjs` starts its own daemon on. Two suites that never
+  // met until a third was added to the run then raced for it, and the loser
+  // died on `EADDRINUSE` after passing every check it had got to — a failure
+  // that says nothing about either test. A port nothing else claims is the
+  // whole fix.
+  const FAKE = PORT + 19
   const forgedHello = JSON.stringify({
     t: 'hello.ok',
     protocol: 2,
