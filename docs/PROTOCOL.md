@@ -319,7 +319,7 @@ a sleeping phone's TCP connection dies silently.
 | `share.text` | `{ text, action: "clipboard" \| "file" }` |
 | `share.inbox` | `{ limit }` — files received from phones |
 | `share.offers` | — files the desktop is currently offering |
-| `share.ticket` | `{ use: "upload" \| "download" }` → `{ ticket, use, expiresAt, ttlMs }` — a one-use pass for one HTTP file transfer |
+| `share.ticket` | `{ use: "upload" \| "download" }` → `{ ticket, use, key, scheme, expiresAt, ttlMs }` — a one-use pass for one HTTP file transfer, and the key its body is sealed under |
 | `theme.list` / `theme.current` / `theme.set` | — / — / `{ name }` |
 | `hypr.workspaces` / `hypr.goto` | — / `{ id }` |
 | `hypr.windows` / `hypr.focus` / `hypr.close` | — / `{ address }` |
@@ -1580,16 +1580,65 @@ owns the desktop — and it used to ride on every upload header and in every
 download query string, in cleartext whenever TLS was off, which is the default.
 A query string is also the part of a request that gets written down, in proxy
 logs and URL histories, so it outlived the transfer by years. A stolen ticket
-buys the one file that was already on the wire in front of the thief, cannot be
-replayed, and is worthless by the time anyone reads it out of a log.
+cannot be replayed, and is worthless by the time anyone reads it out of a log.
+
+A ticket carries a second secret with it: `key`, 32 bytes of hex, minted for
+that one transfer and used to seal the body (below). Like the ticket itself it
+exists only inside the encrypted socket and in the two processes at its ends.
+
+### Sealed bodies (`OCF1`)
+
+The bodies of `/api/upload` and `/api/download` are encrypted at the
+application layer, under the ticket's `key`, whether or not TLS is on. TLS
+cannot be the answer here: it is off on a fresh install, and an Android build
+trusts this desktop's certificate only when it was built with the anchor, while
+Expo Go and iOS cannot trust it at all (see **Encryption**). Without this, the
+one part of the protocol that travelled in the clear was the part people
+actually share — a photo, a document, and the audio of a dictation.
+
+A request opts in with `x-oc-encryption: ocf1`; a download that asked for it
+gets the same header back on the response. The framing:
+
+```
+"OCF1" || chunk:uint32be                 8-byte header
+seal(plaintext[0 .. chunk])              chunk + 16 bytes, repeated
+…
+seal(plaintext[.. < chunk])              16 .. chunk + 15 bytes, exactly one
+```
+
+`chunk` is 65536. Each frame is ChaCha20-Poly1305 under `key` with a counter
+nonce — the same construction the control channel uses (`SecureChannel`), the
+counter starting at 0 and written big-endian into the last 8 bytes of the
+12-byte nonce. A reordered, replayed or edited frame fails to authenticate, and
+the request is answered `400 { "error": "could not decrypt the body: …" }`.
+
+The **last frame is always short**, an empty one when the file's length is an
+exact multiple of `chunk`. That is what makes the stream self-terminating: a
+reader that runs out of bytes on a frame boundary knows it was cut off, so a
+truncated transfer is an error rather than a shorter file. The sealed length is
+therefore a pure function of the plaintext length, and `content-length` stays
+exact on a download.
+
+Both ends stream: 64 KiB is sealed and opened at a time, and the phone writes
+the sealed body to a cache file so that the platform's own uploader — the only
+thing on that side that streams — still sends it.
+
+**Negotiated, not required.** A phone paired before this existed sends no
+`x-oc-encryption` and is served in the clear exactly as before, and a desktop
+too old to mint a key answers `share.ticket` without one, at which point the
+phone sends the body flat. This is not a downgrade a stranger can force: the
+ticket needed to reach either road only ever travels inside the encrypted
+socket that the desktop's pinned identity key stands behind.
 
 Both roads also answer `403 { "error": "remote access is off …" }` to a request
 that arrived over a tunnel while remote access is off — the same gate, decided
 the same way (by the interface the connection came in on), as the `hello` that
 a remote WebSocket gets.
 
-**Phone → desktop.** `POST /api/upload` with `x-oc-ticket` and `x-oc-filename`.
-The body streams straight to `~/Downloads/Omarchy Connect/`, never overwriting
+**Phone → desktop.** `POST /api/upload` with `x-oc-ticket` and `x-oc-filename`,
+and `x-oc-encryption: ocf1` when the body is sealed. The body streams straight
+to `~/Downloads/Omarchy Connect/` — through the opener when it is sealed, and
+the reported `size` is the file's, not the frames' — never overwriting
 (`report.pdf` becomes `report (2).pdf`). Capped at 512 MB; a partial upload is
 deleted. The desktop raises a notification on arrival.
 
@@ -1608,14 +1657,19 @@ typed at a prompt as a bare word.)
 - The control channel — every command, every event, the clipboard, notification
   text and file names — is encrypted end to end and the desktop is
   authenticated by a pinned key. See **Encryption** above.
-- **File bodies are the exception, unless TLS is on.** `/api/upload` and
+- **File bodies are encrypted too, with or without TLS.** `/api/upload` and
   `/api/download` are authenticated by a one-use ticket minted over the
-  encrypted socket, and the offer tokens and file names that set them up travel
-  encrypted — but with TLS off the bytes themselves do not, and someone already
-  on your LAN could read a file in flight. What they cannot do any more is
-  read a credential out of that traffic: a ticket is spent on the request they
-  are watching, and the device token never goes near HTTP. `omarchy-connect tls enable` closes this for any client that can pin
-  the certificate; Expo Go and iOS cannot, and stay exposed.
+  encrypted socket, and that ticket carries a key the body is sealed under
+  (`OCF1`, see **File transfer**). So the bytes of a photo, a document or a
+  dictation are ChaCha20-Poly1305 on the wire on the default configuration,
+  with nothing to enable and no certificate to trust — which matters because
+  TLS is off out of the box and Expo Go and iOS cannot pin a certificate at
+  all. A listener on your LAN sees the framing and noise. What is *not* hidden
+  is the shape: the sealed length gives the file's length away to a byte, and
+  the file name travels in a header (`x-oc-filename`) rather than in a frame.
+  A phone or a desktop from before this shipped falls back to a cleartext body
+  rather than failing, and `omarchy-connect tls enable` still wraps the whole
+  transport for clients that can pin the certificate.
 - **Mirrored messages are as sensitive as the messages themselves.** SMS bodies
   and caller names cross the WebSocket, so they are encrypted end to end — but
   they also land in the desktop's notification history and in the status file

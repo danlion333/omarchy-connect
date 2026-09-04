@@ -17,13 +17,13 @@ import * as Clipboard from 'expo-clipboard'
 import * as DocumentPicker from 'expo-document-picker'
 import * as ImagePicker from 'expo-image-picker'
 import * as Sharing from 'expo-sharing'
-import { File } from 'expo-file-system'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, Value } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
 import { copyPicture } from '../lib/copyimage'
 import { downloadOffer } from '../lib/download'
+import { uploadFile } from '../lib/transfer'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind } from '../lib/media'
 import {
@@ -220,10 +220,7 @@ export function ShareScreen({
   const upload = useCallback(
     async (uri: string, name: string) => {
       if (!client) throw new Error('not connected')
-      const result = await new File(uri).upload(`${client.baseUrl}/api/upload`, {
-        httpMethod: 'POST',
-        headers: await client.uploadHeaders(name),
-      })
+      const result = await uploadFile(`${client.baseUrl}/api/upload`, uri, await client.uploadPass(name))
       if (result.status >= 400) throw new Error(`the desktop refused the file (${result.status})`)
       return JSON.parse(result.body || '{}')
     },
@@ -360,7 +357,7 @@ export function ShareScreen({
       if (running) return running
       const job = (async () => {
         if (!client) throw new Error('not connected')
-        const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
+        const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadPass())
         setLocal((prev) => ({ ...prev, [token]: uri }))
         return uri
       })()
