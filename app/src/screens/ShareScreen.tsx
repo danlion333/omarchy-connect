@@ -22,6 +22,7 @@ import { File } from 'expo-file-system'
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, Value } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
+import { copyPicture } from '../lib/copyimage'
 import { downloadOffer } from '../lib/download'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind } from '../lib/media'
@@ -32,6 +33,7 @@ import {
   shareSummary,
   type SharePayload,
 } from '../lib/share'
+import { copyPictureToClipboard } from '../../modules/omarchy-link'
 import { alpha, font, radius, size, space } from '../theme'
 
 type InboxItem = { name: string; size: number; at: number }
@@ -171,12 +173,12 @@ export function ShareScreen({
     try {
       const res = await call<{ text: string | null; kind: string; token?: string | null }>('clipboard.get')
       if (res.kind !== 'text' || !res.text) {
-        // A picture is not a paste buffer this phone can be handed, but it is
-        // already a row above — the event that announced it carries the same
-        // offer this answer does.
+        // A picture does not come back as text, but it is already a row
+        // above — the event that announced it carries the same offer this
+        // answer does, and tapping that row pastes it.
         report(
           res.kind === 'binary'
-            ? 'the desktop copied a picture — tap it above'
+            ? 'the desktop copied a picture — tap it above to copy it'
             : 'the desktop clipboard holds no text',
         )
         return
@@ -399,6 +401,31 @@ export function ShareScreen({
     [fetchOffer],
   )
 
+  /**
+   * A picture the desktop copied, onto this phone's clipboard.
+   *
+   * The row used to open the picture, because there was no way to paste one —
+   * and the note on `pullClipboard` said as much. There is one now: the bytes
+   * go to a provider URI the pasting app is allowed to read (`ImageClip`), so
+   * a screenshot taken on the desktop is one tap from a chat here. The fetch
+   * is the shared one, so a preview already on the disk is not downloaded
+   * again for it.
+   */
+  const copyEntryPicture = useCallback(
+    async (picture: { token: string; name: string }) => {
+      setBusy(`copy:${picture.token}`)
+      try {
+        report(await copyPicture(picture, { fetch: fetchOffer, copy: copyPictureToClipboard }))
+        setCopied(picture.token)
+      } catch (err) {
+        fail(err)
+      } finally {
+        setBusy(null)
+      }
+    },
+    [fetchOffer],
+  )
+
   const shareOffer = useCallback(
     async (offer: Offer) => {
       setBusy(`share:${offer.token}`)
@@ -499,19 +526,25 @@ export function ShareScreen({
                     }
                   />
                 ) : (
-                  // A copied picture: there is nothing to put in a paste
-                  // buffer, so the row opens it instead. The bytes come down
-                  // the offer the event carried, which is the same fetch the
-                  // files card below would do.
+                  // A copied picture, and the same tap as the text above it:
+                  // the row puts the picture itself in the phone's paste
+                  // buffer. Looking at it is the thumbnail in the files card
+                  // below, which is holding this very offer.
                   <ListRow
                     title={entry.name || entry.mime || 'image'}
                     subtitle={`${clock(entry.at)}${entry.size ? ` · ${bytes(entry.size)}` : ''}`}
                     onPress={() =>
                       entry.token
-                        ? openOffer({ token: entry.token, name: entry.name || 'clipboard', size: entry.size ?? 0 })
+                        ? copyEntryPicture({ token: entry.token, name: entry.name || 'clipboard' })
                         : undefined
                     }
-                    right={<Feather name="image" size={15} color={palette.muted} />}
+                    right={
+                      <Feather
+                        name={copied === entry.token ? 'check' : 'image'}
+                        size={15}
+                        color={copied === entry.token ? palette.green : palette.muted}
+                      />
+                    }
                   />
                 )}
               </View>
