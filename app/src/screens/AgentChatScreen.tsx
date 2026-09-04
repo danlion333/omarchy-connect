@@ -421,7 +421,7 @@ export function groupBlocks(blocks: AgentBlock[]): Group[] {
 }
 
 /** Whether the software keyboard is up, so chrome can get out of its way. */
-function useKeyboardOpen(): boolean {
+export function useKeyboardOpen(): boolean {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     const ios = Platform.OS === 'ios'

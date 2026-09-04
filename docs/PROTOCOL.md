@@ -745,6 +745,7 @@ resuming from. `agents.close` throws it away immediately, as it always did.
 | `agents.detail` | `{ id, seq, agentId }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. With `agentId`, the same out of the worker's window that `agents.worker` last handed over. |
 | `agents.worker` | `{ id, agentId, limit }` | `{ worker, blocks, truncated }` — one worker of a session, and the conversation it had. |
 | `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. `submitted` is what the desktop observed, not what it was asked for. |
+| `agents.relay` | `{ id, agentId, text }` | `{ ok, queued, agentId, worker, via, submitted }` — a message for one of the session's workers, typed into the *session's* composer for it to pass on. `queued`, never delivered. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
 | `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
 | `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
@@ -817,12 +818,39 @@ of the `Agent` call in the parent's own transcript, so the chip already drawn in
 the parent's chat and the row under the session are the same worker, and tapping
 either opens it.
 
-A worker is **never a session**. It has no terminal, no `--resume`, and nothing
-anywhere that would take a message for it, so it never takes a row of its own in
-`agents.list`, is never opened or tailed, and `agents.worker` answers with a
-window and no cursor — a phone that wants a newer one asks again. A hook payload
-that names a worker's transcript is folded onto the session it belongs to rather
-than minting a row for it.
+A worker is **never a session**. It has no terminal, no `--resume`, and no pid,
+so it never takes a row of its own in `agents.list`, is never opened or tailed,
+and `agents.worker` answers with a window and no cursor — a phone that wants a
+newer one asks again. A hook payload that names a worker's transcript is folded
+onto the session it belongs to rather than minting a row for it.
+
+#### Answering one
+
+All three writing roads end at a pty and a worker has none, so `agents.send`
+cannot reach one and no amount of plumbing would make it. What does hold the
+worker is the session that spawned it: it has the worker in its own process, it
+knows its `agentId`, and it has a tool that continues it. So `agents.relay` is
+addressed to the worker and written to the parent — the message goes into the
+parent's composer with the worker named in front of it, asking the parent to
+continue that agent rather than start another.
+
+```jsonc
+{ "id": "claude:1111…", "agentId": "a039c95c91ad3ab24", "text": "look at the router again" }
+```
+
+It is a method of its own rather than a flag on `agents.send` because the two
+promise different things. `agents.send` means *the agent was asked this*;
+`agents.relay` means *the parent was asked to ask this*, which is why the answer
+says `queued` and never `delivered`. The worker is looked up first, so a phone
+naming a worker the session never had hears that rather than hearing about
+tmux; a session whose `writable` is `null` is refused outright, because there is
+no queue behind this and a message accepted into nowhere reads on the phone
+exactly like one that arrived. Nothing here is a new permission: the gate is the
+same switch that granted reading and `agents.send`, and the phone could always
+have typed the same paragraph into the parent by hand.
+
+`capabilities.agents.relay` says the desktop understands the call, the way
+`workers` says it can read them.
 
 `running` is the clock. There is no completion marker anywhere in a worker's
 transcript — the CLI writes the meta file once at spawn and the last line of a
