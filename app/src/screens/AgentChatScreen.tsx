@@ -19,7 +19,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import { focusAgent } from '../api/alerts'
-import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks } from '../api/client'
+import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks, AgentWorker } from '../api/client'
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import * as dictate from '../api/dictate'
@@ -43,7 +43,20 @@ import { alpha, font, radius, size, space } from '../theme'
  * full-width prose, and everything it *did* is a dim one-line ledger beside it.
  * A phone shows about fifteen lines at a time and the answer has to be in them.
  */
-export function AgentChatScreen({ session, onBack }: { session: AgentSession; onBack: () => void }) {
+export function AgentChatScreen({
+  session,
+  onBack,
+  onWorker,
+}: {
+  session: AgentSession
+  onBack: () => void
+  /**
+   * Open one of this session's workers. Handed in rather than rendered here:
+   * the worker screen draws itself out of this file's own pieces, and a chat
+   * that reached for it would be two screens importing each other.
+   */
+  onWorker?: (worker: AgentWorker) => void
+}) {
   const { call, client, palette } = useConnection()
   const [blocks, setBlocks] = useState<AgentBlock[]>([])
   const [loading, setLoading] = useState(true)
@@ -63,6 +76,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
    */
   const [skills, setSkills] = useState(false)
   const [draft, setDraft] = useState('')
+
   /**
    * What the agent is saying right now, before the transcript has it.
    *
@@ -203,6 +217,13 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
 
   const expand = useCallback(
     async (block: AgentBlock) => {
+      // A chip that started a worker opens the worker. The desktop matched the
+      // two by id before this screen ever saw either of them.
+      const fanned = block.ref ? session.workers?.find((w) => w.ref === block.ref) : undefined
+      if (fanned && onWorker) {
+        onWorker(fanned)
+        return
+      }
       if (expanded[block.seq] !== undefined) {
         setExpanded(({ [block.seq]: _drop, ...rest }) => rest)
         return
@@ -216,7 +237,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
         setExpanded((prev) => ({ ...prev, [block.seq]: errorLine(err, 'the desktop would not send this') }))
       }
     },
-    [call, expanded, session.id],
+    [call, expanded, onWorker, session.id, session.workers],
   )
 
   /**
@@ -234,54 +255,7 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
     [call, session.id],
   )
 
-  /**
-   * A tool call and its result are one thing on screen. They arrive as two
-   * blocks because that is how the transcript records them.
-   */
-  const rows = useMemo(() => {
-    const out: ChatRow[] = []
-    for (const block of blocks) {
-      if (block.kind === 'result') {
-        const parent = [...out]
-          .reverse()
-          .find((r) => (r.block.kind === 'tool' || r.block.kind === 'question') && r.block.ref === block.ref && !r.result)
-        if (parent) {
-          parent.result = block
-          continue
-        }
-      }
-      out.push({ block })
-    }
-    return out
-  }, [blocks])
-
-  /**
-   * Runs of tool calls become one item.
-   *
-   * Between two sentences an agent will call six tools and think five times,
-   * and drawn one-per-card that is the whole screen. Thinking that carries no
-   * text is dropped outright — the desktop sends those blocks because the
-   * transcript has them, not because there is anything inside — and the tool
-   * calls left over collapse into a single ledger that folds itself once the
-   * answer arrives after it.
-   */
-  const groups = useMemo(() => {
-    const out: Group[] = []
-    for (const row of rows) {
-      if (row.block.kind === 'thinking' && !row.block.text) continue
-      if (row.block.kind === 'tool') {
-        const last = out[out.length - 1]
-        if (last && last.kind === 'tools') {
-          last.rows.push(row)
-          continue
-        }
-        out.push({ kind: 'tools', seq: row.block.seq, rows: [row] })
-        continue
-      }
-      out.push({ kind: 'row', seq: row.block.seq, row })
-    }
-    return out
-  }, [rows])
+  const groups = useMemo(() => groupBlocks(blocks), [blocks])
 
   const stateTone =
     session.state === 'waiting' ? palette.orange : session.state === 'working' ? palette.green : palette.muted
@@ -392,10 +366,59 @@ export function AgentChatScreen({ session, onBack }: { session: AgentSession; on
   )
 }
 
-type ChatRow = { block: AgentBlock; result?: AgentBlock }
-type Group =
+export type ChatRow = { block: AgentBlock; result?: AgentBlock }
+export type Group =
   | { kind: 'tools'; seq: number; rows: ChatRow[] }
   | { kind: 'row'; seq: number; row: ChatRow }
+
+/**
+ * A window of blocks, arranged the way a conversation is read.
+ *
+ * Two passes, and both are about the same thing: a transcript records what
+ * happened and a screen has to show what it meant. First a tool call and its
+ * result are put back together — they arrive as two blocks because that is how
+ * the file has them, and they are one thing on screen. Then runs of tool calls
+ * become one item, because between two sentences an agent will call six tools
+ * and think five times, and drawn one card each that is the whole screen.
+ * Thinking that carries no text is dropped outright: the desktop sends those
+ * blocks because the transcript has them, not because there is anything
+ * inside.
+ *
+ * Out here rather than in the chat screen because a worker's transcript is the
+ * same kind of file and is read the same way — the only difference between the
+ * two screens is that one of them can be typed into.
+ */
+export function groupBlocks(blocks: AgentBlock[]): Group[] {
+  const rows: ChatRow[] = []
+  for (const block of blocks) {
+    if (block.kind === 'result') {
+      const parent = [...rows]
+        .reverse()
+        .find((r) => (r.block.kind === 'tool' || r.block.kind === 'question') && r.block.ref === block.ref && !r.result)
+      if (parent) {
+        parent.result = block
+        continue
+      }
+    }
+    rows.push({ block })
+  }
+
+  const out: Group[] = []
+  for (const row of rows) {
+    if (row.block.kind === 'thinking' && !row.block.text) continue
+    if (row.block.kind === 'tool') {
+      const last = out[out.length - 1]
+      if (last && last.kind === 'tools') {
+        last.rows.push(row)
+        continue
+      }
+      out.push({ kind: 'tools', seq: row.block.seq, rows: [row] })
+      continue
+    }
+    out.push({ kind: 'row', seq: row.block.seq, row })
+  }
+  return out
+}
 
 /** Whether the software keyboard is up, so chrome can get out of its way. */
 function useKeyboardOpen(): boolean {
@@ -734,7 +757,7 @@ const RUN_TAIL = 3
  * full. Once the agent has answered past it, the run has served its purpose and
  * keeps only its last few lines, with the rest one tap away.
  */
-function ToolRun({
+export function ToolRun({
   rows,
   live,
   expanded,
@@ -886,7 +909,7 @@ function ToolLine({
  * narrower. Only the person's own messages get a bubble, because on a phone the
  * useful question about a line is whose it is, and one bubble answers it.
  */
-function Row({
+export function Row({
   session,
   block,
   result,
@@ -894,12 +917,15 @@ function Row({
   onExpand,
   onAnswer,
 }: {
-  session: AgentSession
+  // Absent when what is being drawn is a worker's transcript rather than a
+  // session's. Nothing on this screen can be typed into then, which for every
+  // block but a question changes nothing at all.
+  session?: AgentSession | null
   block: AgentBlock
   result?: AgentBlock
   expanded?: string
   onExpand: () => void
-  onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
+  onAnswer?: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
   const palette = usePalette()
   const [thought, setThought] = useState(false)
@@ -955,7 +981,7 @@ function Row({
   }
 
   if (block.kind === 'question') {
-    return <QuestionCard session={session} block={block} result={result} onAnswer={onAnswer} />
+    return <QuestionCard session={session ?? null} block={block} result={result} onAnswer={onAnswer} />
   }
 
   if (block.kind === 'tool') {
@@ -992,10 +1018,10 @@ function QuestionCard({
   result,
   onAnswer,
 }: {
-  session: AgentSession
+  session: AgentSession | null
   block: AgentBlock
   result?: AgentBlock
-  onAnswer: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
+  onAnswer?: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
   const palette = usePalette()
   const questions = block.questions || []
@@ -1020,7 +1046,11 @@ function QuestionCard({
           session={session}
           question={question}
           picked={pickedFrom(answered?.[question.question], question)}
-          onAnswer={(choices) => onAnswer(block.seq, i, choices)}
+          onAnswer={(choices) =>
+            onAnswer
+              ? onAnswer(block.seq, i, choices)
+              : Promise.reject(new Error('nothing here can be answered'))
+          }
         />
       ))}
     </View>
@@ -1047,7 +1077,7 @@ function Question({
   picked,
   onAnswer,
 }: {
-  session: AgentSession
+  session: AgentSession | null
   question: AgentQuestion
   picked: string[] | null
   onAnswer: (choices: number[]) => Promise<{ labels: string[] }>
@@ -1065,7 +1095,7 @@ function Question({
   const [sent, setSent] = useState<string[] | null>(null)
 
   const settled = picked ?? sent
-  const answerable = Boolean(session.writable) && !settled
+  const answerable = Boolean(session?.writable) && !settled
 
   const submit = useCallback(
     async (choices: number[]) => {
@@ -1140,7 +1170,7 @@ function Question({
         </View>
       ) : null}
 
-      {!session.writable && !settled ? (
+      {!session?.writable && !settled ? (
         <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
           Reading only — this one has to be answered at the desktop
         </Text>

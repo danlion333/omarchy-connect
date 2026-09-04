@@ -148,6 +148,35 @@ const PREVIEW_READ = 16 * 1024
  * drawing the next one.
  */
 const ANSWER_GAP_MS = 300
+/**
+ * Workers listed per session. A fan-out is three or five; a directory holding
+ * more than this is a session's whole history, and a phone lists what is
+ * happening rather than everything that ever did.
+ */
+const MAX_WORKERS = 30
+/**
+ * How long after its last written line a worker is still called running.
+ *
+ * There is no completion marker anywhere: the CLI writes `agent-<id>.meta.json`
+ * when a worker starts and never touches it again, and the last line of a
+ * finished worker's transcript is an ordinary assistant message — the two that
+ * ran beside each other this morning end on `stop_reason: null` and
+ * `end_turn` respectively, so the file cannot be asked either. What a running
+ * worker does do is write: every tool call and every turn is a line, and a
+ * minute of silence from one is not a pause, it is the end.
+ *
+ * `SubagentStop` says it exactly for the workers whose stop this daemon is
+ * awake for, and that is applied on top of this — but the hook is a live
+ * event and this list outlives any one run of the daemon, so the clock is
+ * what the answer rests on.
+ */
+const WORKER_LIVE_MS = 90_000
+/** Enough of a worker's tail to say what it is doing, for a row. */
+const WORKER_PREVIEW_READ = 16 * 1024
+/** Never read more than this of a worker's transcript when one is opened. */
+const WORKER_MAX_READ = 2 * 1024 * 1024
+/** Blocks handed back for one worker. The same window a chat opens with. */
+const WORKER_BLOCKS = 300
 
 const sessions = new Map()
 let bus = null
@@ -202,6 +231,165 @@ const refreshJobs = () => {
 /** The native session id inside `claude:1234-…`, which is what a job knows it by. */
 const nativeIdOf = (entry) => entry.id.slice(entry.agent.length + 1)
 
+/* ── the workers a session fanned out ──────────────────────────────────── */
+
+/**
+ * A session's workers, read off disk.
+ *
+ * `SubagentStart` and `SubagentStop` were the whole of this: a counter, and a
+ * phone that said "3 subagents" without being able to say what any of the
+ * three was doing or to open one. Under `/loop /issue next` that counter is
+ * the entire screen — all the work is in the worker and the parent session is
+ * standing still — which is the one case where the number is worth least.
+ *
+ * Everything needed is already beside the parent's transcript, in
+ * `<session>/subagents/`: a meta file per worker saying what it is and which
+ * `Agent` call started it, and a full transcript in the format this daemon
+ * already parses. So the list is a directory read, and reading one is opening
+ * a second transcript rather than inventing a second kind of thing.
+ *
+ * Read-only, and by nature rather than by policy: a worker has no terminal,
+ * no `--resume`, and nothing anywhere that would take a message for it.
+ *
+ * Cached against the mtimes it was built from, because `publicSession` runs on
+ * every event for every session and this is a `readdir` plus a `stat` and a
+ * tail read per worker.
+ */
+const workerCache = new Map()
+/** Sessions whose worker list is remembered. A desktop has a handful. */
+const WORKER_CACHE_MAX = 64
+
+/**
+ * The last thing a worker said, in one line — the same sentence a session row
+ * carries, read the same way. Its own tail, because a worker's transcript is
+ * routinely megabytes and this is asked for every row on the screen.
+ */
+function workerPreview(adapter, file) {
+  let text = ''
+  let fd
+  try {
+    const stat = fs.statSync(file)
+    const start = stat.size > WORKER_PREVIEW_READ ? stat.size - WORKER_PREVIEW_READ : 0
+    fd = fs.openSync(file, 'r')
+    const buf = Buffer.allocUnsafe(stat.size - start)
+    const read = fs.readSync(fd, buf, 0, buf.length, start)
+    text = buf.subarray(0, read).toString('utf8')
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1)
+  } catch {
+    return ''
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+  let last = ''
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let blocks = []
+    try {
+      blocks = adapter.parse(line, { worker: true })
+    } catch {
+      blocks = []
+    }
+    for (const block of blocks) {
+      const said = describe(block)
+      if (said) last = said
+    }
+  }
+  return last
+}
+
+/**
+ * Every worker of one session, with what it is doing and whether it still is.
+ *
+ * `stopped` is what the `SubagentStop` hook saw while this daemon was awake;
+ * it is exact and it is also incomplete, since the list survives a restart and
+ * the hook does not. The clock is the answer that is always available.
+ */
+function workersOf(entry) {
+  const list = entry.adapter.workers?.(entry.transcript)
+  if (!list?.length) {
+    workerCache.delete(entry.id)
+    return []
+  }
+  const taken = list.slice(0, MAX_WORKERS)
+  const stamp = taken.map((w) => `${w.id}:${w.updatedAt}:${w.size}`).join('|')
+  const cached = workerCache.get(entry.id)
+  const previews = cached?.previews instanceof Map ? cached.previews : new Map()
+  if (!cached || cached.stamp !== stamp) {
+    for (const worker of taken) {
+      const key = `${worker.id}:${worker.updatedAt}:${worker.size}`
+      if (!previews.has(key)) previews.set(key, workerPreview(entry.adapter, worker.path))
+    }
+    // Only the keys this list still names; a worker that wrote another line
+    // has a new key and its old preview is now history nobody asked for.
+    const keep = new Set(taken.map((w) => `${w.id}:${w.updatedAt}:${w.size}`))
+    for (const key of [...previews.keys()]) if (!keep.has(key)) previews.delete(key)
+    workerCache.set(entry.id, { stamp, previews })
+    if (workerCache.size > WORKER_CACHE_MAX) workerCache.delete(workerCache.keys().next().value)
+  }
+
+  const now = Date.now()
+  return taken.map((worker) => ({
+    id: worker.id,
+    type: worker.type,
+    description: worker.description,
+    // The `Agent` chip in the parent's chat carries this same string, which is
+    // what makes tapping the chip and tapping the row the same gesture.
+    ref: worker.ref,
+    depth: worker.depth,
+    startedAt: worker.startedAt,
+    updatedAt: worker.updatedAt,
+    running: !entry.workersStopped?.has(worker.id) && now - worker.updatedAt < WORKER_LIVE_MS,
+    preview: previews.get(`${worker.id}:${worker.updatedAt}:${worker.size}`) || '',
+  }))
+}
+
+/** One worker of one session, or null — the record and where to read it. */
+function findWorker(entry, agentId) {
+  const wanted = String(agentId || '')
+  const raw = (entry.adapter.workers?.(entry.transcript) || []).find((w) => w.id === wanted)
+  if (!raw) return null
+  return { ...raw, public: workersOf(entry).find((w) => w.id === wanted) || null }
+}
+
+/**
+ * A worker's transcript, as the blocks a chat draws.
+ *
+ * Parsed whole rather than tailed and kept: nothing is subscribed to a worker,
+ * so there is no cursor to resume from and no ring to fall out of — the phone
+ * asks, gets the window, and asks again if it wants a newer one. The read is
+ * capped for the same reason the first read of a session is: one of these ran
+ * to sixteen megabytes this afternoon.
+ */
+function workerBlocks(adapter, file) {
+  let text = ''
+  let fd
+  try {
+    const stat = fs.statSync(file)
+    const start = stat.size > WORKER_MAX_READ ? stat.size - WORKER_MAX_READ : 0
+    fd = fs.openSync(file, 'r')
+    const buf = Buffer.allocUnsafe(stat.size - start)
+    const read = fs.readSync(fd, buf, 0, buf.length, start)
+    text = buf.subarray(0, read).toString('utf8')
+    if (start > 0) text = text.slice(text.indexOf('\n') + 1)
+  } catch {
+    return []
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+  const out = []
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue
+    let parsed = []
+    try {
+      parsed = adapter.parse(line, { worker: true })
+    } catch {
+      parsed = []
+    }
+    for (const block of parsed) out.push({ seq: out.length + 1, ...block })
+  }
+  return out
+}
+
 /**
  * The status line for a session, if its adapter keeps one.
  *
@@ -220,6 +408,16 @@ function vitalsOf(entry) {
 const publicSession = (entry) => {
   const vitals = vitalsOf(entry)
   const job = jobMap.get(nativeIdOf(entry)) || null
+  // Guarded like the vitals beside it, and for the same reason: this parses
+  // somebody else's files on the path every session frame goes through, and a
+  // layout that changed under a CLI upgrade must cost the worker list rather
+  // than the list it was riding on.
+  let workers = []
+  try {
+    workers = workersOf(entry)
+  } catch (err) {
+    log.debug(`workers unreadable for ${entry.id}: ${err.message}`)
+  }
   return {
     id: entry.id,
     agent: entry.agent,
@@ -240,9 +438,15 @@ const publicSession = (entry) => {
     preview: entry.preview,
     prompt: entry.prompt,
     via: entry.via,
-    // How many subagents it has out. The transcript hides their traffic, so
-    // this number is the only sign of a fan-out the phone ever gets.
-    subagents: entry.subagents || 0,
+    // How many workers it has out. The hooks count them exactly for as long
+    // as this daemon has been awake; the files count them across a restart,
+    // with a clock's lag. Neither is wrong often, and the larger of the two is
+    // never the one that hides a fan-out.
+    subagents: Math.max(entry.subagents || 0, workers.filter((w) => w.running).length),
+    // Who they are and what each is doing. A session with no `subagents/`
+    // directory sends an empty list and the phone falls back to the number,
+    // which is exactly how every desktop behaved before this existed.
+    workers,
     // Model, context, permission mode, branch — the desktop's own status line,
     // read off the transcript rather than asked of the session.
     vitals,
@@ -1245,7 +1449,23 @@ export function hook(payload = {}) {
   const adapter = ADAPTERS.find((a) => a.id === (payload.agent || 'claude'))
   if (!adapter) return { ok: false, error: 'unknown agent' }
 
-  const id = `${adapter.id}:${adapter.sessionIdFor(transcript)}`
+  /*
+   * A worker's file is not a session's file.
+   *
+   * The id below is derived from whatever path the payload names, so a hook
+   * that named `…/<session>/subagents/agent-<id>.jsonl` would mint a session
+   * row called `claude:agent-<id>` and stand it beside the conversation it
+   * belongs to — one extra row per worker, on the one screen whose promise is
+   * that a session is a session. No payload seen on 2.1.258 does this, and
+   * that is an observation about the payloads that happened to fire rather
+   * than a property of the CLI, so the shape of the path is checked instead
+   * of trusted, and a payload that names one is folded onto the session it
+   * belongs to rather than dropped — the layout says which session that is,
+   * so nothing is guessed and no event is lost.
+   */
+  const file = adapter.sessionTranscriptFor?.(transcript) ?? transcript
+
+  const id = `${adapter.id}:${adapter.sessionIdFor(file)}`
   const { entry, created } = upsert({
     id,
     agent: adapter.id,
@@ -1253,7 +1473,7 @@ export function hook(payload = {}) {
     cwd: payload.cwd || null,
     pid: payload.pid || agentPidFrom(payload.ppid, adapter),
     pane: payload.pane || null,
-    transcript,
+    transcript: file,
     via: 'hook',
   })
   entry.lastActivity = Date.now()
@@ -1309,10 +1529,21 @@ export function hook(payload = {}) {
       setState(entry, 'waiting', { prompt })
     }
   } else if (event === 'SubagentStart' || event === 'SubagentStop') {
-    // How many pairs of hands the session has out right now. The transcript
-    // hides sidechain traffic on purpose, so without this a session that
-    // fanned five agents out reads as one agent sitting quietly.
+    // How many pairs of hands the session has out right now. Kept beside the
+    // list read off disk rather than replaced by it: this is exact and
+    // immediate, and the files are neither until the worker's next write.
     entry.subagents = Math.max(0, (entry.subagents || 0) + (event === 'SubagentStart' ? 1 : -1))
+    // Which one stopped, when the payload says. A worker's transcript has no
+    // end marker in it — the clock is what otherwise decides that a file
+    // which stopped growing is a worker that finished — so a stop this daemon
+    // was awake for is worth remembering exactly. A payload that does not name
+    // the worker costs nothing: the clock still gets there.
+    const which = String(payload.agent_id || '')
+    if (which) {
+      if (!entry.workersStopped) entry.workersStopped = new Set()
+      if (event === 'SubagentStop') entry.workersStopped.add(which)
+      else entry.workersStopped.delete(which)
+    }
     entry.lastActivity = Date.now()
     if (event === 'SubagentStart' && entry.state !== 'waiting') setState(entry, 'working')
   } else if (event === 'PostToolUse' && !worker) {
@@ -1748,6 +1979,8 @@ export default {
       commands: true,
       tasks: true,
       jobs: jobs.available(),
+      // …and read the workers a session fanned out, one transcript apiece.
+      workers: true,
       limits: enabled() ? limits.read() : null,
     }
   },
@@ -1791,6 +2024,8 @@ export default {
         commands: true,
         tasks: true,
         jobs: jobs.available(),
+        // …and read the workers a session fanned out, one transcript apiece.
+        workers: true,
         limits: limits.read(),
       }
     },
@@ -1882,14 +2117,63 @@ export default {
     /**
      * The full body behind a one-line chip. Tool traffic is collapsed for the
      * phone's sake, not hidden — this is the one tap away.
+     *
+     * `agentId` asks the same question of one of the session's workers, whose
+     * blocks came from `agents.worker` and are held from that call: a worker's
+     * transcript is read on demand rather than tailed, so there is no ring to
+     * look in and the window the phone is actually looking at is the only
+     * honest place to answer from.
      */
-    'agents.detail'({ id, seq } = {}) {
+    'agents.detail'({ id, seq, agentId = null } = {}) {
       requireEnabled()
       const entry = sessions.get(String(id))
       if (!entry) throw new Error('no such agent session')
-      const block = entry.blocks.find((b) => b.seq === Number(seq))
+      const blocks =
+        agentId ?
+          entry.worker?.id === String(agentId) ? entry.worker.blocks : null
+        : entry.blocks
+      if (!blocks) throw new Error('that worker is not open')
+      const block = blocks.find((b) => b.seq === Number(seq))
       if (!block) throw new Error('that block is no longer in memory')
       return { seq: block.seq, kind: block.kind, tool: block.tool ?? null, text: block.full ?? block.text ?? '' }
+    },
+
+    /**
+     * One worker of a session, and the conversation it had.
+     *
+     * The same blocks a chat is drawn from, because it is the same kind of
+     * file — the CLI writes a worker's turn exactly as it writes a session's,
+     * one directory down. What it is not is a session: it has no terminal,
+     * nothing can be typed into it, and it is never opened or tailed. So this
+     * answers with a window and no cursor, and a phone that wants a newer one
+     * asks again.
+     */
+    'agents.worker'({ id, agentId, limit = WORKER_BLOCKS } = {}) {
+      requireEnabled()
+      const entry = sessions.get(String(id))
+      if (!entry) throw new Error('no such agent session')
+      const worker = findWorker(entry, agentId)
+      if (!worker) throw new Error('no such worker')
+      const count = Math.min(Math.max(Number(limit) || WORKER_BLOCKS, 1), WORKER_BLOCKS)
+      const blocks = workerBlocks(entry.adapter, worker.path)
+      // Held so that expanding a chip out of this window has something to
+      // expand from, and only ever one — a phone reads one worker at a time.
+      entry.worker = { id: worker.id, blocks }
+      return {
+        worker: worker.public || {
+          id: worker.id,
+          type: worker.type,
+          description: worker.description,
+          ref: worker.ref,
+          depth: worker.depth,
+          startedAt: worker.startedAt,
+          updatedAt: worker.updatedAt,
+          running: false,
+          preview: '',
+        },
+        blocks: blocks.slice(-count).map(publicBlock),
+        truncated: blocks.length > count,
+      }
     },
 
     /* ── answering ─────────────────────────────────────────────────────── */

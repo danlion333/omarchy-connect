@@ -230,6 +230,32 @@ export type AgentHistoryEntry = {
   background: boolean
 }
 
+/**
+ * One worker a session fanned out — an `Agent` call, and the conversation it
+ * had. Read-only by nature: it has no terminal and nothing anywhere would take
+ * a message for it.
+ */
+export type AgentWorker = {
+  id: string
+  /** The kind of agent it is: `Explore`, `general-purpose`, a named one. */
+  type: string | null
+  /** What it was sent off to do — the caller's own one-line description. */
+  description: string | null
+  /**
+   * The `tool_use` id of the `Agent` call that started it, which is the same
+   * string the chip in the parent's chat carries as its `ref`. This is what
+   * makes tapping the chip and tapping the row the same gesture.
+   */
+  ref: string | null
+  depth: number
+  startedAt: number
+  updatedAt: number
+  /** Whether it is still writing. A finished worker stays on the list. */
+  running: boolean
+  /** The last thing it said, the same one line a session row carries. */
+  preview: string
+}
+
 export type AgentSession = {
   id: string
   agent: string
@@ -255,8 +281,14 @@ export type AgentSession = {
   prompt: string | null
   /** `hook` is the agent reporting in; `scan` is us guessing from /proc. */
   via: 'hook' | 'scan'
-  /** Subagents it has out right now — the only visible sign of a fan-out. */
+  /** Subagents it has out right now — the count, for a desktop too old to say more. */
   subagents?: number
+  /**
+   * Who they are and what each one is doing. Empty from a desktop whose CLI
+   * keeps no `subagents/` directory, which is what `subagents` is still there
+   * for.
+   */
+  workers?: AgentWorker[]
   /** Model, context, permission mode — absent from a daemon too old to send it. */
   vitals?: AgentVitals | null
   /** The background job behind this conversation, when it is one. */
@@ -288,6 +320,8 @@ export type AgentCapabilities = {
   history?: boolean
   /** …and the background agents it has going. */
   jobs?: boolean
+  /** …and the workers a session fanned out, each with its own transcript. */
+  workers?: boolean
   /** …and the task list a session is working through. */
   tasks?: boolean
   /** The plan's headroom as of `hello`; kept current by `ev:agent`. */

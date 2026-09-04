@@ -742,7 +742,8 @@ one it closed: the desktop stops tailing it but keeps what it had, numbering
 included, for a few minutes, which is what a resume across a reconnect is
 resuming from. `agents.close` throws it away immediately, as it always did.
 
-| `agents.detail` | `{ id, seq }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. |
+| `agents.detail` | `{ id, seq, agentId }` | `{ seq, kind, tool, text }` — the full body behind a collapsed one-line chip. With `agentId`, the same out of the worker's window that `agents.worker` last handed over. |
+| `agents.worker` | `{ id, agentId, limit }` | `{ worker, blocks, truncated }` — one worker of a session, and the conversation it had. |
 | `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. `submitted` is what the desktop observed, not what it was asked for. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
 | `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
@@ -777,9 +778,62 @@ A session is what the phone lists and opens:
   "via": "hook" | "scan",
   "vitals": { … },                  // the desktop's own status line, below
   "job": { … } | null,              // the background job behind it, when it is one
-  "tasks": { "total": 7, "done": 3, "active": "Adding the endpoint", "next": null } | null
+  "tasks": { "total": 7, "done": 3, "active": "Adding the endpoint", "next": null } | null,
+  "subagents": 2,                   // workers it has out — the count on its own
+  "workers": [ … ]                  // …and who they are, below
 }
 ```
+
+#### The workers a session fanned out
+
+A session that spawned agents of its own used to be a number: `subagents`,
+counted up on `SubagentStart` and back down on `SubagentStop`. That number is
+the whole screen for a session working through a queue, because all the work is
+in the worker and the session that spawned it is standing still — and it says
+nothing about what any of them is doing.
+
+Claude Code writes each worker beside the session's own transcript, in
+`~/.claude/projects/<slug>/<session-id>/subagents/`: `agent-<id>.jsonl` is the
+conversation in the same format as any other, and `agent-<id>.meta.json` says
+what the worker is. So the daemon reads them the way it reads everything else,
+and a worker's transcript parses into exactly the same blocks.
+
+```jsonc
+{
+  "id": "a039c95c91ad3ab24",
+  "type": "Explore",                 // the kind of agent it is
+  "description": "Protocol + docs for agents",   // what the caller sent it to do
+  "ref": "toolu_011dsbL6…",          // the `Agent` call that started it
+  "depth": 1,
+  "startedAt": 1756100000000,
+  "updatedAt": 1756100420000,
+  "running": true,
+  "preview": "…the last line it said…"
+}
+```
+
+`ref` is the link between the two halves of the screen: it is the `tool_use` id
+of the `Agent` call in the parent's own transcript, so the chip already drawn in
+the parent's chat and the row under the session are the same worker, and tapping
+either opens it.
+
+A worker is **never a session**. It has no terminal, no `--resume`, and nothing
+anywhere that would take a message for it, so it never takes a row of its own in
+`agents.list`, is never opened or tailed, and `agents.worker` answers with a
+window and no cursor — a phone that wants a newer one asks again. A hook payload
+that names a worker's transcript is folded onto the session it belongs to rather
+than minting a row for it.
+
+`running` is the clock. There is no completion marker anywhere in a worker's
+transcript — the CLI writes the meta file once at spawn and the last line of a
+finished worker is an ordinary assistant message — so a worker that has not
+written for ninety seconds is finished. A `SubagentStop` this daemon was awake
+for says it exactly, and outranks the clock; the clock is what survives a
+restart. Either way a finished worker **stays on the list** with the last thing
+it said, because what it went and found out is worth more once it is done.
+
+`subagents` stays for a desktop whose CLI keeps no such directory: `workers` is
+empty there, and the number is the whole answer, exactly as it was.
 
 #### The status line
 

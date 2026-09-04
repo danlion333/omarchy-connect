@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Pressable, RefreshControl, View } from 'react-native'
+import { Pressable, RefreshControl, Text, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 
 import { useAgents, useConnection, usePalette } from '../state/ConnectionContext'
-import type { AgentCapabilities, AgentJob, AgentSession } from '../api/client'
+import type { AgentCapabilities, AgentJob, AgentSession, AgentWorker } from '../api/client'
 import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, StatusDot } from '../ui/kit'
 import { Limits, StatusLine, inPane, tokens } from '../ui/agentkit'
 import { AgentChatScreen } from './AgentChatScreen'
 import { AgentLaunchScreen } from './AgentLaunchScreen'
+import { AgentWorkerScreen } from './AgentWorkerScreen'
 import { ago } from '../lib/format'
-import { space } from '../theme'
+import { font, size, space } from '../theme'
 
 /**
  * The coding agents running on the desktop, and what they are stuck on.
@@ -28,6 +29,14 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
   const { refreshAgents, refreshAgentJobs, palette, status, hello } = useConnection()
   const { agents, agentLimits, agentJobs, agentsError } = useAgents()
   const [openId, setOpenId] = useState<string | null>(null)
+  /**
+   * A worker being read, and whose session it belongs to.
+   *
+   * Held here rather than inside the chat because both roads into a worker end
+   * up on the same screen: the nested row on this list, and the `Agent` chip in
+   * the parent's chat whose `ref` names it.
+   */
+  const [openWorker, setOpenWorker] = useState<{ id: string; worker: AgentWorker } | null>(null)
   const [launching, setLaunching] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   // Which background agents are also live sessions. The list itself arrives as
@@ -74,8 +83,28 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
     [agents],
   )
 
+  /* A worker read from its own session — from the list, or from the chip. */
+  const workerHost = openWorker ? sorted.find((s) => s.id === openWorker.id) : undefined
+  if (openWorker && workerHost) {
+    // The row that opened it is a snapshot; this is the same worker as the
+    // desktop last described it, so a worker that stops while it is being read
+    // says so.
+    const current = workerHost.workers?.find((w) => w.id === openWorker.worker.id) ?? openWorker.worker
+    return (
+      <AgentWorkerScreen session={workerHost} worker={current} onBack={() => setOpenWorker(null)} />
+    )
+  }
+
   const open = sorted.find((s) => s.id === openId)
-  if (open) return <AgentChatScreen session={open} onBack={() => setOpenId(null)} />
+  if (open) {
+    return (
+      <AgentChatScreen
+        session={open}
+        onBack={() => setOpenId(null)}
+        onWorker={(worker) => setOpenWorker({ id: open.id, worker })}
+      />
+    )
+  }
   if (launching) {
     return (
       <AgentLaunchScreen
@@ -153,7 +182,11 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
           sorted.map((session, i) => (
             <View key={session.id}>
               {i > 0 ? <Divider style={{ marginVertical: space.xs }} /> : null}
-              <SessionRow session={session} onPress={() => setOpenId(session.id)} />
+              <SessionRow
+                session={session}
+                onPress={() => setOpenId(session.id)}
+                onWorker={(worker) => setOpenWorker({ id: session.id, worker })}
+              />
             </View>
           ))
         ) : (
@@ -203,10 +236,29 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
   )
 }
 
-function SessionRow({ session, onPress }: { session: AgentSession; onPress: () => void }) {
+function SessionRow({
+  session,
+  onPress,
+  onWorker,
+}: {
+  session: AgentSession
+  onPress: () => void
+  onWorker: (worker: AgentWorker) => void
+}) {
   const palette = usePalette()
   const tone =
     session.state === 'waiting' ? palette.orange : session.state === 'working' ? palette.green : palette.muted
+  /**
+   * Whether the workers are showing.
+   *
+   * Folded by default and folded again by every re-render of the list? No —
+   * this is per-row state and the row survives, so a fan-out opened once stays
+   * open while it is watched. Closed to begin with because the common shape of
+   * this screen is several sessions and no fan-out at all, and a list that
+   * unfolds itself is a list nobody can find their session on.
+   */
+  const [unfolded, setUnfolded] = useState(false)
+  const workers = session.workers ?? []
 
   return (
     <View>
@@ -227,8 +279,10 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
             // in stops being obvious — so it is said here instead.
             session.project,
             session.tasks?.total ? `${session.tasks.done}/${session.tasks.total} done` : null,
-            // A fan-out is invisible in the transcript, so this is the only
-            // place the phone can say the session is more than one agent.
+            // A fan-out is invisible in the transcript, so this row is the
+            // only place the phone can say the session is more than one agent.
+            // The count still stands for a desktop whose CLI keeps no
+            // per-worker files; where it does, the rows below say who they are.
             session.subagents ? `${session.subagents} subagent${session.subagents > 1 ? 's' : ''}` : null,
             ago(session.lastActivity),
             session.job ? 'background' : session.via === 'scan' ? 'found by scan' : null,
@@ -261,7 +315,87 @@ function SessionRow({ session, onPress }: { session: AgentSession; onPress: () =
           <StatusLine vitals={session.vitals} dense />
         </View>
       ) : null}
+
+      {/* The workers this session has out, under the session they belong to.
+          Nested rather than listed beside it, because a worker is not a
+          session: it has no terminal, it is never resumed, and a phone that
+          drew it as a peer would be showing four rows for one conversation. */}
+      {workers.length ? (
+        <View style={{ marginBottom: space.xs }}>
+          <Pressable
+            onPress={() => setUnfolded((was) => !was)}
+            hitSlop={8}
+            style={({ pressed }) => ({
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: space.xs,
+              paddingVertical: 2,
+              opacity: pressed ? 0.6 : 1,
+            })}
+          >
+            <Feather name={unfolded ? 'chevron-down' : 'chevron-right'} size={12} color={palette.muted} />
+            <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+              {workers.filter((w) => w.running).length
+                ? `${workers.filter((w) => w.running).length} working of ${workers.length}`
+                : `${workers.length} worker${workers.length > 1 ? 's' : ''} · all done`}
+            </Text>
+          </Pressable>
+
+          {unfolded ? (
+            <View style={{ marginTop: 2, gap: 1 }}>
+              {workers.map((worker) => (
+                <WorkerRow key={worker.id} worker={worker} onPress={() => onWorker(worker)} />
+              ))}
+            </View>
+          ) : null}
+        </View>
+      ) : null}
     </View>
+  )
+}
+
+/**
+ * One worker, under the session that sent it off.
+ *
+ * The description is what the caller wrote when it spawned this one, and it is
+ * the whole reason the row exists — "Protocol + docs for agents" is a thing you
+ * can decide to open, and "subagent 2 of 3" is not. Under it is the last thing
+ * the worker actually said, which is the same running commentary a session row
+ * carries and read the same way.
+ *
+ * A worker that has finished stays here rather than disappearing at the moment
+ * it stops: what it went and found out is the point, and that is worth more
+ * once it is done than while it is working.
+ */
+function WorkerRow({ worker, onPress }: { worker: AgentWorker; onPress: () => void }) {
+  const palette = usePalette()
+  const tone = worker.running ? palette.green : palette.muted
+
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: space.sm,
+        paddingVertical: space.xs,
+        paddingLeft: space.md,
+        opacity: pressed ? 0.6 : 1,
+      })}
+    >
+      <StatusDot tone={tone} pulse={worker.running} />
+      <View style={{ flex: 1 }}>
+        <Text style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
+          {worker.description || worker.type || worker.id}
+        </Text>
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }} numberOfLines={1}>
+          {[worker.type, worker.preview || (worker.running ? 'just started' : 'finished'), ago(worker.updatedAt)]
+            .filter(Boolean)
+            .join(' · ')}
+        </Text>
+      </View>
+      <Feather name="chevron-right" size={14} color={palette.muted} />
+    </Pressable>
   )
 }
 
