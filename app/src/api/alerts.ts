@@ -8,6 +8,7 @@ import {
   notifyAgentDone,
   notifyAgentWaiting,
   notifyClipboard,
+  notifyClipboardImage,
   notifyFile,
 } from '../../modules/omarchy-link'
 import { bytes } from '../lib/format'
@@ -32,7 +33,8 @@ import { mediaKind } from '../lib/media'
  *     to switch the feature off.
  *   - **A file** is an ordinary notification with a **Save** on it.
  *   - **The clipboard** is silent, replaces itself, and says nothing while the
- *     app is on screen, where the share card already shows it.
+ *     app is on screen, where the share card already shows it. A copied
+ *     picture is the same card with the picture drawn on it and a **Save**.
  *
  * All of it is a no-op off Android, where there is no service to post from —
  * see `modules/omarchy-link`.
@@ -328,8 +330,58 @@ export function clearFileAlert(token: string) {
 export function alertClipboard(text: string) {
   if (!prefs.clipboard) return
   if (!text.trim()) return
-  if (AppState.currentState === 'active') return
+  if (onScreen()) return
   notifyClipboard(text)
+}
+
+/** Whether somebody is looking at the app right now. */
+const onScreen = () => AppState.currentState === 'active'
+
+/**
+ * How large a copied picture may be before the notification stops trying to
+ * draw it.
+ *
+ * The preview is not free: it is the whole file over the same download road
+ * `saveOffer` uses, fetched *before* anything can be shown, and the desktop
+ * will carry up to 32 MiB. A screenshot — the thing this feature exists for —
+ * is a fraction of this, so the limit only bites on the copy that was never
+ * going to be a useful thumbnail anyway, and that one still gets its card.
+ */
+const PREVIEW_LIMIT = 8 * 1024 * 1024
+
+/**
+ * A picture the desktop copied.
+ *
+ * The same silent, self-replacing card as the text above — same channel, same
+ * key — because it is the same clipboard; copying a screenshot and then a URL
+ * must leave one line in the shade, not two. What differs is what it can
+ * offer: the bytes are a standing file offer rather than something the shade
+ * could paste, so the button is **Save**, and the preview has to be fetched
+ * before the notification exists at all.
+ *
+ * `fetchPreview` is passed in rather than done here because the download needs
+ * the socket's ticket, which lives with the link. It is allowed to fail or to
+ * answer `null`: a card with no picture on it still says the desktop copied
+ * something, which is the news, and is far better than silence.
+ */
+export async function alertClipboardImage(
+  picture: { token: string; name: string; size?: number },
+  fetchPreview: () => Promise<string | null>,
+) {
+  if (!prefs.clipboard) return
+  if (onScreen()) return
+  let path: string | null = null
+  try {
+    if ((picture.size ?? 0) <= PREVIEW_LIMIT) path = await fetchPreview()
+  } catch {
+    /* the offer expired, the desktop went away, the disk said no */
+  }
+  // Checked again on the way out: fetching the bytes takes as long as it
+  // takes, and a phone picked up in the meantime is showing the share card
+  // with this very picture on it.
+  if (!prefs.clipboard) return
+  if (onScreen()) return
+  notifyClipboardImage({ token: picture.token, name: picture.name, path })
 }
 
 function promptOf(session: AgentSession) {

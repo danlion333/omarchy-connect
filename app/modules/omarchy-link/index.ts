@@ -68,6 +68,7 @@ declare class OmarchyLink extends NativeModule<Events> {
   notifyAgentDone(id: string, agent: string, title: string, preview: string): void
   notifyFile(token: string, name: string, size: string, saveable: boolean): void
   notifyClipboard(text: string): void
+  notifyClipboardImage(token: string, name: string, path: string | null): void
   clearAlert(kind: AlertKind, key: string): void
   clearAlerts(kind: AlertKind): void
   clearEveryAlert(): void
@@ -282,6 +283,20 @@ export function notifyFile(input: { token: string; name: string; size: string; s
 export function notifyClipboard(text: string): void {
   try {
     linkService()?.notifyClipboard(text)
+  } catch {
+    /* same */
+  }
+}
+
+/**
+ * The same line, for a picture: drawn on the card when `path` is a file the
+ * shade can decode, and a **Save** into the gallery either way. `token` is the
+ * offer the button will spend, not the notification's key — the clipboard
+ * still holds exactly one card.
+ */
+export function notifyClipboardImage(input: { token: string; name: string; path: string | null }): void {
+  try {
+    linkService()?.notifyClipboardImage(input.token, input.name, input.path)
   } catch {
     /* same */
   }

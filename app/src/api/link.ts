@@ -44,6 +44,7 @@ import {
 } from '../../modules/omarchy-link'
 import {
   alertClipboard,
+  alertClipboardImage,
   alertFile,
   clearFileAlert,
   resetAlerts,
@@ -419,9 +420,12 @@ class Link {
         // could show for it and nothing it could fetch, so it is dropped.
         if (data.kind === 'binary' && !data.token) return
         this.patch({ clipboard: remember(this.state.clipboard, data) })
-        // The notification offers **Copy**, which only means something for
-        // text. A copied screenshot is announced by the offer it made.
+        // Text and picture are the same one card in the shade — the desktop
+        // clipboard holds one thing — but they reach it differently: the text
+        // is already here, while the picture is a standing offer whose bytes
+        // have to be fetched before there is anything to draw.
         if (typeof data.text === 'string') alertClipboard(data.text)
+        else if (data.token) void this.announceClipboardImage(data.token, data.name || 'a picture', data.size)
       }),
       client.on('ev:file', (data: FileEvent) => {
         this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) })
@@ -987,6 +991,23 @@ class Link {
     } catch (error) {
       noteAgentAlert(id, `not sent — ${(error as Error)?.message || 'the desktop did not take it'}`)
     }
+  }
+
+  /**
+   * Puts a picture the desktop copied in the shade, preview and all.
+   *
+   * The bytes come down the road every offer uses, so this is `saveOffer`
+   * without the gallery — and, like it, it runs with no screen mounted. It is
+   * deliberately not awaited by the event handler: the history card is up the
+   * moment the event lands, and a download the size of a screenshot must not
+   * hold the socket's callback while it happens.
+   */
+  private async announceClipboardImage(token: string, name: string, size?: number) {
+    await alertClipboardImage({ token, name, size }, async () => {
+      const client = this.client
+      if (!client) return null
+      return downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
+    })
   }
 
   /**
