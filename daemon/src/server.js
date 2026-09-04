@@ -940,6 +940,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     const client = {
       ws,
       device: null,
+      // Whether this socket ever got its `hello.ok`. Only the frame that says
+      // so may set it, which is what lets the handler below tell a socket that
+      // finished its handshake from one that died halfway through it.
+      greeted: false,
       events: new Set(),
       alive: true,
       secure: null,
@@ -1010,30 +1014,57 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         return send(client, { t: 'error', error: 'malformed json' })
       }
 
-      if (msg.t === 'hello') return handleHello(client, msg, peer, helloTimer)
-      if (!client.device) return send(client, { t: 'error', error: 'not authenticated' })
+      // One `try` around the whole dispatch, because this handler is `async`:
+      // anything thrown below is a rejected promise nobody is waiting on, and
+      // `installCrashGuard` turns it into a line in the log and nothing else.
+      // For most frames that costs an answer. For `hello` it cost the link —
+      // the write that stamps `lastSeen` on the config happens *after* the
+      // handshake timer is cleared, so a full disk or an unwritable config
+      // left a socket that was authenticated, unwatched and never greeted,
+      // kept alive indefinitely by the heartbeat below while the phone sat in
+      // `connecting` with nothing to time out.
+      try {
+        if (msg.t === 'hello') return handleHello(client, msg, peer, helloTimer)
+        if (!client.device) return send(client, { t: 'error', error: 'not authenticated' })
 
-      switch (msg.t) {
-        case 'ping':
-          return send(client, { t: 'pong', at: Date.now() })
-        case 'sub': {
-          const events = Array.isArray(msg.events) ? msg.events.filter((e) => DEFAULT_EVENTS.includes(e)) : []
-          const added = events.filter((e) => !client.events.has(e))
-          added.forEach((e) => client.events.add(e))
-          bus.subscribe(added)
-          return send(client, { t: 'sub.ok', events: [...client.events] })
+        switch (msg.t) {
+          case 'ping':
+            return send(client, { t: 'pong', at: Date.now() })
+          case 'sub': {
+            const events = Array.isArray(msg.events) ? msg.events.filter((e) => DEFAULT_EVENTS.includes(e)) : []
+            const added = events.filter((e) => !client.events.has(e))
+            added.forEach((e) => client.events.add(e))
+            bus.subscribe(added)
+            return send(client, { t: 'sub.ok', events: [...client.events] })
+          }
+          case 'unsub': {
+            const events = Array.isArray(msg.events) ? msg.events : [...client.events]
+            const removed = events.filter((e) => client.events.has(e))
+            removed.forEach((e) => client.events.delete(e))
+            bus.unsubscribe(removed)
+            return send(client, { t: 'sub.ok', events: [...client.events] })
+          }
+          case 'req':
+            return handleRequest(client, msg)
+          default:
+            return send(client, { t: 'error', error: `unknown message type: ${msg.t}` })
         }
-        case 'unsub': {
-          const events = Array.isArray(msg.events) ? msg.events : [...client.events]
-          const removed = events.filter((e) => client.events.has(e))
-          removed.forEach((e) => client.events.delete(e))
-          bus.unsubscribe(removed)
-          return send(client, { t: 'sub.ok', events: [...client.events] })
+      } catch (err) {
+        log.error(`failed to handle ${msg.t} from ${peer}:`, err)
+        // A socket that never got its `hello.ok` is the one that cannot be
+        // left alone: it may be holding a device by now, and it is certainly
+        // no longer holding its handshake timer. Tell the phone and hang up,
+        // so it reconnects rather than waiting on a greeting that will never
+        // come. 1011 and not 4003/4005 on purpose — a disk that would not
+        // take a write is not a pairing the desktop disowned, and the app
+        // reads those two codes as "stop trying".
+        if (!client.greeted) {
+          client.device = null
+          clearTimeout(helloTimer)
+          send(client, { t: 'hello.err', error: 'the desktop could not finish the handshake — try again' })
+          return ws.close(1011, 'handshake failed')
         }
-        case 'req':
-          return handleRequest(client, msg)
-        default:
-          return send(client, { t: 'error', error: `unknown message type: ${msg.t}` })
+        return send(client, { t: 'error', error: `could not handle ${msg.t}` })
       }
     })
 
@@ -1129,7 +1160,17 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     clearTimeout(helloTimer)
     client.device = device
-    touchDevice(device.id)
+    // `lastSeen` is telemetry: the panel shows it, and nothing at all depends
+    // on it. Letting a failed write of it refuse a phone that has already
+    // proved who it is would be trading the connection for a timestamp, so
+    // this one failure is written down and stepped over. Every other write on
+    // the way here — a rename, a pairing — is load-bearing and still throws,
+    // into the handler's `catch` above.
+    try {
+      touchDevice(device.id)
+    } catch (err) {
+      log.warn(`could not record when ${device.name} was last seen: ${err.message}`)
+    }
     log.info(`${device.name} connected from ${peer}`)
     publishState()
     announcePresence()
@@ -1156,6 +1197,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       theme: readTheme(),
       events: DEFAULT_EVENTS,
     })
+    // Said only once the frame is out of the door, because this is the flag
+    // the handler's `catch` reads to decide whether the socket is worth
+    // keeping. A greeting that threw on its way to the wire has not happened.
+    client.greeted = true
   }
 
   /**

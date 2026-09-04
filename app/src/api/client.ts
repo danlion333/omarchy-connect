@@ -396,6 +396,23 @@ const PING_EVERY = 15_000
 const PING_TIMEOUT = 10_000
 
 /**
+ * How long an open socket has to produce a `hello.ok` before it is a zombie.
+ *
+ * The desktop already keeps the mirror of this — ten seconds to say hello or
+ * be closed with `handshake timeout` — and the phone had nothing. That gap is
+ * the whole of a bug: `connecting` is set when the socket is dialled and
+ * cleared only by `hello.ok`, so a desktop that accepted the connection and
+ * then failed to finish the greeting (a config write that threw, say) left the
+ * app saying `connecting` forever. There is no `onclose` to rescue it either —
+ * the desktop's own WebSocket heartbeat keeps the half-open socket alive.
+ *
+ * Longer than the desktop's ten seconds on purpose, so a desktop that is
+ * merely slow gets to say `handshake timeout` itself and the phone hears a
+ * reason rather than inventing one.
+ */
+const HELLO_TIMEOUT = 20_000
+
+/**
  * How long a probe waits behind the one in front of it.
  *
  * Long enough that a desktop sitting at the address we expected is never
@@ -488,6 +505,8 @@ export class ConnectClient {
   private listeners = new Map<string, Set<Listener>>()
   private pingTimer: any = null
   private pingSentAt: number | null = null
+  private helloTimer: any = null
+  private helloTimeout: number
   private retryTimer: any = null
   private attempt = 0
   private closedByUser = false
@@ -571,6 +590,8 @@ export class ConnectClient {
     network?: () => NetworkFacts | null
     endpoints?: Candidate[]
     probe?: (host: string, port: number) => Promise<{ publicKey: string | null; certPin: string | null } | null>
+    /** How long to wait for `hello.ok` on an open socket. Tests shorten it. */
+    helloTimeout?: number
   }) {
     this.host = opts.host
     this.port = opts.port
@@ -583,6 +604,7 @@ export class ConnectClient {
     this.askNetwork = opts.network ?? null
     this.endpoints = opts.endpoints ?? []
     this.probe = opts.probe ?? null
+    this.helloTimeout = opts.helloTimeout ?? HELLO_TIMEOUT
     this.proven = { host: opts.host, port: opts.port }
   }
 
@@ -710,6 +732,9 @@ export class ConnectClient {
     // with nothing in the log to say why.
     ws.onopen = () => {
       if (ws !== this.ws) return
+      // The socket is up; the greeting is what is owed now, and this is the
+      // only thing that will notice if it never arrives.
+      this.startHelloDeadline(ws)
       if (!this.publicKey) {
         // Without a pinned key we cannot tell the desktop apart from anything
         // else answering on that address, so we refuse rather than fall back.
@@ -754,6 +779,7 @@ export class ConnectClient {
 
     ws.onclose = (event) => {
       if (ws !== this.ws) return
+      this.stopHelloDeadline()
       this.stopPing()
       this.failAllPending(new Error('disconnected'))
       if (this.closedByUser) {
@@ -1071,6 +1097,7 @@ export class ConnectClient {
     this.raceToken += 1
     this.upgradeToken += 1
     clearTimeout(this.retryTimer)
+    this.stopHelloDeadline()
     this.stopPing()
     this.failAllPending(new Error('closed'))
     const old = this.ws
@@ -1078,6 +1105,32 @@ export class ConnectClient {
     this.detach(old)
     old?.close()
     this.setStatus('idle', null)
+  }
+
+  /**
+   * The deadline on a greeting, armed per socket.
+   *
+   * Closing rather than only complaining, because a socket stuck before
+   * `hello.ok` has no other way out: `onclose` is what drives
+   * `scheduleReconnect`, so the way to make the phone try again is to close.
+   * The code is deliberately not 4003 or 4005 — those two mean "the desktop
+   * disowned this phone" and stop the retries for good, and a desktop that
+   * merely failed to answer deserves the opposite reading.
+   */
+  private startHelloDeadline(ws: WebSocket) {
+    this.stopHelloDeadline()
+    this.helloTimer = setTimeout(() => {
+      // A socket the client has already replaced speaks only for itself.
+      if (ws !== this.ws) return
+      this.helloTimer = null
+      this.lastError = 'the desktop never finished the handshake'
+      ws.close(4010, 'hello timeout')
+    }, this.helloTimeout)
+  }
+
+  private stopHelloDeadline() {
+    clearTimeout(this.helloTimer)
+    this.helloTimer = null
   }
 
   private startPing() {
@@ -1155,6 +1208,7 @@ export class ConnectClient {
         this.emit('paired', msg)
         return
       case 'hello.ok': {
+        this.stopHelloDeadline()
         this.attempt = 0
         this.hello = msg as Hello
         // Authenticated, which is the one event that turns a candidate
@@ -1173,6 +1227,7 @@ export class ConnectClient {
         return
       }
       case 'hello.err':
+        this.stopHelloDeadline()
         this.lastError = msg.error
         this.setStatus('error', msg.error)
         this.emit('unauthorized', msg.error)

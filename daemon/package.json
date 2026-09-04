@@ -33,7 +33,8 @@
     "test:clipboard-image": "node test/clipboard-image.mjs",
     "test:config": "node test/config.mjs",
     "test:replay": "node test/replay.mjs",
-    "test:sms-reply": "node test/sms-reply.mjs"
+    "test:sms-reply": "node test/sms-reply.mjs",
+    "test:hello-write": "node test/hello-write.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"
