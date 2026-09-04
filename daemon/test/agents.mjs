@@ -579,6 +579,14 @@ await startDaemon(false)
     (e) => e.message,
   )
   check('agents.send is refused while disabled', String(refusedWrite).includes('agent enable'), refusedWrite)
+  // And the road to a worker is the same road: it exists because reading was
+  // granted, so it closes when reading does rather than having a switch of its
+  // own to be left on.
+  const refusedRelay = await req('agents.relay', { id: `claude:${SESSION}`, agentId: 'w1', text: 'hello?' }).then(
+    () => null,
+    (e) => e.message,
+  )
+  check('agents.relay is refused while disabled', String(refusedRelay).includes('agent enable'), refusedRelay)
   const ignored = await hook('SessionStart')
   check('a hook is ignored while disabled', ignored.ok === false, ignored.error)
 
