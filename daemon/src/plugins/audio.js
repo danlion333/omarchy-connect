@@ -2,6 +2,7 @@ import crypto from 'node:crypto'
 
 import { log } from '../lib/log.js'
 import { CHUNK_MS, CHANNELS, MAX_SECONDS, RATE, Recorder, parseFrame, pathFor } from '../lib/mic.js'
+import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable } from '../lib/pipesource.js'
 
 /**
  * Listening to the phone's microphone from the desktop.
@@ -24,8 +25,30 @@ import { CHUNK_MS, CHANNELS, MAX_SECONDS, RATE, Recorder, parseFrame, pathFor } 
  * One stream at a time, from one handset, into one file. That is not a
  * limitation being apologised for: there is one paired phone, it has one
  * microphone, and a second concurrent stream would be two copies of the same
- * room. `#38` will read the live chunks as they land — `onChunk` below is that
- * seam, and the file is simply the first consumer written against it.
+ * room. `onChunk` is the seam for anything that wants the sound live rather
+ * than afterwards, and the file is simply the first consumer written against
+ * it.
+ *
+ * ## The desktop's input
+ *
+ * The second consumer is the point of the whole road: `lib/pipesource.js`
+ * turns those same chunks into a PipeWire source, so that Zoom, OBS,
+ * `voxtype` or anything else with an input list shows *Omarchy Connect
+ * (phone)* and a person with no microphone has one. It is a toggle rather
+ * than a consequence of streaming, because a program picks its input before
+ * anybody speaks: the source has to exist, and be selectable, and be silent,
+ * for as long as somebody wants it — and it must not appear and vanish under
+ * a running call every time the handset reconnects.
+ *
+ * Turning it on asks the handset for its microphone as well, when the handset
+ * is there and is not already streaming. That is a convenience and not a
+ * dependency: the source is loaded either way, and a phone that is asleep
+ * leaves a working, silent input rather than a failed switch.
+ *
+ * **The default input is never touched.** `plugins/phone.js` says the same
+ * thing about the hands-free gateway and it is the same rule: appearing in
+ * the list is the feature, and quietly becoming the microphone of a machine
+ * whose owner did not ask is not.
  *
  * **Not a switch anybody can flip from off the network.** The instruction goes
  * out on the `audio` channel, and like `phone` that channel is never delivered
@@ -49,18 +72,108 @@ let live = null
 let asked = null
 /** Handed out ascending so a late chunk from a finished run is recognisable. */
 let nextStream = 1
-/** Whoever wants the chunks as they land. `#38` is the reason this is a set. */
+/** Whoever wants the chunks as they land — the PipeWire source is one. */
 const listeners = new Set()
+
+/** The desktop's input, when it is switched on. Never more than one. */
+let input = null
+/** Undo for the `onChunk` subscription that feeds it. */
+let unfeed = null
 
 const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunkMs: CHUNK_MS })
 
 export function summary() {
-  if (!live) return { streaming: false }
+  const desktop = { input: inputSummary() }
+  if (!live) return { streaming: false, ...desktop }
   return {
     streaming: true,
     stream: live.stream,
     since: live.startedAt,
     ...live.recorder.summary(),
+    ...desktop,
+  }
+}
+
+/** What the input toggle is doing, whether or not anything is streaming. */
+export function inputSummary() {
+  return {
+    available: pipeAvailable(),
+    name: SOURCE_NAME,
+    description: SOURCE_DESCRIPTION,
+    ...(input ? input.summary() : { enabled: false }),
+  }
+}
+
+/**
+ * Switch the desktop input on or off.
+ *
+ * Idempotent in both directions, which is what makes it safe as a toggle a
+ * phone can press: turning on something already on answers with the source
+ * that is already there rather than loading a second module beside it.
+ */
+export function setInput(on) {
+  if (on) {
+    if (input?.running) return inputSummary()
+    if (!pipeAvailable()) throw new Error('this desktop has no pipewire-pulse, so it cannot offer the phone as an input')
+    const source = new PipeSource()
+    source.start()
+    input = source
+    // Subscribed only while the source is loaded, so a stream that is running
+    // for the file alone costs nothing extra when the input is off.
+    unfeed = onChunk((pcm) => source.write(pcm))
+    return inputSummary()
+  }
+  unfeed?.()
+  unfeed = null
+  const was = input ? input.stop() : { enabled: false }
+  input = null
+  if (was.enabled !== undefined) log.info('the phone is no longer an input on this desktop')
+  return { available: pipeAvailable(), name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false }
+}
+
+/** Is the phone currently offered as an input here? */
+export const inputEnabled = () => Boolean(input?.running)
+
+/**
+ * Did this toggle start the stream that is running? Only then does turning
+ * the input off stop it — somebody who ran `mic start` for the recording and
+ * then switched the input on has not asked for their recording to end.
+ */
+let startedTheStream = false
+
+/**
+ * The toggle as a person means it: an input on this desktop, with sound in it.
+ *
+ * `setInput` is the mechanism and this is the intent. Turning on loads the
+ * source and *then* asks the handset to speak, because the source must exist
+ * whether or not the phone answers: a silent input a program can select is a
+ * far better outcome than no input and an error, and the phone can be asked
+ * again with `mic start` once it wakes up. A handset that refuses is reported
+ * beside a source that is nonetheless there.
+ */
+export async function requestInput(op = 'status') {
+  const action = String(op || 'status').toLowerCase()
+  if (action === 'status') return inputSummary()
+  if (!['on', 'off', 'start', 'stop', 'enable', 'disable'].includes(action)) {
+    throw new Error(`unknown input action: ${op}`)
+  }
+
+  if (['off', 'stop', 'disable'].includes(action)) {
+    const stopping = startedTheStream && live ? requestMic({ op: 'stop' }).outcome.catch(() => null) : null
+    startedTheStream = false
+    await stopping
+    return setInput(false)
+  }
+
+  const state = setInput(true)
+  if (live || asked) return { ...state, streaming: Boolean(live) }
+  try {
+    await requestMic({ op: 'start' }).outcome
+    startedTheStream = true
+    return { ...inputSummary(), streaming: true }
+  } catch (err) {
+    // The switch worked; the handset did not answer it. Both facts go back.
+    return { ...inputSummary(), streaming: false, phone: err.message }
   }
 }
 
@@ -188,7 +301,16 @@ export default {
   },
 
   stop() {
+    startedTheStream = false
     if (live) void finish('the daemon is stopping', { tell: false })
+    // Before the listeners are cleared, and synchronously: a module left
+    // loaded by a daemon on its way out is a source in every picker on this
+    // machine, pointing at a pipe that no longer exists.
+    try {
+      if (input) setInput(false)
+    } catch (err) {
+      log.warn(`could not take the phone input down: ${err.message}`)
+    }
     asked = null
     listeners.clear()
     bus = null
@@ -201,6 +323,11 @@ export default {
       receive: true,
       ...format(),
       maxSeconds: MAX_SECONDS,
+      // Whether this desktop can turn the stream into an input the rest of
+      // the system sees. False on a machine without pipewire-pulse, and the
+      // app draws no button for it — the same bargain `dictation` and
+      // `media` already make about `voxtype` and `wpctl`.
+      input: inputSummary(),
     }
   },
 
@@ -255,6 +382,19 @@ export default {
     /** What, if anything, this desktop is listening to. */
     'audio.status'() {
       return summary()
+    },
+
+    /**
+     * The phone flipping the desktop's input on or off.
+     *
+     * The switch is here as well as in the CLI because the microphone is on
+     * the handset: somebody walking to their desk with the phone in their
+     * hand should be able to offer it before they sit down, without a
+     * terminal. It rides `audio`, so like everything else on that channel it
+     * is refused to a socket that came down a tunnel.
+     */
+    async 'audio.input'({ op = 'status' } = {}) {
+      return requestInput(op)
     },
   },
 }

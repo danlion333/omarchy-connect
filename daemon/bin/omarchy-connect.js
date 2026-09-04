@@ -574,9 +574,17 @@ async function cmdLocate(args) {
  * `mic stop` is what ends it. So is closing the app, losing the network or
  * half an hour going by; all four leave a finished file rather than a
  * truncated one.
+ *
+ * `mic input on` is the other thing entirely, and the one most people want:
+ * it puts the phone in this desktop's list of microphones, so Zoom, OBS or
+ * anything else with an input picker can select it. It also asks the handset
+ * to start speaking, because a source with nothing in it is a curiosity. The
+ * default input is left exactly where it was — this appears in the list, it
+ * does not take anybody's place.
  */
 async function cmdMic(args) {
-  const [action = 'status'] = args._
+  const [action = 'status', ...rest] = args._
+  if (action === 'input') return cmdMicInput(rest)
   const op = ['start', 'on', 'listen'].includes(action)
     ? 'start'
     : ['stop', 'off'].includes(action)
@@ -585,7 +593,7 @@ async function cmdMic(args) {
         ? 'status'
         : null
   if (!op) {
-    log.error('usage: omarchy-connect mic <start|stop|status>')
+    log.error('usage: omarchy-connect mic <start|stop|status|input on|input off>')
     process.exit(1)
   }
   const res = await daemonRequest('/api/mic', { method: 'POST', body: { op }, timeout: 30_000 })
@@ -614,6 +622,52 @@ async function cmdMic(args) {
   }
   const lost = audio.dropped ? `, ${audio.dropped} bytes dropped to keep up` : ''
   log.ok(`the phone has stopped — ${audio.seconds}s in ${audio.path}${lost}`)
+}
+
+/**
+ * The phone as this desktop's microphone.
+ *
+ * Prints what any other program would see, because that is the only thing
+ * worth confirming: the name in the picker. A desktop with no pipewire-pulse
+ * says so plainly rather than offering a switch that cannot work.
+ */
+async function cmdMicInput(rest) {
+  const [word = 'status'] = rest
+  const value = ['on', 'start', 'enable'].includes(word)
+    ? 'on'
+    : ['off', 'stop', 'disable'].includes(word)
+      ? 'off'
+      : word === 'status'
+        ? 'status'
+        : null
+  if (!value) {
+    log.error('usage: omarchy-connect mic input <on|off|status>')
+    process.exit(1)
+  }
+  const res = await daemonRequest('/api/mic', { method: 'POST', body: { op: 'input', value }, timeout: 30_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the input could not be switched')
+    process.exit(1)
+  }
+  const input = res.data?.audio?.input || {}
+  if (!input.available) {
+    log.warn('this desktop has no pipewire-pulse, so the phone cannot be offered as an input')
+    return
+  }
+  if (!input.enabled) {
+    return log.info(
+      value === 'status'
+        ? 'the phone is not an input on this desktop — `omarchy-connect mic input on`'
+        : 'the phone is no longer an input on this desktop',
+    )
+  }
+  log.ok(`"${input.description}" is an input on this desktop — pick it in any app's microphone list`)
+  if (input.phone) log.warn(`the handset is not speaking yet: ${input.phone}\n  wake it and run \`omarchy-connect mic start\``)
+  else if (input.streaming === false && value === 'status') log.info('nothing is streaming into it — `omarchy-connect mic start`')
 }
 
 /**
@@ -1978,6 +2032,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('locate')} [stop]               ring the phone until somebody finds it
   ${bold('mic')} <start|stop|status>     stream the phone's microphone to this desktop
+  ${bold('mic input')} <on|off|status>  offer the phone as an input every app can pick
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('remote')} <status|on|off>      let the phone in from off this network
