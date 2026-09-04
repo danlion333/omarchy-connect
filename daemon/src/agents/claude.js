@@ -743,6 +743,112 @@ export default {
   },
 
   /**
+   * Where the workers a session fanned out keep their own transcripts.
+   *
+   * Beside the session's file rather than in it: `<session>.jsonl` has a
+   * directory of the same name next to it, and `subagents/` inside that. It is
+   * one level below where `transcripts()` looks, which is exactly why a worker
+   * has never turned up as a session of its own in the list — and why finding
+   * them at all needs a second walk rather than a wider filter.
+   */
+  workerDir(transcript) {
+    const file = String(transcript || '')
+    if (!file.endsWith('.jsonl')) return null
+    return path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents')
+  },
+
+  /**
+   * Is this path a worker's transcript rather than a session's?
+   *
+   * Asked of hook payloads. A session's id is derived from the transcript the
+   * hook names, so a payload naming a worker file would mint a session row for
+   * something that is not a session — the phone would show `claude:agent-…`
+   * beside the conversation it belongs to, twice over for a fan-out of two.
+   */
+  isWorkerTranscript(transcript) {
+    return path.basename(path.dirname(String(transcript || ''))) === 'subagents'
+  },
+
+  /**
+   * The session a worker's transcript belongs to, given the worker's path.
+   *
+   * `<slug>/<session>/subagents/agent-<id>.jsonl` → `<slug>/<session>.jsonl`.
+   * The layout is the answer, so nothing has to be read to find it.
+   */
+  sessionTranscriptFor(transcript) {
+    if (!this.isWorkerTranscript(transcript)) return String(transcript || '')
+    const dir = path.dirname(path.dirname(String(transcript)))
+    return `${dir}.jsonl`
+  },
+
+  /**
+   * Every worker a session has out, or has had, newest activity first.
+   *
+   * Two files each, and both are needed: `agent-<id>.meta.json` is written
+   * once at spawn and says what the worker *is* — the agent type, the
+   * description the caller gave it, and `toolUseId`, which is the same id the
+   * `Agent` chip in the parent's chat already carries. The `.jsonl` beside it
+   * is the conversation, and here only its size and mtime are read, because
+   * this is asked for a whole list of sessions and the transcripts run to
+   * megabytes apiece.
+   *
+   * A session that has never fanned out has no such directory, and that is not
+   * an error — it is the normal shape of a desktop, and it returns nothing.
+   */
+  workers(transcript) {
+    const dir = this.workerDir(transcript)
+    if (!dir) return []
+    let names = []
+    try {
+      names = fs.readdirSync(dir).filter((name) => name.startsWith('agent-') && name.endsWith('.jsonl'))
+    } catch {
+      return []
+    }
+    const out = []
+    for (const name of names) {
+      const id = name.slice('agent-'.length, -'.jsonl'.length)
+      if (!id) continue
+      const file = path.join(dir, name)
+      let stat
+      try {
+        stat = fs.statSync(file)
+      } catch {
+        continue
+      }
+      // The meta is what makes a row worth drawing; without it there is an id
+      // and nothing to call it, so the row says so rather than being dropped —
+      // a worker whose meta could not be read is still a worker that ran.
+      let meta = {}
+      try {
+        meta = JSON.parse(fs.readFileSync(path.join(dir, `agent-${id}.meta.json`), 'utf8')) || {}
+      } catch {
+        meta = {}
+      }
+      let startedAt = 0
+      try {
+        startedAt = fs.statSync(path.join(dir, `agent-${id}.meta.json`)).mtimeMs
+      } catch {
+        startedAt = stat.mtimeMs
+      }
+      out.push({
+        id,
+        path: file,
+        type: oneLine(meta.agentType, 40) || null,
+        description: oneLine(meta.description, 120) || null,
+        // The `tool_use` id of the `Agent` call that started it. This is the
+        // whole link between the two halves of the screen: the chip in the
+        // parent's chat carries the same string as its `ref`.
+        ref: typeof meta.toolUseId === 'string' ? meta.toolUseId : null,
+        depth: Number(meta.spawnDepth) || 1,
+        startedAt,
+        updatedAt: stat.mtimeMs,
+        size: stat.size,
+      })
+    }
+    return out.sort((a, b) => b.updatedAt - a.updatedAt)
+  },
+
+  /**
    * What a transcript says about itself: whose kind of session wrote it, and
    * when it last had anything to say.
    *
@@ -809,8 +915,17 @@ export default {
    * Zero is the common answer. Most of a transcript is bookkeeping, sidechain
    * traffic from subagents, or a thinking block that carries nothing but an
    * encrypted signature — a 62-line file becomes about 25 blocks.
+   *
+   * `worker` reads the other side of that filter. Claude Code writes each
+   * worker to its own `subagents/agent-<id>.jsonl` these days, where every
+   * line is flagged `isSidechain` and every line is the point — so the same
+   * parser reads a worker's conversation by being told which file it is in,
+   * rather than by dropping a guard that still earns its place: an older CLI
+   * interleaved that traffic into the session's own transcript, and a chat
+   * that shows a person their worker's tool calls in the middle of their own
+   * turn is the thing the guard was added for.
    */
-  parse(line) {
+  parse(line, { worker = false } = {}) {
     let entry
     try {
       entry = JSON.parse(line)
@@ -820,8 +935,9 @@ export default {
     if (!entry || typeof entry !== 'object') return []
     if (SKIP_TYPES.has(entry.type)) return []
     // Subagent traffic belongs under the tool call that started it, not
-    // interleaved into the conversation the person is reading.
-    if (entry.isSidechain) return []
+    // interleaved into the conversation the person is reading — unless the
+    // file being read *is* the subagent's.
+    if (entry.isSidechain && !worker) return []
 
     const at = stamp(entry)
     const message = entry.message

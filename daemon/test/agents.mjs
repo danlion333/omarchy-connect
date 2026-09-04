@@ -905,6 +905,12 @@ check(
 
 /* ── the fan-out ───────────────────────────────────────────────────────── */
 
+// A desktop whose CLI never wrote a `subagents/` directory — every version
+// before this one, and every session that never fanned out. The number, an
+// empty list, and nothing anywhere that had to be caught.
+const beforeWorkers = (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)
+check('a session with no workers on disk lists none', beforeWorkers?.workers?.length === 0, JSON.stringify(beforeWorkers?.workers))
+
 // Sidechain traffic is hidden from the chat on purpose, so the count of
 // subagents is the only sign a session is more than one agent.
 await hook('SubagentStart', { agent_type: 'general-purpose', agent_id: 'sub-1' })
@@ -921,6 +927,107 @@ check(
   'and counted back in',
   (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.subagents === 0,
 )
+
+/* ── who the workers are ───────────────────────────────────────────────── */
+
+// The count was the whole of it: "2 subagents", with no way to say what
+// either one was doing, no way to open one, and nothing tying a worker to the
+// `Agent` chip already sitting in its parent's chat. All of that is on disk,
+// beside the parent's transcript, in `<session>/subagents/`.
+const subagents = path.join(projects, SESSION, 'subagents')
+fs.mkdirSync(subagents, { recursive: true })
+const worker = (id, meta, lines) => {
+  fs.writeFileSync(path.join(subagents, `agent-${id}.meta.json`), JSON.stringify(meta))
+  fs.writeFileSync(path.join(subagents, `agent-${id}.jsonl`), lines.join(''))
+}
+const sidechain = (id, extra) => ({ isSidechain: true, agentId: id, ...extra })
+worker('w1', { agentType: 'Explore', description: 'Read the router', toolUseId: 'toolu_agent1', spawnDepth: 1 }, [
+  line(sidechain('w1', { type: 'user', timestamp: now(-60_000), message: { role: 'user', content: 'find the router' } })),
+  line(
+    sidechain('w1', {
+      type: 'assistant',
+      timestamp: now(-50_000),
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_w1a', name: 'Grep', input: { pattern: 'router', path: 'src' } }] },
+    }),
+  ),
+  line(
+    sidechain('w1', {
+      type: 'user',
+      timestamp: now(-49_000),
+      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_w1a', content: 'src/app.js:12\nsrc/app.js:40' }] },
+    }),
+  ),
+  line(
+    sidechain('w1', {
+      type: 'assistant',
+      timestamp: now(-40_000),
+      message: { role: 'assistant', content: [{ type: 'text', text: 'The router is src/app.js:12.' }] },
+    }),
+  ),
+])
+worker('w2', { agentType: 'general-purpose', description: 'Draft the endpoint', toolUseId: 'toolu_agent2', spawnDepth: 1 }, [
+  line(
+    sidechain('w2', {
+      type: 'assistant',
+      timestamp: now(-3_600_000),
+      message: { role: 'assistant', content: [{ type: 'text', text: 'Wrote GET /health.' }] },
+    }),
+  ),
+])
+// Nothing has written to w2's file for an hour. There is no completion marker
+// anywhere in a worker's transcript, so that silence is the only thing that
+// says it is over — and a worker that is over has to stay on the list.
+const hourAgo = new Date(Date.now() - 3_600_000)
+fs.utimesSync(path.join(subagents, 'agent-w2.jsonl'), hourAgo, hourAgo)
+
+const fanned = (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)
+check('a session says who its workers are', fanned?.workers?.length === 2, JSON.stringify(fanned?.workers?.map((w) => w.id)))
+const w1 = fanned?.workers?.find((w) => w.id === 'w1')
+const w2 = fanned?.workers?.find((w) => w.id === 'w2')
+check('a worker carries its type and what it was sent to do', w1?.type === 'Explore' && w1?.description === 'Read the router', JSON.stringify(w1))
+check('and the tool_use id of the Agent call that started it', w1?.ref === 'toolu_agent1', String(w1?.ref))
+check('and the last thing it said', String(w1?.preview).includes('The router is src/app.js:12'), w1?.preview)
+check('a worker still writing is running', w1?.running === true)
+check('a worker that stopped stays on the list', Boolean(w2), JSON.stringify(fanned?.workers?.map((w) => w.id)))
+check('and says it is not running any more', w2?.running === false, JSON.stringify(w2))
+check('with the last thing it said still on it', String(w2?.preview).includes('Wrote GET /health'), w2?.preview)
+
+// The one row rule. A worker has no session of its own and must never take a
+// line beside the conversation it belongs to — including when a hook names
+// the worker's own transcript, which is the one payload shape that could mint
+// one by accident.
+const rowsBefore = (await req('agents.list')).sessions.length
+await hook('SubagentStart', { agent_type: 'Explore', agent_id: 'w1', transcript_path: path.join(subagents, 'agent-w1.jsonl') })
+await settle()
+const rowsAfter = await req('agents.list')
+check(
+  'a worker is never a row of its own',
+  rowsAfter.sessions.length === rowsBefore && !rowsAfter.sessions.some((s) => s.id.includes('agent-')),
+  rowsAfter.sessions.map((s) => s.id).join(' '),
+)
+
+// A stop this daemon was awake for is exact, and outranks the clock: w1's file
+// was written a moment ago and would otherwise read as still running.
+await hook('SubagentStop', { agent_type: 'Explore', agent_id: 'w1', transcript_path: path.join(subagents, 'agent-w1.jsonl') })
+await settle()
+const stopped = (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)
+check(
+  'a worker the stop hook named is done whatever its file says',
+  stopped?.workers?.find((w) => w.id === 'w1')?.running === false,
+  JSON.stringify(stopped?.workers?.find((w) => w.id === 'w1')),
+)
+
+// And reading one: the same blocks a chat is drawn from, because it is the
+// same kind of file.
+const readWorker = await req('agents.worker', { id: `claude:${SESSION}`, agentId: 'w1' })
+check('a worker opens as a conversation', readWorker.blocks?.length === 4, readWorker.blocks?.map((b) => `${b.role}:${b.kind}`).join(' '))
+check('what it said comes through', readWorker.blocks.some((b) => b.kind === 'text' && String(b.text).includes('The router is')))
+check('and its tool calls, collapsed the usual way', readWorker.blocks.some((b) => b.kind === 'tool' && b.tool === 'Grep'))
+const workerResult = readWorker.blocks.find((b) => b.kind === 'result')
+const workerBody = await req('agents.detail', { id: `claude:${SESSION}`, seq: workerResult.seq, agentId: 'w1' })
+check('the body behind a worker chip is one tap away', workerBody.text.includes('src/app.js:40'), workerBody.text)
+const noWorker = await req('agents.worker', { id: `claude:${SESSION}`, agentId: 'nobody' }).catch((err) => err)
+check('asking for a worker that is not there is a refusal, not a crash', String(noWorker?.message).includes('no such worker'), String(noWorker?.message))
 
 /* ── realtime usage off the status line ────────────────────────────────── */
 
