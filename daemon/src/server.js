@@ -49,6 +49,7 @@ import {
 } from './plugins/agents.js'
 import {
   requestMic,
+  requestInput as requestAudioInput,
   feed as feedAudio,
   hangUp as hangUpAudio,
   summary as audioSummary,
@@ -694,6 +695,9 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * Held open the way `/api/locate` is: the answer comes back when the
      * handset has actually started recording, so `omarchy-connect mic` says
      * the phone is listening rather than that a message went into the dark.
+     *
+     * `op: "input"` is the other half — not a recording at all, but whether
+     * this desktop offers the phone as a microphone the whole system can see.
      */
     if (req.method === 'POST' && url.pathname === '/api/mic') {
       if (!localOnly(req, res)) return undefined
@@ -704,8 +708,15 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       })
       req.on('end', async () => {
         try {
-          const { op = 'status' } = JSON.parse(body || '{}')
+          const { op = 'status', value = null } = JSON.parse(body || '{}')
           if (op === 'status') return json(res, 200, { ok: true, audio: audioSummary() })
+          // The desktop's own input is a switch rather than a stream, so it
+          // answers with what the switch now is — including a source that is
+          // loaded and silent because the handset never woke up.
+          if (op === 'input') {
+            const input = await requestAudioInput(value ?? 'status')
+            return json(res, 200, { ok: true, audio: { ...audioSummary(), input } })
+          }
           const { outcome } = requestMic({ op })
           const result = await outcome
           return json(res, 200, { ok: true, audio: { ...audioSummary(), ...result } })

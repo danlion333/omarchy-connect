@@ -350,12 +350,17 @@ false on a desktop without `voxtype` or `ffmpeg`.
 | --- | --- | --- |
 | `audio.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its microphone. |
 | `audio.stopped` | `{ stream, error }` | `{ ok, path, bytes, seconds, dropped, gaps }` — the phone saying it has stopped. |
-| `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps }`. |
+| `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps, input }`. |
+| `audio.input` | `{ op }` | `on`, `off` or `status`. Offers the phone as an input the whole desktop can see, and answers with `{ available, name, description, enabled, … }`. See **The phone as a desktop input**. |
 
-The capability is `{ receive, encoding, rate, channels, chunkMs, maxSeconds }`
-and says what the desktop will accept, never what the handset can send —
-whether *this* phone can open a microphone is its own answer, and it gives it
-by starting or by refusing with a reason. See **Live audio**.
+The capability is
+`{ receive, encoding, rate, channels, chunkMs, maxSeconds, input }` and says
+what the desktop will accept, never what the handset can send — whether *this*
+phone can open a microphone is its own answer, and it gives it by starting or
+by refusing with a reason. `input.available` is false on a desktop whose
+`pactl` cannot reach a sound server, and an app that sees it false draws no
+switch, the same way it draws no dictation button without `voxtype`. See
+**Live audio**.
 
 ### device
 
@@ -1459,7 +1464,7 @@ deliberately open.
 | `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
 | `POST /api/locate` | `{ op, seconds? }` | `op` is `start` or `stop`. Rings the paired phone until somebody finds it. Answers `{ ok, locate }`. |
-| `POST /api/mic` | `{ op }` | `op` is `status`, `start` or `stop`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. Answers `{ ok, audio }`. |
+| `POST /api/mic` | `{ op, value? }` | `op` is `status`, `start`, `stop` or `input`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. `input` takes `value: "on" | "off" | "status"` and switches the PipeWire source every other app can pick. Answers `{ ok, audio }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
@@ -1683,6 +1688,50 @@ the daemon stopping, or the 30-minute ceiling: the file is finished and its
 header patched in every case, and the phone gives the microphone back — a
 socket that is no longer connected is a microphone with nowhere to send to.
 A reconnect starts a fresh stream with a fresh number.
+
+### The phone as a desktop input
+
+A WAV in the cache is a recording. What somebody with no microphone wants is a
+*device*: a line in Zoom's input list, in OBS's, in `voxtype`'s — in the
+ordinary picker every program on this desktop already draws — that says
+**Omarchy Connect (phone)**. So the same chunks feed a PipeWire source:
+
+```
+omarchy-connect mic input on      # and `off`, and `status`
+```
+
+Under the hood that is a FIFO in `$XDG_RUNTIME_DIR/omarchy-connect/mic.pipe`
+and pipewire-pulse's own `module-pipe-source` pointed at it, loaded at
+`s16le`/16000/1 — the format the phone already sends, so nothing anywhere
+resamples. `pactl` ships with pipewire-pulse, which is the same install that
+makes `paplay` work for the ringtone, so this needs nothing new on the machine.
+A desktop where `pactl info` cannot reach a server publishes
+`capabilities.audio.input.available: false` and is not offered the switch at
+all.
+
+**A switch, not a consequence of streaming.** A program picks its input before
+anybody speaks, so the source exists for as long as the switch is on, whether
+or not a handset is talking into it. Turning it on also asks the phone to
+start — a source with nothing in it is a curiosity — but a phone that is
+asleep leaves a loaded, silent input and a sentence saying so, rather than a
+failed switch. Turning it off unloads the module, deletes the pipe, and stops
+the stream only if the switch was what started it.
+
+**Nothing blocks and nothing is stolen.** The write end of the pipe is opened
+`O_NONBLOCK`: a pipe nobody is draining fills at 64 KB and returns `EAGAIN`,
+and an `EAGAIN` chunk is dropped and counted rather than stopping the daemon's
+event loop until some other program presses record. In the other direction a
+source with no new bytes reads as silence, so a handset that drops mid-sentence
+leaves a working input with nothing to say rather than a broken one. And the
+default input is never changed: appearing in the list is the feature, and
+becoming a machine's microphone without being asked is not — the same rule the
+hands-free gateway follows.
+
+**The module never outlives the daemon.** It is global state in someone else's
+process, so it is unloaded synchronously on `SIGTERM`, and any
+`module-pipe-source` still carrying this source's name is reaped on the way up
+— which is both the cleanup after a daemon that was killed outright and the
+reason turning the switch on twice cannot leave two devices behind.
 
 **Not down a tunnel.** The `audio` channel is refused to a socket the desktop
 classed as `remote`, the same way `phone` is. A pairing is trust enough to read
