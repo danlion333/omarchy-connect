@@ -69,6 +69,7 @@ declare class OmarchyLink extends NativeModule<Events> {
   notifyFile(token: string, name: string, size: string, saveable: boolean): void
   notifyClipboard(text: string): void
   notifyClipboardImage(token: string, name: string, path: string | null): void
+  copyImage(path: string): string
   clearAlert(kind: AlertKind, key: string): void
   clearAlerts(kind: AlertKind): void
   clearEveryAlert(): void
@@ -300,6 +301,22 @@ export function notifyClipboardImage(input: { token: string; name: string; path:
   } catch {
     /* same */
   }
+}
+
+/**
+ * A picture on this phone's clipboard, from a file already on the disk.
+ *
+ * The one call in this file that is allowed to throw. Everywhere else a
+ * notification that will not post is swallowed, because nobody asked for it;
+ * this is somebody's tap on **Copy**, and the honest answer to a tap that did
+ * not work is a sentence saying why — see `Notice`. Answers with the MIME
+ * type the clip went out as, which is worth having in a log when a paste
+ * arrives somewhere as the wrong thing.
+ */
+export function copyPictureToClipboard(uri: string): string {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot write a picture to the clipboard')
+  return native.copyImage(uri)
 }
 
 export function clearAlert(kind: AlertKind, key: string): void {

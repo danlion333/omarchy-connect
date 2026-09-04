@@ -32,6 +32,13 @@ class LinkActionReceiver : BroadcastReceiver() {
     const val EXTRA_KEY = "key"
     const val EXTRA_TEXT = "text"
 
+    /**
+     * The bytes behind a copied picture, as the `file://` URI the preview was
+     * fetched to — or absent, when the fetch never got them. Its presence is
+     * also what tells **Copy** apart: a card carrying a path is a picture's.
+     */
+    const val EXTRA_PATH = "path"
+
     /** Set while a module instance is alive, so events can reach the app. */
     @Volatile
     var listener: ((String, Map<String, Any?>) -> Unit)? = null
@@ -61,7 +68,11 @@ class LinkActionReceiver : BroadcastReceiver() {
     when (intent.action) {
       ACTION_REPLY -> reply(context, intent, key ?: return)
       ACTION_SAVE -> save(context, intent, key ?: return)
-      ACTION_COPY -> copy(context, intent)
+      // Two cards wear a **Copy**, and they are not the same button: text is
+      // written as itself, a picture as a URI another app is allowed to read.
+      ACTION_COPY ->
+        if (intent.hasExtra(EXTRA_PATH)) copyPicture(context, intent, key ?: return)
+        else copy(context, intent)
       ACTION_DISMISS -> {
         val kind = intent.getStringExtra(EXTRA_KIND) ?: return
         Shade.cancel(context, kind, key ?: return)
@@ -141,6 +152,33 @@ class LinkActionReceiver : BroadcastReceiver() {
       Trace.fail("clipboard.write.failed", error)
     }
   }
+
+  /**
+   * The same button on the picture card, doing the harder half.
+   *
+   * Still no runtime and no socket: the bytes were already fetched to draw the
+   * preview, and what is left is minting a URI another app may read — see
+   * `ImageClip`. The two ways it can fail are the two the user cares about,
+   * and both end up as words on the card rather than as nothing happening:
+   * the picture never arrived, or the phone refused the write.
+   */
+  private fun copyPicture(context: Context, intent: Intent, token: String) {
+    val name = intent.getStringExtra(EXTRA_TEXT) ?: "a picture"
+    try {
+      val mime = ImageClip.put(context, intent.getStringExtra(EXTRA_PATH))
+      Trace.evt("clipboard.image.write", "token" to Trace.mark(token), "mime" to mime)
+      DesktopAlerts.clipboardImageCopied(context, token, name)
+    } catch (error: Exception) {
+      // A receiver that throws is a system dialog about this app having
+      // stopped; a receiver that says nothing is the silence being fixed.
+      Trace.fail("clipboard.image.write.failed", error)
+      DesktopAlerts.clipboardNote(context, token, name, "not copied — ${reason(error)}")
+    }
+  }
+
+  /** The sentence in a throw, or its name when it came without one. */
+  private fun reason(error: Throwable) =
+    error.message?.takeIf { it.isNotBlank() } ?: error.javaClass.simpleName
 
   /**
    * Makes sure something is running that can carry the work out.

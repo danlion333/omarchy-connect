@@ -45,6 +45,25 @@
       android:exported="false" />
 
     <!--
+      How a picture leaves this app for another one's paste buffer.
+
+      A clipboard cannot carry bytes: what it carries is a `content://` URI,
+      and the app that pastes it reads through this provider. Not exported, and
+      pointed at one directory — the offer cache — so the grant the system
+      hands a pasting app is a grant to exactly the picture that was copied.
+      `grantUriPermissions` is what makes that temporary grant possible at all.
+    -->
+    <provider
+      android:name=".ClipFileProvider"
+      android:authorities="${applicationId}.omarchylink.clips"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/omarchy_link_clips" />
+    </provider>
+
+    <!--
       A phone that reboots overnight would otherwise be missing from the
       desktop until somebody thought to open the app. BOOT_COMPLETED is one of
       the few broadcasts still allowed to start a foreground service from the

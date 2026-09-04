@@ -215,6 +215,22 @@ class OmarchyLinkModule : Module() {
       DesktopAlerts.clipboardImage(context, token, name, path, LinkPrefs.desktop(context))
     }
 
+    /**
+     * A picture, on this phone's clipboard — the bytes, not the file name.
+     *
+     * The same call the **Copy** button makes from its receiver, so the row on
+     * the share screen and the button in the shade cannot drift apart. It
+     * throws rather than answering false: what went wrong is a sentence the
+     * screen shows, and "it did not work" on its own is not one.
+     */
+    Function("copyImage") { path: String ->
+      try {
+        ImageClip.put(context, path)
+      } catch (error: Exception) {
+        throw CodedException(error.message ?: "the phone would not take the picture")
+      }
+    }
+
     /** The agent moved on, the offer expired, or the phone did. */
     Function("clearAlert") { kind: String, key: String -> Shade.cancel(context, kind, key) }
 

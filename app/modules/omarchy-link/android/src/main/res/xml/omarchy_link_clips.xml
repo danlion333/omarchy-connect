@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The one directory another app may read out of this one.
+
+  `downloadOffer` writes every file the desktop offers under
+  `cache/omarchy-connect/<token>/`, and a picture copied on the desktop is one
+  of those. Nothing else in the app's storage is named here: a clipboard that
+  can hand out any file the app holds is a clipboard that leaks the pairing
+  key the first time somebody guesses a path.
+-->
+<paths>
+  <cache-path name="omarchy-offers" path="omarchy-connect/" />
+</paths>

@@ -176,14 +176,17 @@ object DesktopAlerts {
    *
    * The clipboard holds one thing, so this shares `CLIP_KEY` with the text
    * notification and replaces it — copy a screenshot and then a URL and there
-   * is still one line in the shade. What it cannot share is the button:
-   * writing an image to the phone's clipboard needs a FileProvider the app
-   * does not have yet, while putting it in the gallery is a road already
-   * built (`saveOffer`), so the offer here is **Save**.
+   * is still one line in the shade. It carries both offers a picture has:
+   * **Copy**, which puts the image itself in the phone's paste buffer through
+   * `ImageClip`, and **Save**, which files it in the gallery down the road
+   * `saveOffer` already built.
    *
    * `path` is the bytes already fetched, or null when they could not be — the
    * card goes up either way, because "the desktop copied a picture" is the
-   * news and a phone that says nothing is the bug being fixed.
+   * news and a phone that says nothing is the bug being fixed. **Copy** is
+   * offered even then, and answers with why it could not rather than with
+   * nothing: a button that is missing looks like a feature this build lacks,
+   * while a button that explains itself is a download that failed once.
    */
   fun clipboardImage(context: Context, token: String, name: String, path: String?, desktop: String?) {
     val app = context.applicationContext
@@ -195,14 +198,23 @@ object DesktopAlerts {
       NotificationManager.IMPORTANCE_LOW,
     )
 
-    // The button carries the offer token as its key, so the receiver can queue
-    // the save without a second lookup; the card itself stays under CLIP_KEY.
-    val pending = Shade.act(
+    // The buttons carry the offer token as their key, so the receiver can act
+    // without a second lookup; the card itself stays under CLIP_KEY.
+    val saving = Shade.act(
       app,
       LinkActionReceiver.ACTION_SAVE,
       Shade.CLIP,
       token,
       mapOf(LinkActionReceiver.EXTRA_TEXT to name),
+    )
+    // Always present, empty and all: `EXTRA_PATH` is what tells the receiver
+    // this **Copy** is a picture's rather than a line of text's.
+    val copying = Shade.act(
+      app,
+      LinkActionReceiver.ACTION_COPY,
+      Shade.CLIP,
+      token,
+      mapOf(LinkActionReceiver.EXTRA_TEXT to name, LinkActionReceiver.EXTRA_PATH to (path ?: "")),
     )
 
     val builder = NotificationCompat.Builder(app, CLIP_CHANNEL)
@@ -218,8 +230,13 @@ object DesktopAlerts {
       .setOnlyAlertOnce(true)
       .setCategory(NotificationCompat.CATEGORY_STATUS)
       .setPriority(NotificationCompat.PRIORITY_LOW)
+      // Copy first, as on the text card: it is the one that needs no app and
+      // no gallery, and it is what the person who just copied usually meant.
       .addAction(
-        NotificationCompat.Action.Builder(R.drawable.omarchy_clipboard_notification, "Save", pending).build(),
+        NotificationCompat.Action.Builder(R.drawable.omarchy_clipboard_notification, "Copy", copying).build(),
+      )
+      .addAction(
+        NotificationCompat.Action.Builder(R.drawable.omarchy_file_notification, "Save", saving).build(),
       )
 
     val picture = decode(app, path)
@@ -236,13 +253,34 @@ object DesktopAlerts {
   }
 
   /**
-   * Says what became of a picture the clipboard card was asked to save.
+   * Says what became of a picture the clipboard card was asked to do something
+   * with — filed in the gallery, or put on this phone's clipboard.
    *
    * Deliberately the same words and the same shape as `fileNote`, because to
    * the person holding the phone it is the same **Save** — only the card it
    * rewrites is different.
    */
-  fun clipboardNote(context: Context, token: String, name: String, note: String) {
+  fun clipboardNote(context: Context, token: String, name: String, note: String) =
+    pictureReceipt(context, token, name, note)
+
+  /**
+   * Confirms a copied picture in place of the offer, the way `clipboardCopied`
+   * does for text: the card that was offering to copy says it has, and the
+   * picture stays on it so it still reads as the same notification.
+   */
+  fun clipboardImageCopied(context: Context, token: String, name: String) =
+    pictureReceipt(context, token, "Copied to this phone", name)
+
+  /**
+   * The picture card, rewritten as a receipt.
+   *
+   * Both buttons come off it. **Copy** because a button offering to copy what
+   * was just copied reads as one that did nothing — the same reasoning as
+   * `clipboardCopied` — and **Save** with it, so that the card says one thing:
+   * what happened. The offer itself has not gone anywhere; the share screen
+   * still holds it, thumbnail, Save and all.
+   */
+  private fun pictureReceipt(context: Context, token: String, title: String, note: String) {
     val app = context.applicationContext
     if (!Shade.holds(app, Shade.CLIP, CLIP_KEY) || pictureToken(app) != token) return
     Shade.channel(
@@ -254,7 +292,7 @@ object DesktopAlerts {
     )
     val builder = NotificationCompat.Builder(app, CLIP_CHANNEL)
       .setSmallIcon(R.drawable.omarchy_clipboard_notification)
-      .setContentTitle(name)
+      .setContentTitle(title)
       .setContentText(note)
       .setContentIntent(
         Shade.open(app, Shade.CLIP, CLIP_KEY, "omarchy-connect://share?at=${System.currentTimeMillis()}"),
