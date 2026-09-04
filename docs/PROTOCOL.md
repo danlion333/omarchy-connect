@@ -351,7 +351,8 @@ false on a desktop without `voxtype` or `ffmpeg`.
 | `audio.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its microphone. |
 | `audio.stopped` | `{ stream, error }` | `{ ok, path, bytes, seconds, dropped, gaps }` — the phone saying it has stopped. |
 | `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps, input }`. |
-| `audio.input` | `{ op }` | `on`, `off` or `status`. Offers the phone as an input the whole desktop can see, and answers with `{ available, name, description, enabled, … }`. See **The phone as a desktop input**. |
+| `audio.offer` | `{ op }` | `start`, `stop` or `status`. The phone offering its own microphone instead of waiting to be asked. Answers with `audio.status`'s shape plus the `path` the desktop opened, once the handset is actually recording. Refused on a `remote` socket. |
+| `audio.input` | `{ op }` | `on`, `off` or `status`. Offers the phone as an input the whole desktop can see, and answers with `{ available, name, description, enabled, … }`. Refused on a `remote` socket. See **The phone as a desktop input**. |
 
 The capability is
 `{ receive, encoding, rate, channels, chunkMs, maxSeconds, input }` and says
@@ -1640,6 +1641,30 @@ handset answers, exactly as `locate` does:
 So a success on the terminal means the phone is recording, not that a message
 went into the dark. A handset that says nothing at all is given 15 seconds.
 
+**The phone can offer, too.** The microphone is in somebody's hand, and until
+`audio.offer` the only switch for it was on a machine in another room. A press
+on the app's microphone card sends `audio.offer` with `op: "start"`, the
+desktop runs the very same `mic start` — one instruction, one stream number,
+one set of endings — and the answer waits for the recorder to be open, so what
+comes back is the WAV the desktop is writing or the sentence saying why there
+is none:
+
+```jsonc
+// phone → desktop
+{ "t": "req", "id": 7, "method": "audio.offer", "params": { "op": "start" } }
+{ "t": "res", "id": 7, "ok": true,
+  "data": { "streaming": true, "stream": 2, "since": 1788548529568,
+            "path": "~/.cache/omarchy-connect/audio/mic-….wav", "input": { … } } }
+```
+
+`op: "stop"` is the second press and ends the stream whoever started it;
+`omarchy-connect mic stop` ends it too. The permission dialog belongs to this
+road and to no other: it is asked for on the phone *before* the desktop is told
+anything, because a card being pressed is the one moment there is an activity
+in front of the person deciding. An instruction arriving at a phone with no
+grant is still refused rather than prompted, for the reason under **On the
+handset** below.
+
 **The sound travels as binary frames**, inside the same encrypted channel and
 under the same counter nonce as everything else — no second socket, no second
 handshake, no second key:
@@ -1734,7 +1759,8 @@ process, so it is unloaded synchronously on `SIGTERM`, and any
 reason turning the switch on twice cannot leave two devices behind.
 
 **Not down a tunnel.** The `audio` channel is refused to a socket the desktop
-classed as `remote`, the same way `phone` is. A pairing is trust enough to read
+classed as `remote`, the same way `phone` is — and so are `audio.offer` and
+`audio.input`, the two requests that switch a microphone on from the other end. A pairing is trust enough to read
 a clipboard from another city; it is not trust enough to switch on a microphone
 in a room nobody at this desktop can see.
 

@@ -18,6 +18,7 @@ import {
   requestPhonePermission,
   requestSendPermission,
 } from '../api/phone'
+import { micSupported } from '../../modules/omarchy-link'
 import {
   backgroundLinkEnabled,
   backgroundLinkRunning,
@@ -181,6 +182,8 @@ export function SettingsScreen() {
       <Notifications />
 
       <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} />
+
+      <Microphone />
 
       <Card>
         <CardHeader icon="smartphone" title="This phone" subtitle={hello?.device.name ?? 'not paired'} />
@@ -635,6 +638,87 @@ function BackgroundLink() {
           <Button icon="battery-charging" label="Turn off battery optimisation" variant="ghost" onPress={openBatterySettings} />
         </>
       ) : null}
+    </Card>
+  )
+}
+
+/**
+ * The microphone, offered from the end that is holding it.
+ *
+ * The desktop could already ask for this phone's microphone, and the phone
+ * would answer with no screen open at all — which is the right behaviour and
+ * an uncomfortable one to have no window onto. Two things are missing without
+ * this card, and they are the same thing twice: a person cannot offer the
+ * microphone that is in their own hand, and cannot see when the machine in the
+ * other room is listening to it. Android's own recording dot is the only other
+ * answer to either, and a dot does not say to whom.
+ *
+ * Everything on it is read out of the link rather than held here. A recording
+ * outlives this screen — the user switches tab, locks the phone, comes back —
+ * and a card that started a stream and then forgot about it would be worse
+ * than no card, because it would say "off" over a live microphone.
+ */
+function Microphone() {
+  const { palette, mic, status, can, offerMic } = useConnection()
+  const supported = micSupported()
+  const connected = status === 'connected'
+
+  // A desktop with no audio plugin at all is not a desktop this card can say
+  // anything true about; one that is merely too old for `audio.offer` still
+  // gets the card, and the sentence, on the first press.
+  if (!can('audio', 'receive')) return null
+
+  if (!supported) {
+    return (
+      <Card>
+        <CardHeader icon="mic-off" title="Microphone" subtitle="not possible in this build" tone={palette.muted} />
+        <Body tone={palette.muted} style={{ fontSize: size.label }}>
+          Streaming the microphone needs the native link module, which Expo Go and iOS do not have. The desktop
+          will be told the same sentence if it asks.
+        </Body>
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        icon={mic.listening ? 'mic' : 'mic-off'}
+        title="Microphone"
+        subtitle={mic.listening ? 'the desktop is listening now' : connected ? 'off — nothing is being recorded' : 'not connected'}
+        tone={mic.listening ? palette.red : palette.muted}
+      />
+      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
+        Offer this phone as a microphone for the desktop. The sound goes up the encrypted link as it is spoken,
+        into a recording on the desktop and into every input picker there — nothing is kept on this phone. The
+        desktop can also ask for it on its own, and this card says so when it does.
+      </Body>
+      {mic.listening ? (
+        <DataGrid
+          pairs={[
+            { label: 'Started', value: mic.since ? clock(mic.since) : '—' },
+            { label: 'Stream', value: mic.stream === null ? '—' : `#${mic.stream}` },
+          ]}
+          columns={2}
+        />
+      ) : null}
+      {mic.listening && mic.path ? (
+        <Body tone={palette.muted} style={{ fontSize: size.micro, marginBottom: space.md }}>
+          {mic.path}
+        </Body>
+      ) : null}
+      <Button
+        icon={mic.listening ? 'mic-off' : 'mic'}
+        label={mic.listening ? 'Stop the desktop listening' : 'Offer this microphone'}
+        variant={mic.listening ? 'danger' : 'solid'}
+        loading={mic.busy}
+        disabled={!connected || mic.busy}
+        onPress={() => void offerMic()}
+      />
+      {/* Every refusal is a sentence — a revoked permission, an input another
+          app is holding, a desktop too old to be offered anything. The one
+          thing this card must never do is nothing at all. */}
+      <Notice error={mic.error} style={{ marginTop: space.md, marginBottom: 0 }} />
     </Card>
   )
 }
