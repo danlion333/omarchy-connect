@@ -29,6 +29,13 @@ import { StatusLine, inPane } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
 import { ago } from '../lib/format'
+import {
+  capBlocks,
+  groupBlocks,
+  sameRow,
+  sameToolRun,
+  type ChatRow,
+} from '../lib/transcript'
 import { alpha, font, radius, size, space } from '../theme'
 
 /**
@@ -129,7 +136,7 @@ export function AgentChatScreen({
     call<{ blocks: AgentBlock[]; cursor?: number; epoch?: string }>('agents.open', { id: session.id, limit: 120 })
       .then((res) => {
         if (!live) return
-        setBlocks(res.blocks || [])
+        setBlocks(capBlocks(res.blocks || []))
         if (typeof res.cursor === 'number') cursor.current = res.cursor
         epoch.current = res.epoch ?? null
         setError(null)
@@ -176,9 +183,9 @@ export function AgentChatScreen({
           // and with the whole window, which is the behaviour this replaces —
           // treating that as a resume would double every block on screen.
           if (res.resumed) {
-            if (fresh.length) setBlocks((prev) => [...prev, ...fresh])
+            if (fresh.length) setBlocks((prev) => capBlocks([...prev, ...fresh]))
           } else {
-            setBlocks(fresh)
+            setBlocks(capBlocks(fresh))
             setLive('')
           }
           setError(null)
@@ -201,7 +208,7 @@ export function AgentChatScreen({
       // and the words are on screen once either way.
       setLive('')
       if (typeof data.cursor === 'number') cursor.current = data.cursor
-      setBlocks((prev) => (data.reset ? data.blocks : [...prev, ...data.blocks]))
+      setBlocks((prev) => capBlocks(data.reset ? data.blocks : [...prev, ...data.blocks]))
     })
   }, [client, session.id])
 
@@ -322,7 +329,7 @@ export function AgentChatScreen({
               block={group.row.block}
               result={group.row.result}
               expanded={expanded[group.row.block.seq]}
-              onExpand={() => expand(group.row.block)}
+              onExpand={expand}
               onAnswer={answer}
             />
           ),
@@ -364,60 +371,6 @@ export function AgentChatScreen({
       ) : null}
     </KeyboardAvoidingView>
   )
-}
-
-export type ChatRow = { block: AgentBlock; result?: AgentBlock }
-export type Group =
-  | { kind: 'tools'; seq: number; rows: ChatRow[] }
-  | { kind: 'row'; seq: number; row: ChatRow }
-
-/**
- * A window of blocks, arranged the way a conversation is read.
- *
- * Two passes, and both are about the same thing: a transcript records what
- * happened and a screen has to show what it meant. First a tool call and its
- * result are put back together — they arrive as two blocks because that is how
- * the file has them, and they are one thing on screen. Then runs of tool calls
- * become one item, because between two sentences an agent will call six tools
- * and think five times, and drawn one card each that is the whole screen.
- * Thinking that carries no text is dropped outright: the desktop sends those
- * blocks because the transcript has them, not because there is anything
- * inside.
- *
- * Out here rather than in the chat screen because a worker's transcript is the
- * same kind of file and is read the same way — the only difference between the
- * two screens is that one of them can be typed into.
- */
-export function groupBlocks(blocks: AgentBlock[]): Group[] {
-  const rows: ChatRow[] = []
-  for (const block of blocks) {
-    if (block.kind === 'result') {
-      const parent = [...rows]
-        .reverse()
-        .find((r) => (r.block.kind === 'tool' || r.block.kind === 'question') && r.block.ref === block.ref && !r.result)
-      if (parent) {
-        parent.result = block
-        continue
-      }
-    }
-    rows.push({ block })
-  }
-
-  const out: Group[] = []
-  for (const row of rows) {
-    if (row.block.kind === 'thinking' && !row.block.text) continue
-    if (row.block.kind === 'tool') {
-      const last = out[out.length - 1]
-      if (last && last.kind === 'tools') {
-        last.rows.push(row)
-        continue
-      }
-      out.push({ kind: 'tools', seq: row.block.seq, rows: [row] })
-      continue
-    }
-    out.push({ kind: 'row', seq: row.block.seq, row })
-  }
-  return out
 }
 
 /** Whether the software keyboard is up, so chrome can get out of its way. */
@@ -757,7 +710,7 @@ const RUN_TAIL = 3
  * full. Once the agent has answered past it, the run has served its purpose and
  * keeps only its last few lines, with the rest one tap away.
  */
-export function ToolRun({
+function ToolRunView({
   rows,
   live,
   expanded,
@@ -802,6 +755,18 @@ export function ToolRun({
     </View>
   )
 }
+
+/**
+ * The run, drawn again only when the run itself moved.
+ *
+ * A transcript this long is mostly history, and history does not change: the
+ * draft frame that arrives every 400ms while an agent types, and the block
+ * that lands when it stops, leave every earlier run holding exactly the calls
+ * it held before. `groupBlocks` rebuilds the `rows` array each time all the
+ * same, so the default shallow comparison would see a new array and redraw the
+ * lot; `sameToolRun` looks at the blocks inside it instead.
+ */
+export const ToolRun = React.memo(ToolRunView, sameToolRun)
 
 /**
  * One tool call, one line.
@@ -909,7 +874,7 @@ function ToolLine({
  * narrower. Only the person's own messages get a bubble, because on a phone the
  * useful question about a line is whose it is, and one bubble answers it.
  */
-export function Row({
+function RowView({
   session,
   block,
   result,
@@ -924,7 +889,13 @@ export function Row({
   block: AgentBlock
   result?: AgentBlock
   expanded?: string
-  onExpand: () => void
+  /**
+   * Handed the block rather than closed over it, so that the callback the
+   * parent passes is the same function on every frame — a fresh arrow per row
+   * per render is a prop change, and a prop change is the one thing `memo`
+   * cannot see past.
+   */
+  onExpand: (block: AgentBlock) => void
   onAnswer?: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
 }) {
   const palette = usePalette()
@@ -985,7 +956,7 @@ export function Row({
   }
 
   if (block.kind === 'tool') {
-    return <ToolLine block={block} result={result} expanded={expanded} onExpand={onExpand} />
+    return <ToolLine block={block} result={result} expanded={expanded} onExpand={() => onExpand(block)} />
   }
 
   // A result with no tool call in the window it was loaded from.
@@ -995,6 +966,15 @@ export function Row({
     </Text>
   )
 }
+
+/**
+ * Said and thought, drawn again only when this row's own blocks changed.
+ *
+ * The expensive half of a row is the `Markdown` under it — a whole answer
+ * re-parsed and re-laid-out — and until this memo the price of one draft frame
+ * was every answer in the transcript, several times a second.
+ */
+export const Row = React.memo(RowView, sameRow)
 
 /**
  * A multiple-choice question, with the options tappable.

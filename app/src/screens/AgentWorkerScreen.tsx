@@ -17,7 +17,8 @@ import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentBlock, AgentSession, AgentWorker } from '../api/client'
 import { Body, Caps, Notice } from '../ui/kit'
 import { errorLine } from '../lib/errors'
-import { Row, ToolRun, groupBlocks, useKeyboardOpen } from './AgentChatScreen'
+import { Row, ToolRun, useKeyboardOpen } from './AgentChatScreen'
+import { groupBlocks } from '../lib/transcript'
 import { ago } from '../lib/format'
 import { font, radius, size, space } from '../theme'
 
@@ -165,7 +166,7 @@ export function AgentWorkerScreen({
               block={group.row.block}
               result={group.row.result}
               expanded={expanded[group.row.block.seq]}
-              onExpand={() => expand(group.row.block)}
+              onExpand={expand}
             />
           ),
         )}

@@ -7,6 +7,7 @@ import * as Haptics from 'expo-haptics'
 import { alpha, font, radius, size, space, type Palette } from '../theme'
 import { usePalette } from '../state/ConnectionContext'
 import { parseMarkdown, type Align, type Block, type Span } from '../lib/markdown'
+import { sameMarkdown } from '../lib/transcript'
 
 /**
  * What the agent wrote, drawn the way it was written.
@@ -22,7 +23,7 @@ import { parseMarkdown, type Align, type Block, type Span } from '../lib/markdow
  * monospace transcript reads as a different app, so weight, colour and
  * indentation carry the hierarchy that a font change would carry elsewhere.
  */
-export function Markdown({ text, tone }: { text: string; tone?: string }) {
+function MarkdownView({ text, tone }: { text: string; tone?: string }) {
   const palette = usePalette()
   // Blocks arrive whole and are re-rendered on every push into the
   // conversation below them; parsing once per message keeps a long answer from
@@ -30,6 +31,17 @@ export function Markdown({ text, tone }: { text: string; tone?: string }) {
   const blocks = useMemo(() => parseMarkdown(text), [text])
   return <Blocks blocks={blocks} palette={palette} tone={tone} />
 }
+
+/**
+ * The same text draws the same markdown.
+ *
+ * `Markdown` sits under every sentence in a transcript, and a transcript is
+ * re-rendered by anything that touches the conversation around it — a draft
+ * frame, a tool result, a block landing. Nothing about those changes what an
+ * older message says, and re-running the parser and the whole block tree for
+ * each of them is what a long chat pays for on every keystroke of the agent's.
+ */
+export const Markdown = React.memo(MarkdownView, sameMarkdown)
 
 function Blocks({ blocks, palette, tone }: { blocks: Block[]; palette: Palette; tone?: string }) {
   return (
