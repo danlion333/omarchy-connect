@@ -401,18 +401,26 @@ export function Empty({ icon, text }: { icon: React.ComponentProps<typeof Feathe
  *
  * `tone` carries the meaning: `error` red, `warning` orange, `ok` green for
  * the "it worked" note that lived beside the red one on the share screen.
+ *
+ * `action` is the way out, for the failures that have one. A pairing that did
+ * not work leaves the scanner deliberately stopped, and the sentence saying so
+ * is the natural place to put the button that starts it again: the screen has
+ * already drawn the user's eye here, and asking them to look elsewhere for the
+ * retry is how a stop turns into a dead end.
  */
 export function Notice({
   error,
   tone = 'error',
   icon,
   onDismiss,
+  action,
   style,
 }: {
   error: unknown
   tone?: 'error' | 'warning' | 'ok'
   icon?: React.ComponentProps<typeof Feather>['name']
   onDismiss?: () => void
+  action?: { label: string; icon?: React.ComponentProps<typeof Feather>['name']; onPress: () => void } | null
   style?: StyleProp<ViewStyle>
 }) {
   const p = usePalette()
@@ -451,39 +459,45 @@ export function Notice({
       ]}
     >
       <Feather name={name} size={15} color={colour} style={{ marginTop: 2 }} />
-      <Pressable
-        onPress={() => detail && setOpen((was) => !was)}
-        onLongPress={copy}
-        style={{ flex: 1, marginLeft: space.sm }}
-      >
-        <Text
-          style={{ color: colour, fontFamily: font.regular, fontSize: size.label, lineHeight: 19 }}
-          numberOfLines={open ? undefined : 3}
+      <View style={{ flex: 1, marginLeft: space.sm }}>
+        <Pressable
+          onPress={() => detail && setOpen((was) => !was)}
+          onLongPress={copy}
         >
-          {message}
-        </Text>
-        {detail ? (
-          <Text style={{ color: p.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
-            {copied ? 'copied' : open ? 'tap to hide · long-press to copy' : 'tap for details'}
-          </Text>
-        ) : null}
-        {open && detail ? (
-          <ScrollView
-            style={{
-              maxHeight: 160,
-              marginTop: space.sm,
-              backgroundColor: p.darker_background,
-              borderRadius: radius.sm,
-              padding: space.sm,
-            }}
-            nestedScrollEnabled
+          <Text
+            style={{ color: colour, fontFamily: font.regular, fontSize: size.label, lineHeight: 19 }}
+            numberOfLines={open ? undefined : 3}
           >
-            <Text selectable style={{ color: p.light_foreground, fontFamily: font.regular, fontSize: size.micro }}>
-              {detail}
+            {message}
+          </Text>
+          {detail ? (
+            <Text style={{ color: p.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
+              {copied ? 'copied' : open ? 'tap to hide · long-press to copy' : 'tap for details'}
             </Text>
-          </ScrollView>
+          ) : null}
+          {open && detail ? (
+            <ScrollView
+              style={{
+                maxHeight: 160,
+                marginTop: space.sm,
+                backgroundColor: p.darker_background,
+                borderRadius: radius.sm,
+                padding: space.sm,
+              }}
+              nestedScrollEnabled
+            >
+              <Text selectable style={{ color: p.light_foreground, fontFamily: font.regular, fontSize: size.micro }}>
+                {detail}
+              </Text>
+            </ScrollView>
+          ) : null}
+        </Pressable>
+        {action ? (
+          <View style={{ flexDirection: 'row', marginTop: space.sm }}>
+            <Button label={action.label} icon={action.icon} onPress={action.onPress} variant="solid" />
+          </View>
         ) : null}
-      </Pressable>
+      </View>
       {onDismiss ? (
         <Pressable onPress={onDismiss} hitSlop={10} style={{ marginLeft: space.sm }}>
           <Feather name="x" size={15} color={p.muted} />
