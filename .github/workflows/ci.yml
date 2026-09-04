@@ -9,10 +9,16 @@
 #
 # Two jobs, and the split is deliberate. `tests` is the fast one: it needs
 # nothing but Node and it is where nearly every regression will actually be
-# caught. `android` is slow and needs an SDK, and it exists because until now
-# nothing at all checked the 2,600 lines of Kotlin in `app/modules` — not a
-# test, not a linter, not even a compiler. A typo in there reached a phone or
-# it reached nobody.
+# caught. `android` is slow and needs an SDK, and it exists because for a long
+# time nothing at all checked the Kotlin in `app/modules` — not a test, not a
+# linter, not even a compiler. A typo in there reached a phone or it reached
+# nobody.
+#
+# That job now compiles, runs the JVM tests of the two modules that have them,
+# and lints. The tests matter more than the compile: `Outbox` and `Backlog`
+# hold the promise that a reply typed into a notification and an SMS that
+# arrived at three in the morning are still there when the desktop comes back,
+# and a compiler has no opinion about whether they still do.
 
 name: CI
 
@@ -78,7 +84,7 @@ jobs:
           if-no-files-found: warn
 
   android:
-    name: kotlin compiles
+    name: kotlin compiles and passes
     runs-on: ubuntu-latest
     timeout-minutes: 40
 
@@ -116,3 +122,34 @@ jobs:
       - name: compile
         working-directory: app/android
         run: ./gradlew compileDebugKotlin --no-daemon --stacktrace
+
+      # The part that can actually catch a lost message. Robolectric runs the
+      # real `SharedPreferences` and the real `org.json` inside the JVM, so
+      # these are the same code paths the phone takes, minus the phone.
+      #
+      # A separate step from the compile so that a red build says which of the
+      # two it was without anybody opening the log.
+      - name: unit tests
+        working-directory: app/android
+        run: ./gradlew :omarchy-link:testDebugUnitTest :omarchy-telephony:testDebugUnitTest --no-daemon --stacktrace
+
+      # Both modules used to carry `lintOptions { abortOnError false }`, which
+      # made lint a thing that printed. It now stops the build, held against a
+      # baseline committed next to each `build.gradle`: what was already there
+      # is forgiven, anything new is not.
+      - name: lint
+        working-directory: app/android
+        run: ./gradlew :omarchy-link:lintDebug :omarchy-telephony:lintDebug --no-daemon --stacktrace
+
+      # A failing test names itself in the log, but the HTML and XML reports
+      # say which assertion and with what values, which is the difference
+      # between reading a CI failure and reproducing it.
+      - name: reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-reports
+          path: |
+            app/modules/*/android/build/reports/
+            app/modules/*/android/build/test-results/
+          if-no-files-found: warn

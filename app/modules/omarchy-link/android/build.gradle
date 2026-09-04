@@ -15,11 +15,32 @@ android {
     versionCode 1
     versionName "0.1.0"
   }
-  lintOptions {
-    abortOnError false
+  testOptions {
+    // Robolectric brings up a real Android framework inside the JVM, and it
+    // wants this module's own manifest and resources to do it. Without this
+    // the tests run against a project with no package name and fail on the
+    // first `getSharedPreferences`.
+    unitTests.includeAndroidResources = true
+  }
+  lint {
+    // Lint used to be advisory here (`abortOnError false`), which is the same
+    // as not running it. It now fails the build, and everything it had to say
+    // about the code as it stands is written down in the baseline instead —
+    // so a new warning is the only thing that can turn this red.
+    baseline = file("lint-baseline.xml")
+    // These two go off when somebody else publishes a release, which would
+    // turn a build red on a day nothing in this repository changed. A
+    // dependency bump is a decision, not a lint finding.
+    disable += ["NewerVersionAvailable", "GradleDependency"]
   }
 }
 
 dependencies {
   implementation "com.facebook.react:react-android"
+
+  // The versions expo's own module uses (`expo/android/build.gradle`), so the
+  // build resolves one set of test libraries rather than two.
+  testImplementation 'junit:junit:4.13.2'
+  testImplementation 'androidx.test:core:1.7.0'
+  testImplementation 'org.robolectric:robolectric:4.16'
 }
