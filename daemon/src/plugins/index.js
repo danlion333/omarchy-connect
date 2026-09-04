@@ -9,8 +9,9 @@ import device from './device.js'
 import phone from './phone.js'
 import agents from './agents.js'
 import dictation from './dictation.js'
+import audio from './audio.js'
 
-export const plugins = [system, clipboard, notifications, media, desktop, share, input, device, phone, agents, dictation]
+export const plugins = [system, clipboard, notifications, media, desktop, share, input, device, phone, agents, dictation, audio]
 
 export function buildMethodTable() {
   const table = new Map()

@@ -63,6 +63,8 @@ class OmarchyLinkModule : Module() {
       "onLocateFound",
       "onShareIntent",
       "onDesktopAnnounce",
+      "onMicChunk",
+      "onMicStopped",
     )
 
     /**
@@ -108,6 +110,24 @@ class OmarchyLinkModule : Module() {
       }
       // The phone going quiet is news for the desktop that asked it to shout,
       // and the button that does it is a broadcast receiver away from here.
+      // Ten of these a second while the desktop is listening. Set here rather
+      // than in `Mic` so the recorder knows nothing about React: when the
+      // runtime goes away this goes back to null and the read loop drops what
+      // it reads, which is the right answer for live sound with nowhere to go.
+      Mic.onChunk = { pcm, seq ->
+        try {
+          this@OmarchyLinkModule.sendEvent("onMicChunk", mapOf("pcm" to pcm, "seq" to seq))
+        } catch (error: Exception) {
+          /* the runtime went away mid-chunk; the next one finds onChunk null */
+        }
+      }
+      Mic.onStopped = { reason ->
+        try {
+          this@OmarchyLinkModule.sendEvent("onMicStopped", mapOf("error" to reason))
+        } catch (error: Exception) {
+          /* nothing listening; the desktop's own socket tells it soon enough */
+        }
+      }
       Locator.onFound = {
         try {
           this@OmarchyLinkModule.sendEvent("onLocateFound", emptyMap<String, Any?>())
@@ -122,6 +142,12 @@ class OmarchyLinkModule : Module() {
     OnDestroy {
       Trace.evt("runtime.down", "service" to LinkService.running, "locating" to Locator.ringing)
       LinkActionReceiver.listener = null
+      // The recorder outlives the runtime — it is on the service, not on
+      // React — so a runtime going away has to give the microphone back
+      // rather than leave a phone recording into nobody.
+      Mic.onChunk = null
+      Mic.onStopped = null
+      Mic.stop()
       Locator.onFound = null
       pendingShare = null
       unwatchNetwork()
@@ -252,6 +278,43 @@ class OmarchyLinkModule : Module() {
 
     Function("noteFileAlert") { token: String, name: String, note: String ->
       DesktopAlerts.fileNote(context, token, name, note)
+    }
+
+    /* ── the microphone ───────────────────────────────────────────────── */
+
+    /**
+     * Open the microphone and start emitting `onMicChunk`.
+     *
+     * Answers false rather than throwing for the one reason a caller can act
+     * on — it could not — because every particular reason is already a line in
+     * logcat and none of them changes what the phone tells the desktop: it
+     * could not listen. `chunkMs` is how much sound rides in one event, and
+     * the desktop names it so that the two ends cannot drift.
+     */
+    Function("startMic") { chunkMs: Int -> Mic.start(context, chunkMs) }
+
+    /** Give the microphone back. Safe when nothing is recording. */
+    Function("stopMic") { Mic.stop() }
+
+    /** Whether this phone is recording right now. */
+    Function("isMicRunning") { Mic.isRunning }
+
+    /** Whether RECORD_AUDIO is granted, without asking for it. */
+    Function("hasMicPermission") { Mic.hasPermission(context) }
+
+    /**
+     * Ask for it. The manifest has declared `RECORD_AUDIO` since dictation
+     * existed; what is new is that this module, rather than `expo-audio`, is
+     * the one that needs it — and a desktop asking for a microphone while the
+     * app is in a pocket is exactly the case where the answer has to come back
+     * as a refusal rather than as a dialog nobody sees.
+     */
+    AsyncFunction("requestMicPermissionAsync") { promise: Promise ->
+      Permissions.askForPermissionsWithPermissionsManager(
+        appContext.permissions,
+        promise,
+        Manifest.permission.RECORD_AUDIO,
+      )
     }
 
     /* ── finding this phone ───────────────────────────────────────────── */

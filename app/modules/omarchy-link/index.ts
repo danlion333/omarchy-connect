@@ -46,6 +46,22 @@ type Events = {
    * that is not work to do on the way past an event.
    */
   onShareIntent: () => void
+  /**
+   * One chunk of microphone, on its way to the desktop.
+   *
+   * `pcm` is base64 because that is the only shape a byte string crosses the
+   * React Native bridge in without becoming an array of three thousand
+   * numbers. `seq` is the recorder's own count, so a chunk the JavaScript side
+   * never saw — the runtime was suspended, the socket was down — is a gap the
+   * desktop can see rather than a splice it cannot.
+   */
+  onMicChunk: (chunk: { pcm: string; seq: number }) => void
+  /**
+   * Recording ended without the app asking. The microphone permission was
+   * revoked, another app took the input, or Android stopped the capture.
+   * `error` is empty when it was this app's own `stopMic` that did it.
+   */
+  onMicStopped: (info: { error: string }) => void
 }
 
 /**
@@ -94,6 +110,11 @@ declare class OmarchyLink extends NativeModule<Events> {
   isLocating(): boolean
   isBatteryOptimized(): boolean
   openBatterySettings(): Promise<void>
+  startMic(chunkMs: number): boolean
+  stopMic(): void
+  isMicRunning(): boolean
+  hasMicPermission(): boolean
+  requestMicPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
   sendDatagram(payload: string, host: string, port: number): Promise<number>
   takeShareIntent(): Promise<SharePayload | null>
 }
@@ -417,6 +438,71 @@ export function stopLocating(): void {
 export function isLocating(): boolean {
   try {
     return linkService()?.isLocating() ?? false
+  } catch {
+    return false
+  }
+}
+
+/* ── the microphone ─────────────────────────────────────────────────── */
+
+/**
+ * Whether this build can stream its microphone at all.
+ *
+ * No in Expo Go and on iOS, and no in an installed build older than the
+ * feature — whose module is present and has never heard of `startMic`. That
+ * last case is why the function is checked rather than only the module: the
+ * desktop asks, and a phone that cannot must say so rather than time out.
+ */
+export function micSupported(): boolean {
+  const native = linkService()
+  return typeof (native as unknown as { startMic?: unknown } | null)?.startMic === 'function'
+}
+
+/** Whether RECORD_AUDIO has been granted, without asking for it. */
+export function hasMicPermission(): boolean {
+  try {
+    return linkService()?.hasMicPermission() ?? false
+  } catch {
+    return false
+  }
+}
+
+/** Ask for it. Resolves false rather than throwing when there is no module. */
+export async function requestMicPermission(): Promise<boolean> {
+  const native = linkService()
+  if (!native) return false
+  try {
+    return (await native.requestMicPermissionAsync()).granted
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Open the microphone and start emitting `onMicChunk` every `chunkMs`.
+ *
+ * Throws rather than returning false when it cannot, because every reason it
+ * cannot is a sentence the desktop is waiting to be told: no module, no
+ * permission, no input device.
+ */
+export function startMic(chunkMs: number): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot open its microphone')
+  if (!native.startMic(chunkMs)) throw new Error('the phone would not open its microphone')
+}
+
+/** Stop, and give the microphone back. Safe when nothing is recording. */
+export function stopMic(): void {
+  try {
+    linkService()?.stopMic()
+  } catch {
+    /* nothing was recording, or the module went away with the runtime */
+  }
+}
+
+export function isMicRunning(): boolean {
+  try {
+    return linkService()?.isMicRunning() ?? false
   } catch {
     return false
   }

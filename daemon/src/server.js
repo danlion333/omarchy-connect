@@ -47,6 +47,13 @@ import {
   setEnabled as setAgentsEnabled,
   agentsEnabled,
 } from './plugins/agents.js'
+import {
+  requestMic,
+  feed as feedAudio,
+  hangUp as hangUpAudio,
+  summary as audioSummary,
+} from './plugins/audio.js'
+import { isAudioFrame } from './lib/mic.js'
 import * as agentDrops from './agents/drops.js'
 import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
@@ -62,7 +69,7 @@ export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
-export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'agent', 'endpoints']
+export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'agent', 'endpoints']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
 
@@ -681,6 +688,34 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * carry the sound to this desktop, and the whole point is to make a noise
      * where the handset is rather than where the keyboard is.
      */
+    /**
+     * The desktop asking the phone for its microphone, and asking for it back.
+     *
+     * Held open the way `/api/locate` is: the answer comes back when the
+     * handset has actually started recording, so `omarchy-connect mic` says
+     * the phone is listening rather than that a message went into the dark.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/mic') {
+      if (!localOnly(req, res)) return undefined
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          if (op === 'status') return json(res, 200, { ok: true, audio: audioSummary() })
+          const { outcome } = requestMic({ op })
+          const result = await outcome
+          return json(res, 200, { ok: true, audio: { ...audioSummary(), ...result } })
+        } catch (err) {
+          return json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/locate') {
       if (!localOnly(req, res)) return undefined
       let body = ''
@@ -1000,6 +1035,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     const link = overlay.classify(req.socket.localAddress, overlayState)
     const client = {
       ws,
+      // This socket, told apart from the next one the same handset opens. The
+      // microphone stream is fed by binary frames rather than by requests, so
+      // something has to say which socket a chunk arrived on — a phone that
+      // reconnected mid-stream must not have its new socket's frames folded
+      // into the recording the old one was making.
+      id: crypto.randomUUID(),
       device: null,
       // Whether this socket ever got its `hello.ok`. Only the frame that says
       // so may set it, which is what lets the handler below tell a socket that
@@ -1054,10 +1095,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         log.warn(`${peer} connected without encryption`)
       }
 
-      let text
+      let plain
       if (client.secure) {
         try {
-          text = client.secure.decrypt(frame).toString()
+          plain = client.secure.decrypt(frame)
         } catch {
           // A frame that will not authenticate means the stream is no longer
           // trustworthy — there is nothing safe left to do but hang up.
@@ -1065,12 +1106,24 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           return ws.close(4005, 'decryption failed')
         }
       } else {
-        text = frame.toString()
+        plain = frame
+      }
+
+      // Sound, rather than a sentence about sound. Ten of these a second climb
+      // the same encrypted socket as everything else and are told apart from
+      // JSON by their magic (`lib/mic.js`), which is unambiguous because a
+      // JSON frame's first byte is always `{`. They are answered with nothing
+      // at all: a reply per chunk would double the traffic to say what the
+      // next chunk already implies.
+      if (isAudioFrame(plain)) {
+        if (!client.device) return send(client, { t: 'error', error: 'not authenticated' })
+        feedAudio(client.id, plain)
+        return undefined
       }
 
       let msg
       try {
-        msg = JSON.parse(text)
+        msg = JSON.parse(plain.toString())
       } catch {
         return send(client, { t: 'error', error: 'malformed json' })
       }
@@ -1131,6 +1184,9 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     ws.on('close', () => {
       clearTimeout(helloTimer)
+      // Within the tick, so a socket that died mid-stream leaves a finished
+      // file rather than a recorder waiting for bytes that will never come.
+      hangUpAudio(client.id)
       bus.unsubscribe([...client.events])
       clients.delete(client)
       if (client.device) {
@@ -1300,7 +1356,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       return send(client, { t: 'res', id: msg.id, ok: false, error: 'not available on a remote link' })
     }
     try {
-      const data = await fn(msg.params || {}, { device: client.device, via: client.via })
+      const data = await fn(msg.params || {}, { device: client.device, via: client.via, session: client.id })
       send(client, { t: 'res', id: msg.id, ok: true, data: data ?? null })
     } catch (err) {
       log.debug(`${msg.method} failed:`, err.message)
@@ -1331,6 +1387,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // must not reach a handset that is nowhere near this room, whatever the
       // app on the other end believes it can do.
       if (event === 'phone' && client.via === 'remote') continue
+      // And neither does the microphone. A handset that is not in this room is
+      // one whose room the person at this desktop has no business listening to,
+      // whatever the pairing says.
+      if (event === 'audio' && client.via === 'remote') continue
       send(client, message)
     }
   })

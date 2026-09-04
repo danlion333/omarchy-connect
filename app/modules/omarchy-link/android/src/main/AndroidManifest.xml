@@ -16,6 +16,21 @@
   -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+  <!--
+    The phone as a microphone the desktop can switch on — see `Mic`.
+
+    `RECORD_AUDIO` itself is declared by the app (dictation has always needed
+    it); what is declared here is the right to go on recording once nobody is
+    looking at the screen. From Android 14 a foreground service that uses the
+    microphone must hold this permission and must name `microphone` among its
+    types, or the capture is stopped the moment the app stops being visible —
+    which is precisely the case this feature exists for.
+
+    The type is claimed on the service that already exists rather than by a
+    second service, and it is claimed only while something is actually
+    recording: `LinkService.holdMicrophone` says why at length.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
   <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -50,7 +65,7 @@
     <service
       android:name=".LinkService"
       android:exported="false"
-      android:foregroundServiceType="connectedDevice"
+      android:foregroundServiceType="connectedDevice|microphone"
       android:stopWithTask="false" />
 
     <!--

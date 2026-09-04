@@ -71,12 +71,20 @@ export function connectPhone(port, serverKeyHex, { host = '127.0.0.1', tls = fal
     })
   })
 
-  const send = (obj) => {
+  /**
+   * One frame, sealed. Everything the phone says goes through here — the JSON
+   * of a request and the raw bytes of a chunk of microphone alike, because on
+   * the wire they are the same encrypted frame and are told apart only by what
+   * is inside it.
+   */
+  const sendBytes = (payload) => {
     const cipher = crypto.createCipheriv('chacha20-poly1305', sendKey, nonce(sendCounter), { authTagLength: 16 })
-    const body = Buffer.concat([cipher.update(Buffer.from(JSON.stringify(obj))), cipher.final()])
+    const body = Buffer.concat([cipher.update(Buffer.from(payload)), cipher.final()])
     sendCounter += 1n
     ws.send(Buffer.concat([body, cipher.getAuthTag()]), { binary: true })
   }
 
-  return { ws, ready, send, on: (fn) => listeners.push(fn), close: () => ws.close() }
+  const send = (obj) => sendBytes(Buffer.from(JSON.stringify(obj)))
+
+  return { ws, ready, send, sendBytes, on: (fn) => listeners.push(fn), close: () => ws.close() }
 }

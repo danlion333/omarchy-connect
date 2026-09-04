@@ -550,7 +550,7 @@ export class ConnectClient {
    * watching stats when the socket dropped is watching them again when it
    * comes back, without having to notice that anything happened.
    */
-  private subscriptions = new Set<string>(['clipboard', 'theme', 'file', 'agent', 'phone', 'endpoints'])
+  private subscriptions = new Set<string>(['clipboard', 'theme', 'file', 'agent', 'phone', 'audio', 'endpoints'])
 
   /**
    * Probes racing the socket that is being opened right now.
@@ -1269,9 +1269,28 @@ export class ConnectClient {
   }
 
   private send(payload: object) {
+    this.sendBytes(new TextEncoder().encode(JSON.stringify(payload)))
+  }
+
+  /**
+   * Bytes that are not a sentence — today, one chunk of microphone.
+   *
+   * The same encrypted frame every JSON message travels in, with something
+   * other than JSON inside it (`api/mic`, and `daemon/src/lib/mic.js` for the
+   * format). It is separate from `send` for one reason worth saying out loud:
+   * a `JSON.stringify` of a few thousand samples would be four times the size
+   * and would arrive as an array of numbers, and this road carries ten of them
+   * a second for as long as somebody is listening.
+   *
+   * Throwing rather than queueing is deliberate. A chunk of live sound that
+   * missed its socket is worthless by the time there is a socket again — the
+   * moment it belonged to has passed — so the caller stops recording instead
+   * of building a backlog nobody will want.
+   */
+  sendBytes(payload: Uint8Array) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) throw new Error('not connected')
     if (!this.secure) throw new Error('the secure channel is not up yet')
-    const frame = this.secure.encrypt(new TextEncoder().encode(JSON.stringify(payload)))
+    const frame = this.secure.encrypt(payload)
     this.ws.send(frame.buffer as ArrayBuffer)
   }
 

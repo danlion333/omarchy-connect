@@ -563,6 +563,60 @@ async function cmdLocate(args) {
 }
 
 /**
+ * Listen to the phone's microphone from here.
+ *
+ * `mic` asks and holds the terminal until the handset answers, so a success
+ * means it is recording rather than that an instruction went into the dark.
+ * The sound lands as a WAV in `~/.cache/omarchy-connect/audio/`, which is a
+ * cache and not a keepsake — it is swept, and the path is printed because the
+ * one thing anybody does with it next is play it.
+ *
+ * `mic stop` is what ends it. So is closing the app, losing the network or
+ * half an hour going by; all four leave a finished file rather than a
+ * truncated one.
+ */
+async function cmdMic(args) {
+  const [action = 'status'] = args._
+  const op = ['start', 'on', 'listen'].includes(action)
+    ? 'start'
+    : ['stop', 'off'].includes(action)
+      ? 'stop'
+      : action === 'status'
+        ? 'status'
+        : null
+  if (!op) {
+    log.error('usage: omarchy-connect mic <start|stop|status>')
+    process.exit(1)
+  }
+  const res = await daemonRequest('/api/mic', { method: 'POST', body: { op }, timeout: 30_000 })
+  if (!res.status) {
+    log.error(
+      res.timeout
+        ? 'the phone did not answer — it may be off, asleep or off this network'
+        : 'daemon is not running — start it with `omarchy-connect start`',
+    )
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the phone could not be reached')
+    process.exit(1)
+  }
+  const audio = res.data?.audio || {}
+  if (op === 'status') {
+    if (!audio.streaming) return log.info('the phone is not streaming its microphone')
+    return log.ok(`listening — ${audio.seconds}s so far into ${audio.path}`)
+  }
+  if (op === 'start') {
+    return log.ok(
+      `the phone is listening — ${audio.rate} Hz mono into ${audio.path}\n` +
+        '  stop it with `omarchy-connect mic stop`',
+    )
+  }
+  const lost = audio.dropped ? `, ${audio.dropped} bytes dropped to keep up` : ''
+  log.ok(`the phone has stopped — ${audio.seconds}s in ${audio.path}${lost}`)
+}
+
+/**
  * Answer, reject, hang up or place a call.
  *
  * The daemon decides which road it takes. Over Bluetooth this needs nothing on
@@ -1923,6 +1977,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('ios')} <status|pair|stop>       mirror an iPhone over Bluetooth LE
   ${bold('phone')} [--limit N]           mirrored messages and calls
   ${bold('locate')} [stop]               ring the phone until somebody finds it
+  ${bold('mic')} <start|stop|status>     stream the phone's microphone to this desktop
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('remote')} <status|on|off>      let the phone in from off this network
@@ -1949,6 +2004,7 @@ const commands = {
   ios: cmdIos,
   phone: cmdPhone,
   locate: cmdLocate,
+  mic: cmdMic,
   agent: cmdAgent,
   remote: cmdRemote,
   config: cmdConfig,
