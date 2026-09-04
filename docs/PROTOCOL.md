@@ -1520,6 +1520,49 @@ price, which is why waking is Android-only.
 The same block is published in the desktop status file, so the panel and
 `omarchy-connect wake` read the answer the phone was given.
 
+## Desktop announcement
+
+The mirror image of Wake on LAN: there, the phone tells a sleeping desktop to
+come back; here, a desktop that has just come back tells a sleeping phone.
+
+The phone is always the side that dials, and the paired-device record holds an
+id, a name and a token — no address, no MAC, no push token. So the desktop
+cannot ring this handset even in principle. What it can do is put one short
+burst of UDP on the subnet's broadcast address the moment `server.start()`
+finishes, aimed at **port 8766**:
+
+```jsonc
+{ "app": "omarchy-connect", "t": "desktop-up", "protocol": 2,
+  "version": "0.2.0", "name": "omarchy", "host": "192.168.1.42", "port": 8765,
+  "publicKey": "…64 hex…", "fingerprint": "AB CD EF …" }
+```
+
+Three packets over four seconds, because UDP loses frames and a Wi-Fi radio in
+power save loses more of them. The address is the interface's own broadcast
+address — the same arithmetic a magic packet is aimed with — and the burst is
+cancelled by `server.stop()` along with the listener. Nothing repeats it: this
+is the daemon coming up, not a beacon.
+
+Every field is what `GET /api/info` already gives away to anyone who asks.
+Nothing that a pairing rests on is in it, and nothing can be: a broadcast frame
+is read by every machine on the subnet. The public key is there so a phone can
+drop a stranger's announcement without opening a socket to find out whose it
+was — it is a **filter, not a credential**. Trust is decided exactly as it was
+before, by the pinned key and the handshake (`isOurDesktop`), and the only
+thing an announcement can make the phone do is dial the desktop it had already
+pinned. Forging one buys nothing.
+
+On the phone this is Android-only and only in a real build: there is no UDP
+socket in the React Native runtime, which is the same fact that makes waking
+Android-only. `LinkService` holds the listener open for as long as the
+foreground service exists, under a `MulticastLock` — a sleeping Wi-Fi radio
+filters out frames not addressed to the device, and a subnet broadcast is one
+of those. An announcement that passes the filter takes a twenty-second,
+self-releasing wake lock, which is long enough for a connect and a handshake
+and is not the untimed lock the link itself refuses to hold. Announcements are
+acted on only while the link is down; a working socket is never dropped for
+one. Nothing in `hello` or `endpoints` changes.
+
 ## File transfer
 
 ### Tickets

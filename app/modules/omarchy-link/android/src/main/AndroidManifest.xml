@@ -26,6 +26,26 @@
   -->
   <uses-permission android:name="android.permission.VIBRATE" />
 
+  <!--
+    Hearing the desktop announce itself on the subnet — see `Announce`.
+
+    A Wi-Fi radio in power save drops frames that are not addressed to this
+    device, and a subnet broadcast is one of those. CHANGE_WIFI_MULTICAST_STATE
+    is what allows the lock that turns that filter off; it is named for
+    multicast and has always covered broadcast too. ACCESS_WIFI_STATE is what
+    lets the app hold a WifiManager to take the lock from.
+
+    WAKE_LOCK is for the seconds after a packet arrives and no longer than
+    that. The link itself holds none — `LinkService` explains why at length —
+    but the processor stays awake only as long as it takes to hand a datagram
+    over, and reconnecting is a TCP connect and a TLS handshake. A twenty
+    second, self-releasing hold around one announcement is a different animal
+    from an untimed lock held all day.
+  -->
+  <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+  <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
+
   <application>
     <service
       android:name=".LinkService"

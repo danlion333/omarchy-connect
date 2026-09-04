@@ -48,6 +48,7 @@ import * as wol from './lib/wol.js'
 import * as tls from './lib/tls.js'
 import * as sysinfo from './lib/sys.js'
 import * as overlay from './lib/overlay.js'
+import { createAnnouncer, announcement, ANNOUNCE_PORT } from './lib/announce.js'
 
 export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
@@ -144,6 +145,17 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   // tick. A tunnel can come up long after the daemon did, so this is watched
   // rather than read once at start.
   let overlayState = overlay.known()
+  // The subnet's own broadcast address, kept beside the local one because the
+  // start-up announcement is aimed at it — see `lib/announce`.
+  let localBroadcast = null
+  // Alive only across the start-up burst, and torn down with the listener.
+  let announcer = null
+  // Whether the desktop has managed to say it is up. Not "whether it tried":
+  // a daemon that came up before its network did had nothing to announce on.
+  let announced = false
+  // Set once `start()` is through, so the environment tick can tell "the
+  // daemon has not announced itself yet" from "it is announcing itself now".
+  let started = false
   let firewallState = { blocked: false, tool: null, command: null, remoteCommand: null }
   let firewallCheckedAt = 0
   // What a phone would need to wake this desktop. Answered while the daemon
@@ -262,6 +274,61 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     return list
   }
 
+  /**
+   * Where the "this desktop is up" packet goes, and on which port.
+   *
+   * The address is the current subnet's broadcast address — `sysinfo.network()`
+   * has already worked it out with `broadcastFor`, which is the same arithmetic
+   * a magic packet is aimed with. The override exists for the suite and for
+   * nothing else: a test machine has no subnet it may shout across, and a
+   * broadcast is the one thing that cannot be pointed at a loopback listener
+   * without saying so. It is read fresh rather than captured so a test can set
+   * it per run, in the spirit of `OMARCHY_CONNECT_STATE`.
+   */
+  function announceTarget() {
+    const override = process.env.OMARCHY_ANNOUNCE_TO
+    if (override) {
+      const at = override.lastIndexOf(':')
+      if (at > 0) return { host: override.slice(0, at), port: Number(override.slice(at + 1)) || ANNOUNCE_PORT }
+      return { host: override, port: ANNOUNCE_PORT }
+    }
+    return { host: localBroadcast, port: ANNOUNCE_PORT }
+  }
+
+  /**
+   * The desktop announcing itself, once, at the moment it comes up.
+   *
+   * This is the whole of the desktop's half of "come back now": the phone
+   * decides what to do about it, and a phone that hears nothing behaves
+   * exactly as it did before. Nothing is repeated on the environment tick —
+   * a beacon every thirty seconds would be a different feature with a
+   * different cost, and the moment worth announcing is this one.
+   */
+  function announceSelf() {
+    const target = announceTarget()
+    if (!target.host) {
+      log.debug('no subnet to announce on — nothing to broadcast to')
+      return
+    }
+    announced = true
+    const key = identity().publicKey.toString('hex')
+    announcer?.stop()
+    announcer = createAnnouncer({ port: target.port })
+    announcer.announce(
+      announcement({
+        protocol: PROTOCOL_VERSION,
+        version,
+        name: cfg.deviceName,
+        host: localAddress,
+        port: listenPort,
+        publicKey: key,
+        fingerprint: fingerprint(key),
+      }),
+      target.host,
+    )
+    log.debug(`announced this desktop on ${target.host}:${target.port}`)
+  }
+
   /** Tell whoever is listening that the set of addresses changed under them. */
   function announceEndpoints() {
     bus.emit('event', 'endpoints', { endpoints: endpoints() })
@@ -288,6 +355,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     const addressChanged = ip !== localAddress
     let changed = addressChanged
     localAddress = ip
+    localBroadcast = net?.broadcast || null
 
     // A tunnel that comes up after the daemon did changes two things: what
     // the phone should be told it can dial, and what the certificate has to
@@ -324,6 +392,17 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       }
       firewallState = next
     }
+
+    // The one case where the announcement is not made by `start()`: the unit
+    // is ordered after `graphical-session.target` and after nothing else, so
+    // a cold boot can perfectly well run this daemon before NetworkManager
+    // has an address on any interface — and a desktop with no subnet has
+    // nowhere to announce itself. This is still the start-up announcement,
+    // made at the first moment there is a wire to make it on, and it happens
+    // once: `announced` is never cleared, so a desktop that changes address
+    // later does not shout about it again.
+    if (started && !announced) announceSelf()
+
     return changed
   }
 
@@ -1214,12 +1293,21 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       })
       await refreshEnvironment()
       publishState()
+      // Last, and only after `refreshEnvironment`: the packet carries the
+      // address this desktop is on, and that address is what was just read.
+      announceSelf()
+      started = true
       if (certificate) log.ok(`TLS on — pin ${certificate.pin}`)
       return listenPort
     },
     async stop() {
       clearInterval(heartbeat)
       clearInterval(environmentTimer)
+      // Before anything else: a burst still in flight would go on telling the
+      // subnet this desktop is up while it is being taken down.
+      announcer?.stop()
+      announcer = null
+      started = false
       state.clear()
       stopPlugins()
       for (const client of clients) client.ws.close(1001, 'server shutting down')

@@ -1,6 +1,7 @@
 import { requireNativeModule, NativeModule } from 'expo'
 import { Platform } from 'react-native'
 
+import type { DesktopAnnouncement } from '../../src/lib/announce'
 import type { NetworkFacts } from '../../src/lib/retry'
 import type { SharePayload } from '../../src/lib/share'
 
@@ -19,6 +20,16 @@ type Events = {
   onOutbox: () => void
   /** The reconnect button on the ongoing notification. */
   onLinkReconnect: () => void
+  /**
+   * A desktop on this subnet said its daemon had just come up.
+   *
+   * Broadcast, so it is heard by every phone on the network and forgeable by
+   * anything on it — which is why the payload is carried through as data and
+   * `lib/announce` decides, from the pinned key, whether it is worth a redial.
+   * The one field that is not in the packet is `from`, the source address the
+   * native receiver read off the datagram itself.
+   */
+  onDesktopAnnounce: (announce: DesktopAnnouncement) => void
   /**
    * Somebody picked the phone up and stopped it shouting.
    *
