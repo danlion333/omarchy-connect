@@ -508,6 +508,82 @@ function callDetail(call, bt, now) {
   return state
 }
 
+/* ── the phone as a microphone ─────────────────────────────────────────── */
+
+/**
+ * The microphone half of the status file, with every field defaulted.
+ *
+ * Two separate facts live in here and the panel keeps them apart. `streaming`
+ * is the handset speaking right now, into a WAV in the cache; `input.enabled`
+ * is whether this desktop offers that sound as a source every program can
+ * pick. One can be true without the other — a recording made from the terminal
+ * with no source loaded, or a source sitting there silent because the phone is
+ * asleep — and a panel that collapsed them into one word would be lying half
+ * the time.
+ *
+ * A daemon too old to publish `audio` at all reads exactly like a desktop with
+ * no sound server: nothing streaming, and no switch offered.
+ */
+function audio(status) {
+  var value = isObject(status) && isObject(status.audio) ? status.audio : {}
+  var input = isObject(value.input) ? value.input : {}
+  return {
+    streaming: value.streaming === true,
+    since: num(value.since, 0),
+    seconds: num(value.seconds, 0),
+    dropped: num(value.dropped, 0),
+    path: typeof value.path === "string" ? value.path : "",
+    input: {
+      // False on a desktop with no pipewire-pulse, and false again with the
+      // daemon down, because nothing there could carry the switch out.
+      available: input.available === true,
+      enabled: input.enabled === true,
+      name: typeof input.name === "string" ? input.name : "omarchy_connect_phone",
+      description: typeof input.description === "string" ? input.description : "Omarchy Connect (phone)"
+    }
+  }
+}
+
+/**
+ * Is this switch worth drawing at all?
+ *
+ * The same rule the remote switch follows: a desktop that cannot do the thing
+ * gets no switch for it, *unless* the thing is already on — a source loaded by
+ * a daemon that has since lost its sound server still has to be reachable to
+ * be turned back off.
+ */
+function micShown(value) {
+  return value.input.available || value.input.enabled
+}
+
+/** The line under the switch: what the phone-as-input is doing right now. */
+function micText(value, running) {
+  if (!running) return "the daemon is stopped"
+  if (!value.input.enabled) {
+    if (!value.input.available) return "this desktop has no pipewire-pulse"
+    return "off \u00b7 no phone in this machine's microphone list"
+  }
+  var where = "\"" + value.input.description + "\""
+  if (value.streaming) return "on \u00b7 " + where + " \u00b7 the phone is speaking"
+  return "on \u00b7 " + where + " \u00b7 nothing is speaking into it yet"
+}
+
+/**
+ * The *Details* row, which exists only while the phone is actually speaking.
+ *
+ * Duration first, because it is the number that says whether the thing anybody
+ * forgot about has been running for eight seconds or forty minutes; then the
+ * file, because the one thing a person does with a finished recording is play
+ * it, and they cannot play what they cannot name.
+ */
+function micDetail(value, now) {
+  if (!value.streaming) return ""
+  var elapsed = uptime(value.since, now)
+  if (elapsed === "") elapsed = num(value.seconds, 0) + "s"
+  var name = fileName(value.path)
+  return name === "" ? elapsed : elapsed + " \u00b7 " + name
+}
+
 /* ── coding agents ────────────────────────────────────────────────────── */
 
 /**

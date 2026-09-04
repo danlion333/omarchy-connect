@@ -146,6 +146,10 @@ Panel {
   // The same rule as the switch below it: a desktop that has never been put
   // on a tunnel has nothing to report and gets no row.
   readonly property bool showRemote: bridge.remoteAvailable
+  // Only while the phone is actually speaking. A microphone that is not on is
+  // not a fact anybody came to Details for; a microphone that *is* on, with
+  // nothing on screen saying so, is the whole reason this row exists.
+  readonly property bool showMic: bridge.micStreaming
 
   /* ── actions ───────────────────────────────────────────────────────── */
 
@@ -203,6 +207,17 @@ Panel {
     else bridge.disableRemote()
   }
 
+  // No confirmation on this one either, and for a reason worth writing down:
+  // it opens a microphone in this room. The confirmation that matters already
+  // happened — on the handset, which asks for the permission and shows its own
+  // notification while it records — and the daemon refuses the whole audio
+  // channel to a phone that arrived down a tunnel. What this desktop owes the
+  // person is that the state is never invisible, which is the row in Details.
+  function requestMic(on) {
+    if (on) bridge.enableMic()
+    else bridge.disableMic()
+  }
+
   function runAction(key) {
     if (key === "pair") bridge.pair()
     else if (key === "unpair") bridge.unpair(bridge.device)
@@ -241,6 +256,7 @@ Panel {
     if (settingsOpen) {
       if (bridge.agentsAvailable) list.push("agents")
       if (bridge.remoteAvailable) list.push("remote")
+      if (bridge.micAvailable) list.push("mic")
       list.push("autostart")
     }
     return list
@@ -288,6 +304,7 @@ Panel {
     // which is why the cursor is allowed here at all.
     else if (focusSection === "agents") requestAgents(!bridge.agentsEnabled)
     else if (focusSection === "remote") requestRemote(!bridge.remoteEnabled)
+    else if (focusSection === "mic") requestMic(!bridge.micEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
   }
 
@@ -1240,6 +1257,19 @@ Panel {
             // These two are the only values too long for a quarter of the card,
             // so they take a whole row each rather than being elided into
             // uselessness — a truncated fingerprint verifies nothing.
+            // Present only while sound is arriving, and gone within one write of
+            // the status file after it stops — the daemon republishes on the
+            // stream ending, so this does not wait for the panel's slow probe.
+            InfoLabel { glyph: "󰍬"; text: "Microphone"; visible: root.showMic }
+            DetailValue {
+              visible: root.showMic
+              text: Model.micDetail(bridge.audio, root.now)
+              // The file is the one thing here worth taking away, and it is a
+              // cache path nobody would retype.
+              copyable: !!bridge.audio.path
+              copyValue: bridge.audio.path ? String(bridge.audio.path) : ""
+              tooltipText: "Copy the path to the recording"
+            }
             InfoLabel { glyph: "󰩠"; text: "Address" }
             DetailValue {
               text: bridge.address || "--"
@@ -1317,6 +1347,28 @@ Panel {
               accent: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.requestRemote(!bridge.remoteEnabled)
+            }
+
+            // Hidden on a desktop with no pipewire-pulse to load a source
+            // into, and while the daemon is stopped — in both cases the click
+            // could only end in an error. It stays once the source is loaded,
+            // whatever happens afterwards, because the switch that turned a
+            // microphone on has to be the switch that turns it off.
+            Toggle {
+              visible: bridge.micAvailable
+              width: parent.width
+              label: bridge.micEnabled ? "The phone is this desktop's microphone" : "Use the phone as this desktop's microphone"
+              description: (bridge.micEnabled ? "󰍬  " : "󰍭  ") + Model.micText(bridge.audio, bridge.running)
+              checked: bridge.micEnabled
+              hasCursor: root.cursorActive && root.focusSection === "mic"
+              onHovered: function (on) { if (on) root.setCursor("mic") }
+              foreground: root.foreground
+              // A microphone that is live in this room is worth the same
+              // colour an agent waiting on you gets: it is the state somebody
+              // most needs to notice they left on.
+              accent: bridge.micStreaming ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestMic(!bridge.micEnabled)
             }
 
             // Reading works without hooks; knowing that an agent is *stuck*

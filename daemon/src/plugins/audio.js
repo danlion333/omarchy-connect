@@ -82,6 +82,17 @@ let unfeed = null
 
 const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunkMs: CHUNK_MS })
 
+/**
+ * Say, on this desktop only, that the microphone picture has moved.
+ *
+ * The bar panel reads `status.json` and nothing else, so a stream that starts
+ * or ends, or a source that is loaded or unloaded, has to reach the file the
+ * same way a phone connecting does. It rides an internal bus channel rather
+ * than the `audio` event the handset subscribes to: this is news for the
+ * desktop's own panel, and the phone already knows — it is the one speaking.
+ */
+const changed = () => bus?.emit('audio.state')
+
 export function summary() {
   const desktop = { input: inputSummary() }
   if (!live) return { streaming: false, ...desktop }
@@ -121,6 +132,7 @@ export function setInput(on) {
     // Subscribed only while the source is loaded, so a stream that is running
     // for the file alone costs nothing extra when the input is off.
     unfeed = onChunk((pcm) => source.write(pcm))
+    changed()
     return inputSummary()
   }
   unfeed?.()
@@ -128,6 +140,7 @@ export function setInput(on) {
   const was = input ? input.stop() : { enabled: false }
   input = null
   if (was.enabled !== undefined) log.info('the phone is no longer an input on this desktop')
+  changed()
   return { available: pipeAvailable(), name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false }
 }
 
@@ -199,6 +212,7 @@ async function finish(why, { tell = true } = {}) {
       (result.dropped ? `, ${result.dropped} bytes dropped` : ''),
   )
   if (tell) bus?.emit('event', 'audio', { action: 'stop', stream: current.stream })
+  changed()
   return { ...result, why }
 }
 
@@ -363,6 +377,7 @@ export default {
       }
       live.ceiling.unref?.()
       log.ok(`the phone is streaming its microphone into ${file}`)
+      changed()
       pending.resolve({ ok: true, stream: live.stream, path: file, ...format() })
       return { ok: true, stream: live.stream }
     },
