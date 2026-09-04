@@ -54,6 +54,13 @@ const FRAME = /^\s*(at\s|Caused by:|\.{3}\s*\d+\s+more\b)/
  */
 const FQCN = /^((?:[a-z][\w$]*\.)+)([A-Z][\w$]*)(?::\s*|\s*$)/
 
+/**
+ * React Native's own wrapper around a native throw. Everything the JSI catches
+ * on the way across arrives as `Exception in HostFunction: <the real thing>`,
+ * which says where the exception was caught and nothing about what happened.
+ */
+const WRAPPER = /^Exception in (HostFunction|HostObject)[^:]*:\s*/
+
 /** A frame that was concatenated onto the message instead of newline'd. */
 const INLINE_FRAME = /\s+at\s+[\w$.<>]+\(/
 
@@ -91,10 +98,20 @@ function firstSentence(text: string): string {
   const inline = line.search(INLINE_FRAME)
   if (inline > 0) line = line.slice(0, inline).trim()
 
-  const qualified = FQCN.exec(line)
-  if (qualified) {
+  // Both prefixes can stack — a native throw across the bridge arrives as
+  // `Exception in HostFunction: java.lang.IllegalArgumentException: …` — and
+  // either can be the outer one, so this peels rather than tests once.
+  for (let i = 0; i < 4; i++) {
+    const wrapped = WRAPPER.exec(line)
+    if (wrapped) {
+      line = line.slice(wrapped[0].length).trim()
+      continue
+    }
+    const qualified = FQCN.exec(line)
+    if (!qualified) break
     const rest = line.slice(qualified[0].length).trim()
     line = rest || qualified[2]
+    if (!rest) break
   }
 
   line = line.replace(/\s+/g, ' ').replace(/[\s:;,]+$/, '').trim()

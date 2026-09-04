@@ -72,6 +72,18 @@ const wrapped = problem('could not read the file\nthe picker returned no path')
 check('a second line of prose stays out of the line', wrapped.message === 'could not read the file')
 check('but is offered as detail', wrapped.detail?.includes('the picker returned no path'))
 
+/* ── the throw from issue #21, as the phone actually reported it ────────── */
+
+const TORRENT = `Exception in HostFunction: java.lang.IllegalArgumentException: Illegal character in path at index 75: file:///data/user/0/dev.omarchy.connect/cache/omarchy-connect/00ba3a40af6a/[Pikuma]%20Pikuma%20-%203D%20[2026,%20ENG]%20[rutracker-6873532].torrent
+  at java.net.URI.create(URI.java:848)
+  at expo.modules.filesystem.unifiedfile.JavaFile.<init>(JavaFile.kt:22)`
+
+const torrent = problem(TORRENT)
+check('the bridge wrapper is peeled off', torrent.message.startsWith('Illegal character in path at index 75'))
+check('and the exception class with it', !torrent.message.includes('IllegalArgumentException'))
+check('and it fits on a phone', torrent.message.length <= 141, `${torrent.message.length} chars`)
+check('with the trace still one tap away', torrent.detail === TORRENT)
+
 check('errorLine is the line on its own', errorLine(new Error(NATIVE)) === native.message)
 check('and never returns undefined', typeof errorLine(undefined) === 'string')
 
