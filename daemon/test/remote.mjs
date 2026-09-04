@@ -140,6 +140,16 @@ for (const method of ['phone.report', 'phone.history', 'phone.sent', 'phone.acte
   check(`${method} is refused`, res.ok === false && /remote link/.test(res.error || ''), res.error)
 }
 
+// The microphone is the one capability where a trusted pairing is not the
+// whole question: the phone is in a room nobody at this desktop can see into.
+// The `audio` *channel* is already kept off a tunnelled socket, so this is the
+// other direction — the switches a phone can press.
+for (const method of ['audio.offer', 'audio.input']) {
+  const res = await req(method, { op: 'start' })
+  check(`${method} is refused`, res.ok === false && /remote link/.test(res.error || ''), res.error)
+}
+check('but a remote phone may still ask what this desktop is doing', (await req('audio.status')).ok === true)
+
 const stats = await req('system.stats')
 check('a method that is not telephony is answered as usual', stats.ok === true)
 

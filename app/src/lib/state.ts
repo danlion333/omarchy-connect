@@ -21,6 +21,7 @@
  */
 import type { AgentJob, AgentLimits, AgentSession, ConnectClient, ConnectionStatus, Hello } from '../api/client'
 import type { ClipboardEvent, FileEvent, LinkState } from '../api/link'
+import type { MicState } from '../api/mic'
 import type { SavedDesktop } from '../api/storage'
 
 /** Same keys, same values by identity. Values are never compared deeply. */
@@ -60,6 +61,15 @@ export type StatusSlice = {
   latencyMs: number | null
   relocating: boolean
   waking: boolean
+  /**
+   * Whether the desktop is listening to this phone. In this slice rather than
+   * one of its own because it moves a handful of times in a session — a press,
+   * an answer, a stop — where stats move once a second and agents faster than
+   * that. A card that has to be right after two tab switches is worth one
+   * re-render of a screen that was going to re-render on the next clipboard
+   * event anyway.
+   */
+  mic: MicState
   client: ConnectClient | null
 }
 
@@ -76,6 +86,7 @@ export function statusSlice(state: LinkState): StatusSlice {
     latencyMs: state.latencyMs,
     relocating: state.relocating,
     waking: state.waking,
+    mic: state.mic,
     client: state.client,
   }
 }

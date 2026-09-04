@@ -226,6 +226,64 @@ check('a chunk from a stream that has ended is dropped, not appended', after.len
 const idle = await mic('stop')
 check('stopping when nothing is streaming is refused rather than pretended', idle.status === 400, JSON.stringify(idle.body))
 
+/* ── the phone offering, rather than being asked ───────────────────────── */
+
+// The half of the road the app's microphone card rides: the same one stream,
+// started from the end that is holding the microphone.
+const startsBefore = phone.heard.filter((e) => e.action === 'start').length
+const offered = await phone.req('audio.offer', { op: 'start' })
+check('the phone can offer its own microphone', offered?.streaming === true, JSON.stringify(offered))
+check('and is told the file the desktop opened for it', typeof offered?.path === 'string' && offered.path.startsWith(audioDir), String(offered?.path))
+check(
+  'the instruction still went out on the audio channel, so there is one road in and not two',
+  phone.heard.filter((e) => e.action === 'start').length === startsBefore + 1,
+  JSON.stringify(phone.heard.map((e) => e.action)),
+)
+
+const offeredSound = phone.speak(10)
+await wait(200)
+const whileOffered = await mic('status')
+check('the desktop is listening to a stream it never asked for', whileOffered.body?.audio?.streaming === true, JSON.stringify(whileOffered.body?.audio))
+
+// A second press of the same button, not a different method: one switch, both
+// ways, which is what makes the card's state a single boolean.
+const takenBack = await phone.req('audio.offer', { op: 'stop' })
+check('and a second press stops it', takenBack?.streaming === false, JSON.stringify(takenBack))
+check(
+  'leaving a finished WAV holding exactly what was spoken into it',
+  fs.readFileSync(offered.path).length === 44 + offeredSound,
+  `${fs.readFileSync(offered.path).length} for ${offeredSound} + 44`,
+)
+
+// `omarchy-connect mic stop` on a stream the phone started, and the other way
+// round: neither end owns the stream, so either end can end it.
+const offeredAgain = await phone.req('audio.offer', { op: 'start' })
+const stoppedFromDesk = await mic('stop')
+check(
+  'a stream the phone offered is stopped from the desktop like any other',
+  stoppedFromDesk.body?.ok === true && stoppedFromDesk.body?.audio?.path === offeredAgain.path,
+  JSON.stringify(stoppedFromDesk.body?.audio),
+)
+
+const twice = await phone.req('audio.offer', { op: 'start' })
+let refused = null
+try {
+  await phone.req('audio.offer', { op: 'start' })
+} catch (err) {
+  refused = err.message
+}
+check('offering a microphone that is already streaming is refused with a sentence', /already streaming/.test(refused || ''), String(refused))
+check('offering it again did not disturb the stream that was running', (await mic('status')).body?.audio?.stream === twice.stream, JSON.stringify(twice))
+await mic('stop')
+
+let stopRefused = null
+try {
+  await phone.req('audio.offer', { op: 'stop' })
+} catch (err) {
+  stopRefused = err.message
+}
+check('and stopping nothing is refused rather than pretended', /not streaming/.test(stopRefused || ''), String(stopRefused))
+
 /* ── a socket that dies mid-word ───────────────────────────────────────── */
 
 const second = await mic('start')
@@ -260,6 +318,40 @@ check(
   `${fs.readFileSync(fresh).length} bytes`,
 )
 check('with its own stream number', ended.body?.audio?.path === fresh, JSON.stringify(ended.body?.audio))
+
+/* ── the press that raced the desktop's own question ───────────────────── */
+
+// The race the issue asked about: the desktop's instruction is out and the
+// handset has not answered it yet when the person presses the card. What must
+// not happen is two streams, or a second instruction to a phone that is
+// already opening its microphone.
+// The obedient phone goes first: an instruction is fanned out to every socket
+// subscribed to the channel, and one that answers would settle the very
+// request this check needs left outstanding.
+again.phone.ws.terminate()
+await wait(300)
+const deaf = await connect({ token: phone.token(), obedient: false })
+const racing = mic('start')
+await wait(150)
+let racedError = null
+try {
+  await deaf.req('audio.offer', { op: 'start' })
+} catch (err) {
+  racedError = err.message
+}
+check(
+  'a press that arrives while the desktop is still waiting for an answer is refused, not doubled',
+  /has already been asked/.test(racedError || ''),
+  String(racedError),
+)
+check(
+  'and the phone was told once, not twice',
+  deaf.heard.filter((e) => e.action === 'start').length === 1,
+  JSON.stringify(deaf.heard.map((e) => e.action)),
+)
+const timedOut = await racing
+check('the outstanding request still times out on its own', timedOut.status === 400 && /did not answer/.test(timedOut.body?.error || ''), JSON.stringify(timedOut.body))
+deaf.phone.ws.terminate()
 
 /* ── the slow consumer ─────────────────────────────────────────────────── */
 

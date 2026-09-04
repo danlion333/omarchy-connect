@@ -40,6 +40,13 @@ type Actions = {
    * while no screen is holding one.
    */
   watchStats: () => () => void
+  /**
+   * Offer this phone's microphone to the desktop, or take it back. What comes
+   * of it is read off `mic` in the status slice, not returned here: the answer
+   * outlives the press, and the card has to be right for a screen that was not
+   * mounted when the button was pressed.
+   */
+  offerMic: () => Promise<void>
 }
 
 /** The link itself, plus the two things derived from it rather than sent. */
@@ -103,6 +110,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
   const refreshAgentJobs = useCallback(() => link.refreshAgentJobs(), [])
   const watchStats = useCallback(() => link.watchStats(), [])
+  const offerMic = useCallback(() => link.offerMic(), [])
 
   const actions = useMemo<Actions>(
     () => ({
@@ -117,6 +125,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       addEndpoint,
       removeEndpoint,
       watchStats,
+      offerMic,
     }),
     [
       refreshAgents,
@@ -130,6 +139,7 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       addEndpoint,
       removeEndpoint,
       watchStats,
+      offerMic,
     ],
   )
 

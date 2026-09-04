@@ -50,6 +50,16 @@ import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable
  * the list is the feature, and quietly becoming the microphone of a machine
  * whose owner did not ask is not.
  *
+ * ## Who presses the button
+ *
+ * Both ends can. The desktop asking is the original road and the reason the
+ * shape is `locate`'s. But the microphone is physically in somebody's hand,
+ * and until `audio.offer` the only switch for it was on a machine in another
+ * room — so a person holding the phone could be recorded by a desktop they
+ * were not at, and could not offer the same microphone deliberately. The two
+ * meet in `requestMic`: one stream, one instruction, one set of endings,
+ * whoever started it.
+ *
  * **Not a switch anybody can flip from off the network.** The instruction goes
  * out on the `audio` channel, and like `phone` that channel is never delivered
  * to a socket that arrived down a tunnel: a microphone in a room you are not
@@ -293,6 +303,21 @@ export function hangUp(session) {
   void finish('the socket closed', { tell: false })
 }
 
+/**
+ * The fence every phone-initiated switch on this channel stands behind.
+ *
+ * The `audio` *events* are already kept off a tunnelled socket in the server's
+ * fan-out, which is what stops a desktop instructing a handset it cannot see.
+ * This is the other direction: a request arriving from one. Refusing it here
+ * rather than trusting the fan-out matters, because a method that starts a
+ * stream is a method that turns a microphone on, and "the pairing is trusted"
+ * is not the whole question when the room is one nobody at this desktop can
+ * look into.
+ */
+function remoteRefused(ctx = {}) {
+  if (ctx.via === 'remote') throw new Error('not available on a remote link')
+}
+
 export default {
   name: 'audio',
 
@@ -323,6 +348,11 @@ export default {
       receive: true,
       ...format(),
       maxSeconds: MAX_SECONDS,
+      // Whether the handset may start the stream itself rather than wait to
+      // be asked. Advertised so an app talking to an older desktop can say
+      // "this desktop is too old for that" instead of drawing a button that
+      // answers `unknown method`.
+      offer: true,
       // Whether this desktop can turn the stream into an input the rest of
       // the system sees. False on a machine without pipewire-pulse, and the
       // app draws no button for it — the same bargain `dictation` and
@@ -385,6 +415,39 @@ export default {
     },
 
     /**
+     * The phone offering its microphone, rather than being asked for it.
+     *
+     * Everything else on this channel runs the other way round: the desktop
+     * decides it wants to hear and the handset answers. That is the right
+     * shape for a phone in a pocket, and it is the wrong shape for the person
+     * holding the phone, because the microphone is in their hand and the only
+     * switch for it was on a machine in another room. This is that switch,
+     * where the microphone is.
+     *
+     * It is `requestMic` and nothing else — the same one instruction, the
+     * same one stream, the same fifteen seconds — so a stream started from
+     * here stops with `omarchy-connect mic stop`, ends with the socket, and
+     * hits the same half-hour ceiling as one the desktop asked for. What is
+     * new is only who pressed the button.
+     *
+     * The answer is held open until the handset is actually recording, so the
+     * app can say *the desktop is writing this file* rather than *the message
+     * left*. A refusal — already streaming, a request already outstanding,
+     * a handset that never answered — comes back as the sentence the card
+     * shows, which is the phone half of "no silent refusal".
+     */
+    async 'audio.offer'({ op = 'start' } = {}, ctx = {}) {
+      remoteRefused(ctx)
+      const action = String(op || 'start').toLowerCase()
+      if (action === 'status') return summary()
+      const result = await requestMic({ op: action }).outcome
+      // `summary()` is read after the outcome on purpose: by then `live` is
+      // either set or gone, so the state the app draws from is the state the
+      // press actually produced rather than the one before it.
+      return { ...summary(), ...(result?.path ? { path: result.path } : {}) }
+    },
+
+    /**
      * The phone flipping the desktop's input on or off.
      *
      * The switch is here as well as in the CLI because the microphone is on
@@ -393,7 +456,8 @@ export default {
      * terminal. It rides `audio`, so like everything else on that channel it
      * is refused to a socket that came down a tunnel.
      */
-    async 'audio.input'({ op = 'status' } = {}) {
+    async 'audio.input'({ op = 'status' } = {}, ctx = {}) {
+      remoteRefused(ctx)
       return requestInput(op)
     },
   },

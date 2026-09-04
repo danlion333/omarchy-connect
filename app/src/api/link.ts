@@ -31,7 +31,7 @@ import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
 import { startLocateResponder } from './locate'
-import { startMicResponder } from './mic'
+import { NO_MIC, startMicResponder, type MicResponder, type MicState } from './mic'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -148,6 +148,12 @@ export type LinkState = {
   relocating: boolean
   /** A magic packet is out and the desktop has not answered yet. */
   waking: boolean
+  /**
+   * Whether the desktop is listening to this phone's microphone, and why the
+   * last press did not do what it said. Kept here rather than in the card,
+   * because a recording outlives the screen that started it.
+   */
+  mic: MicState
   client: ConnectClient | null
 }
 
@@ -175,6 +181,7 @@ const INITIAL: LinkState = {
   latencyMs: null,
   relocating: false,
   waking: false,
+  mic: NO_MIC,
   client: null,
 }
 
@@ -186,6 +193,8 @@ class Link {
   private subscribers = new Set<Subscriber>()
   private client: ConnectClient | null = null
   private unwire: (() => void) | null = null
+  /** The live microphone responder, while there is a socket to offer down. */
+  private microphone: MicResponder | null = null
   private starting: Promise<void> | null = null
   private started = false
   private relocatingNow = false
@@ -377,8 +386,17 @@ class Link {
     // be switched off by the same `null` that turns mirroring into a no-op.
     const stopLocating = startLocateResponder(client)
     // The same shape as locating, and for the same reason: the desktop asks,
-    // the handset answers, and neither needs a screen to be open for it.
-    const stopMicrophone = startMicResponder(client)
+    // the handset answers, and neither needs a screen to be open for it. The
+    // difference is the card: the responder outlives every screen, so what it
+    // reports here is what the microphone card draws when somebody comes back
+    // to it — a stream that started an hour and two tabs ago included.
+    const microphone = startMicResponder(client, (mic) => this.patch({ mic }))
+    this.microphone = microphone
+    const stopMicrophone = () => {
+      if (this.microphone === microphone) this.microphone = null
+      microphone.stop()
+      this.patch({ mic: NO_MIC })
+    }
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -819,6 +837,17 @@ class Link {
   /** The user has read the desktop's complaint; the banner can go. */
   dismissServerError() {
     this.patch({ serverError: null })
+  }
+
+  /**
+   * Offer this phone's microphone to the desktop, or take it back. One press
+   * either way, and the responder — not the screen — decides what that means.
+   */
+  async offerMic(): Promise<void> {
+    if (!this.microphone) {
+      return this.patch({ mic: { ...this.state.mic, error: 'this phone is not connected to a desktop' } })
+    }
+    await this.microphone.offer()
   }
 
   /**
