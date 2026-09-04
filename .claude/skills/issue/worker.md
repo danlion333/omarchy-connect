@@ -64,6 +64,16 @@ when `app/` changed; then with the phone on the cable, restarts the daemon
 to redial, builds and installs a release APK when the class is `apk`, and reads
 the phone's logcat, service state and screen.
 
+For an APK it also regenerates the native project when the branch touched
+`app/app.json`, and then reads the manifest back out of the built APK and holds
+it against what `app.json` declares (`apk-promises.sh`). Both exist because
+`app.json` is the *source* the manifest is generated from: editing it and
+running gradle builds against whatever the last prebuild left in `android/`,
+with no error anywhere. Issue #15 shipped exactly that way — three intent
+filters declared, a green verification, a closed issue, and an app that was
+never in the share sheet. A green build says the code compiles, not that the
+config reached the phone.
+
 All of that output goes to `$STATE/<n>/verify.log`, not to you. When the verdict
 is red, ask for the part that failed and read that:
 
@@ -90,8 +100,23 @@ was about.
 ### 4. Exercise the acceptance criteria on the phone
 
 For each criterion, do the thing, on the device or against the worktree daemon,
-and note what was observed. The `adb-phone` skill has the recipes: `am start`
-with a `SEND` intent for share-sheet issues, `input`/`screencap` for UI,
+and note what was observed. A criterion is met when the phone or the desktop
+shows it, never because the code reads as if it would: the suites and the
+typecheck have already agreed the code is right, and they were just as green on
+the day #15 was closed unworking.
+
+Prefer evidence that cannot be faked by the harness itself — the file's `sha256`
+on both sides, the desktop clipboard actually changing, the resolver naming the
+activity — over a screenshot of a screen that says it worked.
+
+Beware that `am start` runs as shell, which cannot pass a `content://` read
+grant to the app: a `SEND` fired that way arrives with an unreadable stream and
+proves nothing about a real share. For anything that receives a file from
+another app, drive a real one (the file manager's own share sheet) with
+`input tap`, and confirm the intent-filter side separately with
+`cmd package query-activities`.
+
+The `adb-phone` skill has the recipes: `input`/`screencap` for UI,
 `logcat -s OmarchyLink:V OmarchyTelephony:V` for the native modules, `curl`
 against `127.0.0.1:8765` (after `adb reverse`) or the daemon's own CLI for
 protocol issues. A criterion that only a real incoming call or SMS can exercise

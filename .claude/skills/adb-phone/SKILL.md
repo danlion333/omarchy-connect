@@ -95,6 +95,40 @@ unzip -l <apk> | grep index.android.bundle    # which kind of APK is this
 adb shell dumpsys package dev.omarchy.connect | grep -m1 'flags=\['   # DEBUGGABLE?
 ```
 
+### Share-sheet targets
+
+`app.json` is the source Expo generates `AndroidManifest.xml` from, so a build with
+stale `android/` ships the old manifest silently. Ask the phone, not the code:
+
+```bash
+adb shell dumpsys package dev.omarchy.connect | grep -A3 action.SEND
+adb shell cmd package query-activities -a android.intent.action.SEND -t image/jpeg --brief
+```
+
+Sending the intent yourself does **not** test a real share. `am start` runs as shell,
+which cannot hand the app a `content://` read grant, so the stream arrives unreadable:
+
+```
+W OmarchyLink: evt=share.copy.failed error=SecurityException
+I OmarchyLink: evt=share.intake files=0 dropped=1 text=false
+```
+
+That is the app refusing correctly, not a bug. To exercise the real path, drive a real
+sender — the OnePlus file manager searches by name, long-press selects, and its own
+share sheet holds the grant:
+
+```bash
+adb shell monkey -p com.oneplus.filemanager -c android.intent.category.LAUNCHER 1
+adb shell input tap 541 541          # search
+adb shell input text "share-test"; adb shell input keyevent KEYCODE_ENTER
+adb shell input swipe 363 611 363 611 800   # long-press = select
+adb shell input tap 134 2287         # "Поділитися"
+```
+
+Then prove the delivery on the desktop rather than from the phone's own screen:
+`sha256sum` the file in `~/Downloads/Omarchy Connect/` against the original, and read
+`wl-paste` for a shared link.
+
 ### The red "Unable to load script" screen
 
 `Unable to load script … make sure your bundle 'index.android.bundle' is packaged

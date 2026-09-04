@@ -48,9 +48,25 @@ wake_phone || fail+=("screen would not wake — the app cannot dial and the scre
 if [ "$class" = apk ] || grep -q '^app' <<<"$(git -C "$wt" diff --name-only master...HEAD | grep -v '^app/test')"; then
   hdr "release apk"
   if [ -d "$wt/app/android" ]; then
-    (cd "$wt/app/android" && ./gradlew -q assembleRelease 2>&1) \
-      && adb install -r "$wt/app/android/app/build/outputs/apk/release/app-release.apk" \
-      || fail+=("release apk build/install")
+    apk="$wt/app/android/app/build/outputs/apk/release/app-release.apk"
+    # app.json is the source the manifest is generated from, not the manifest.
+    # Gradle will happily build against whatever prebuild left behind last time,
+    # so when the branch touched the app config, regenerate first — otherwise
+    # the APK ships the old manifest and nothing says so.
+    if git -C "$wt" diff --name-only master...HEAD | grep -qE '^app/(app\.json|app\.config\.[jt]s|plugins/)'; then
+      echo "app config changed on this branch — regenerating the native project"
+      (cd "$wt/app" && npx expo prebuild --platform android 2>&1) || fail+=("expo prebuild")
+      # prebuild deletes android/local.properties, and without it gradle falls
+      # back to ANDROID_HOME=/opt/android-sdk, which is not where the SDK is.
+      echo "sdk.dir=$HOME/Android/Sdk" > "$wt/app/android/local.properties"
+    fi
+    if (cd "$wt/app/android" && ./gradlew -q assembleRelease 2>&1) && adb install -r "$apk"; then
+      # The build succeeded and the install succeeded; that still says nothing
+      # about whether the app.json the issue edited reached the phone.
+      "$SKILL_DIR/scripts/apk-promises.sh" "$wt" "$apk" 2>&1 || fail+=("APK manifest is stale — see explain.sh $n apk")
+    else
+      fail+=("release apk build/install")
+    fi
   else
     echo "app changed but no native project in the worktree (class is $class, not apk) — JS was not run on the phone"
   fi
