@@ -210,6 +210,11 @@ class OmarchyLinkModule : Module() {
       DesktopAlerts.clipboard(context, text, LinkPrefs.desktop(context))
     }
 
+    /** The same line for a copied picture: preview, and a Save into the gallery. */
+    Function("notifyClipboardImage") { token: String, name: String, path: String? ->
+      DesktopAlerts.clipboardImage(context, token, name, path, LinkPrefs.desktop(context))
+    }
+
     /** The agent moved on, the offer expired, or the phone did. */
     Function("clearAlert") { kind: String, key: String -> Shade.cancel(context, kind, key) }
 

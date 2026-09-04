@@ -112,6 +112,10 @@ class LinkActionReceiver : BroadcastReceiver() {
     // was asked for.
     Outbox.add(context, "save", token, name)
     Trace.evt("save.queued", "token" to Trace.mark(token))
+    // The same button sits on two cards now — a file offer and a picture the
+    // desktop copied — and the receipt has to be written on the one that was
+    // actually pressed. `fileNote` falls through to the clipboard card when
+    // the token is the one it is holding.
     DesktopAlerts.fileNote(context, token, name, "saving to your gallery…")
     wake(context)
     emit("onOutbox", emptyMap())

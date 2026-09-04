@@ -471,7 +471,7 @@ function Notifications() {
     {
       key: 'clipboard',
       title: 'The desktop copied something',
-      subtitle: 'silent, one line, and a Copy button — hidden while the app is open',
+      subtitle: 'silent, one line — Copy for text, Save for a picture — hidden while the app is open',
     },
   ]
 
