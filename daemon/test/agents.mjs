@@ -579,6 +579,14 @@ await startDaemon(false)
     (e) => e.message,
   )
   check('agents.send is refused while disabled', String(refusedWrite).includes('agent enable'), refusedWrite)
+  // And the road to a worker is the same road: it exists because reading was
+  // granted, so it closes when reading does rather than having a switch of its
+  // own to be left on.
+  const refusedRelay = await req('agents.relay', { id: `claude:${SESSION}`, agentId: 'w1', text: 'hello?' }).then(
+    () => null,
+    (e) => e.message,
+  )
+  check('agents.relay is refused while disabled', String(refusedRelay).includes('agent enable'), refusedRelay)
   const ignored = await hook('SessionStart')
   check('a hook is ignored while disabled', ignored.ok === false, ignored.error)
 
@@ -1029,6 +1037,29 @@ check('the body behind a worker chip is one tap away', workerBody.text.includes(
 const noWorker = await req('agents.worker', { id: `claude:${SESSION}`, agentId: 'nobody' }).catch((err) => err)
 check('asking for a worker that is not there is a refusal, not a crash', String(noWorker?.message).includes('no such worker'), String(noWorker?.message))
 
+/* ── answering a worker, through the session that holds it ─────────────── */
+
+// A worker has no pty, so `agents.relay` writes to its parent instead. Both
+// refusals are asserted before the road exists, because both are the shapes a
+// phone can produce with nothing wrong on the desktop at all.
+const relayNobody = await req('agents.relay', { id: `claude:${SESSION}`, agentId: 'nobody', text: 'hello?' })
+  .then(() => null, (e) => e.message)
+check('relaying to a worker this session never had is refused', String(relayNobody).includes('no such worker'), String(relayNobody))
+
+// And the one that matters more: this session is in no terminal anybody can
+// type into, so there is nowhere for the message to go. Accepting it would
+// look, on the phone, exactly like delivering it.
+const relayUnreachable = await req('agents.relay', { id: `claude:${SESSION}`, agentId: 'w1', text: 'stop and think' })
+  .then(() => null, (e) => e.message)
+check(
+  'a session with no terminal cannot pass a message on',
+  String(relayUnreachable).includes('terminal'),
+  String(relayUnreachable),
+)
+const relayEmpty = await req('agents.relay', { id: `claude:${SESSION}`, agentId: 'w1', text: '   ' })
+  .then(() => null, (e) => e.message)
+check('an empty message is refused before anything else', String(relayEmpty).includes('nothing to send'), String(relayEmpty))
+
 /* ── realtime usage off the status line ────────────────────────────────── */
 
 // The cache file said 12% at whatever hour the CLI last felt like writing it.
@@ -1220,6 +1251,22 @@ if (!hasTmux) {
 
   const tooMuch = await req('agents.send', { id: session.id, text: 'x'.repeat(5000) }).then(() => null, (e) => e.message)
   check('an oversized message is refused', String(tooMuch).includes('too much text'), tooMuch)
+
+  /* ── answering a worker ──────────────────────────────────────────────── */
+
+  // Now that the session has a pane, the road to its workers exists: the
+  // message is typed into the *parent's* composer with the worker named, and
+  // what the pty receives is the proof, because the worker itself has no pty
+  // to receive anything.
+  const relayed = await req('agents.relay', { id: session.id, agentId: 'w1', text: 'подивись ще раз на роутер' })
+  check('agents.relay reports the road the parent is on', relayed.ok === true && relayed.via === 'tmux', JSON.stringify(relayed))
+  check('and says it is queued rather than delivered', relayed.queued === true && relayed.agentId === 'w1', JSON.stringify(relayed))
+  check('and names the worker it is for', relayed.worker === 'Read the router', String(relayed.worker))
+  await settle(500)
+  const relayArrived = fs.readFileSync(received, 'utf8')
+  check('the parent is asked by the worker\'s agentId', relayArrived.includes('subagent w1'), JSON.stringify(relayArrived.slice(-400)))
+  check('and told to continue it rather than start another', /continue that agent/i.test(relayArrived), JSON.stringify(relayArrived.slice(-400)))
+  check('with the message from the phone under it', relayArrived.includes('подивись ще раз на роутер'), JSON.stringify(relayArrived.slice(-400)))
 
   /* ── picking an answer off the list ──────────────────────────────────── */
 

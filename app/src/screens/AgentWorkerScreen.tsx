@@ -1,5 +1,15 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native'
+import {
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+} from 'react-native'
 import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
@@ -7,9 +17,9 @@ import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentBlock, AgentSession, AgentWorker } from '../api/client'
 import { Body, Caps, Notice } from '../ui/kit'
 import { errorLine } from '../lib/errors'
-import { Row, ToolRun, groupBlocks } from './AgentChatScreen'
+import { Row, ToolRun, groupBlocks, useKeyboardOpen } from './AgentChatScreen'
 import { ago } from '../lib/format'
-import { font, size, space } from '../theme'
+import { font, radius, size, space } from '../theme'
 
 /**
  * One worker of a session, and the conversation it had.
@@ -21,10 +31,14 @@ import { font, size, space } from '../theme'
  * same blocks as any chat, because the CLI writes it as the same kind of file
  * one directory down.
  *
- * What it is not is a chat. A worker has no terminal, no `--resume`, and
- * nothing anywhere that would take a message for it, so there is no composer
- * here and no pretence of one — the read-only half of the feature, and read-
- * only by the worker's nature rather than by anybody's policy.
+ * It can also be answered, which took the long way round. A worker has no
+ * terminal — no pane, no pid, no `--resume` — so none of the three roads the
+ * desktop writes down reaches it. The one thing that does hold it is the
+ * session that spawned it, so the field at the bottom of this screen composes
+ * a message *here* and delivers it *there*: `agents.relay` types it into the
+ * parent's composer with the worker named, and the parent continues that agent.
+ * The screen says so in those words rather than claiming a delivery, because
+ * queued with the parent is the whole of what the desktop can promise.
  *
  * It is also not tailed. Nothing on the desktop is subscribed to a worker, so
  * there is no cursor to resume from: the screen asks for a window and a
@@ -116,14 +130,16 @@ export function AgentWorkerScreen({
 
   const groups = useMemo(() => groupBlocks(blocks), [blocks])
   const tone = status.running ? palette.green : palette.muted
+  const keyboard = useKeyboardOpen()
 
   return (
-    <View style={{ flex: 1, backgroundColor: palette.background }}>
+    <KeyboardAvoidingView behavior="padding" style={{ flex: 1, backgroundColor: palette.background }}>
       <WorkerHeader session={session} worker={status} tone={tone} onBack={onBack} />
 
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
+        keyboardShouldPersistTaps="handled"
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={palette.muted} />}
       >
         {loading ? <ActivityIndicator color={palette.accent} style={{ marginTop: space.xl }} /> : null}
@@ -154,9 +170,8 @@ export function AgentWorkerScreen({
           ),
         )}
 
-        {/* Said rather than implied. A worker's screen looks like a chat and
-            has no composer, and the reason is worth one line: there is nothing
-            on the desktop that could take a message for it. */}
+        {/* Said rather than implied: nothing here is subscribed to the
+            worker, so what is on screen is as new as the last pull. */}
         {!loading ? (
           <Text
             style={{
@@ -169,10 +184,154 @@ export function AgentWorkerScreen({
           >
             {status.running
               ? 'Still working — pull down for what it has said since'
-              : 'This worker has finished. Nothing can be typed into one.'}
+              : 'This worker has finished — a message still reaches it, through the session that spawned it'}
           </Text>
         ) : null}
       </ScrollView>
+
+      <WorkerComposer session={session} worker={status} keyboard={keyboard} />
+    </KeyboardAvoidingView>
+  )
+}
+
+/**
+ * The field that answers a worker, and the one sentence under it that says
+ * what actually happened to what you typed.
+ *
+ * Everything about this is second-hand and it does not hide it. The message
+ * goes to the parent session's composer with the worker's `agentId` in front of
+ * it; the parent has to read it and continue that agent. So the receipt is
+ * `queued`, never `sent` — the desktop watched the text land in the parent's
+ * box and can say nothing at all about whether the worker ever hears it.
+ *
+ * A parent with no terminal is the one case where there is no road: not a
+ * failure to report after the fact, but a field that must not be offered in
+ * the first place, because a message accepted into nowhere reads exactly like
+ * one that arrived.
+ */
+function WorkerComposer({
+  session,
+  worker,
+  keyboard,
+}: {
+  session: AgentSession
+  worker: AgentWorker
+  keyboard: boolean
+}) {
+  const { call, hello, palette } = useConnection()
+  const insets = useSafeAreaInsets()
+  const [text, setText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<unknown>(null)
+  // The last thing handed over, kept so the line under the field can name it.
+  // It is not a transcript entry: the worker's transcript will not carry this
+  // message, and the parent's is where it will show up.
+  const [queued, setQueued] = useState<string | null>(null)
+
+  const canRelay = (hello?.capabilities?.agents as { relay?: boolean } | undefined)?.relay === true
+
+  const frame = {
+    paddingHorizontal: space.lg,
+    paddingTop: space.md,
+    paddingBottom: keyboard ? space.sm : Math.max(insets.bottom, space.md),
+    backgroundColor: palette.dark_background,
+    borderTopWidth: StyleSheet.hairlineWidth * 2,
+    borderTopColor: palette.lighter_background,
+  }
+
+  if (!canRelay || !session.writable) {
+    return (
+      <View style={{ ...frame, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+        <Feather name="eye" size={14} color={palette.muted} />
+        <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
+          {!canRelay
+            ? 'Reading only — that desktop is too old to pass a message to a worker'
+            : 'Reading only — a worker is answered through its session, and nothing can type into that one'}
+        </Text>
+      </View>
+    )
+  }
+
+  const send = () => {
+    const body = text.trim()
+    if (!body) return
+    setText('')
+    setBusy(true)
+    setError(null)
+    void (async () => {
+      try {
+        await call('agents.relay', { id: session.id, agentId: worker.id, text: body })
+        setQueued(body)
+      } catch (err) {
+        // The only copy of what was typed is the one this field threw away.
+        setText(body)
+        setError(err)
+      } finally {
+        setBusy(false)
+      }
+    })()
+  }
+
+  return (
+    <View style={{ ...frame, gap: space.sm }}>
+      <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: 0 }} />
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
+        <TextInput
+          value={text}
+          onChangeText={setText}
+          placeholder={`message this worker via ${session.title}…`}
+          placeholderTextColor={palette.muted}
+          autoCapitalize="sentences"
+          autoCorrect
+          multiline
+          submitBehavior="newline"
+          style={{
+            flex: 1,
+            maxHeight: 120,
+            color: palette.light_foreground,
+            fontFamily: font.regular,
+            fontSize: size.body,
+            backgroundColor: palette.darker_background,
+            borderColor: palette.lighter_background,
+            borderWidth: 1,
+            borderRadius: radius.sm,
+            paddingHorizontal: space.md,
+            paddingVertical: space.md,
+          }}
+        />
+        <Pressable
+          onPress={send}
+          disabled={busy || !text.trim()}
+          style={({ pressed }) => ({
+            paddingHorizontal: space.lg,
+            paddingVertical: space.md,
+            justifyContent: 'center',
+            backgroundColor: pressed ? palette.selection : palette.lighter_background,
+            borderRadius: radius.sm,
+            opacity: busy || !text.trim() ? 0.4 : 1,
+          })}
+        >
+          {busy ? (
+            <ActivityIndicator size="small" color={palette.accent} />
+          ) : (
+            <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
+          )}
+        </Pressable>
+      </View>
+      {/* The receipt stays up with the keyboard; only the standing hint gets
+          out of its way. The moment the queued line is worth reading is the
+          moment just after the send, and the keyboard is up for all of it —
+          hiding it there left the phone showing a field that had emptied
+          itself and nothing at all about where the message went. */}
+      {queued ? (
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+          {`Queued with ${session.title} — it has to pick this up and continue the worker`}
+        </Text>
+      ) : keyboard ? null : (
+        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+          Goes to the session that spawned this worker, for it to pass on
+        </Text>
+      )}
     </View>
   )
 }

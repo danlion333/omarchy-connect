@@ -322,6 +322,8 @@ export type AgentCapabilities = {
   jobs?: boolean
   /** …and the workers a session fanned out, each with its own transcript. */
   workers?: boolean
+  /** …and take a message for one of them, to be handed to its parent session. */
+  relay?: boolean
   /** …and the task list a session is working through. */
   tasks?: boolean
   /** The plan's headroom as of `hello`; kept current by `ev:agent`. */

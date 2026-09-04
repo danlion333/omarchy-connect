@@ -1979,8 +1979,10 @@ export default {
       commands: true,
       tasks: true,
       jobs: jobs.available(),
-      // …and read the workers a session fanned out, one transcript apiece.
+      // …and read the workers a session fanned out, one transcript apiece,
+      // and answer one of them through the session that spawned it.
       workers: true,
+      relay: true,
       limits: enabled() ? limits.read() : null,
     }
   },
@@ -2024,8 +2026,10 @@ export default {
         commands: true,
         tasks: true,
         jobs: jobs.available(),
-        // …and read the workers a session fanned out, one transcript apiece.
+        // …and read the workers a session fanned out, one transcript apiece,
+        // and answer one of them through the session that spawned it.
         workers: true,
+        relay: true,
         limits: limits.read(),
       }
     },
@@ -2204,6 +2208,64 @@ export default {
       // for it is the phone's only chance of noticing spent on a lie.
       if (reached(result, submit) && entry.state !== 'working') setState(entry, 'working')
       return { ok: true, ...result }
+    },
+
+    /**
+     * Say something to one of a session's workers, through the session itself.
+     *
+     * A worker has no terminal. All three roads the writer knows — tmux, herdr,
+     * wtype — end at a pty, and a worker was never born into one: it lives
+     * inside its parent's process, and the only thing on this desktop that
+     * holds a handle to it is the parent. So this does not write to the worker
+     * and does not pretend to. It writes to the *parent's* composer, with the
+     * worker named in the message, and asks the parent to continue that agent.
+     *
+     * Which is why it is its own method rather than a flag on `agents.send`.
+     * What crosses the wire is not the text the phone typed: it is a request
+     * wrapped around it, addressed by `agentId`, and everything the daemon can
+     * actually promise stops at the parent's composer. `agents.send` promises
+     * "the agent was asked this"; this one promises "the parent was asked to
+     * ask this", and one method that meant either depending on an argument
+     * would be a method whose answer nobody could read.
+     *
+     * The worker is looked up before the terminal is: a phone naming a worker
+     * this session never had should hear that, not hear about tmux. And a
+     * session with no terminal at all is refused outright — there is no queue
+     * behind this, and a message accepted into nowhere is the one failure that
+     * would look exactly like success on the phone.
+     *
+     * The gate is the switch that granted reading, exactly as `agents.send`'s
+     * is. Nothing new is on offer here: the phone could already type this same
+     * paragraph into the parent by hand.
+     */
+    async 'agents.relay'({ id, agentId, text = '' } = {}) {
+      requireEnabled()
+      const entry = liveSession(id)
+      const body = String(text ?? '').trim()
+      if (!body) throw new Error('nothing to send')
+      const worker = findWorker(entry, agentId)
+      if (!worker) throw new Error('no such worker in that session')
+
+      // Both names, because they address different readers: `agentId` is what
+      // the parent's own tool takes, and the description is what tells a person
+      // reading the transcript later which of five workers this was meant for.
+      // "Continue" rather than "start" is the load-bearing word — a parent that
+      // spawns a fresh agent for this has thrown the conversation away.
+      const named = worker.description || worker.type || worker.id
+      const message = [
+        `[from the phone] Message for your subagent ${worker.id}${worker.description ? ` (${worker.description})` : ''}.`,
+        'Continue that agent with SendMessage — address it by that agentId, and do not spawn a new one.',
+        '',
+        body,
+      ].join('\n')
+      if (message.length > MAX_SEND) throw new Error('that is too much text to type at once')
+      await ensureWritable(entry)
+
+      const result = await writer.serialise(entry, () => writer.send(entry, message, { submit: true }))
+      if (reached(result, true) && entry.state !== 'working') setState(entry, 'working')
+      // `queued`, and never `delivered`: the honest word for a message that is
+      // now in front of the parent and has still to be picked up by it.
+      return { ok: true, queued: true, agentId: worker.id, worker: named, ...result }
     },
 
     /**
