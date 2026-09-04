@@ -421,6 +421,15 @@ phone placed is minutes after the desktop was told the line went off-hook, so
 it displaces the desktop's guess whenever it arrives. Both are optional: the
 roads with no app on the other end (hands-free, ANCS) send neither.
 
+The token outlives the app. Android is free to kill the app's process in the
+middle of a conversation and start it again for nothing but the broadcast that
+says the call is over, so the phone keeps the call in hand on its own disk and
+picks it back up: the `ended` that arrives after such a restart carries the
+same `call` as the reports before it, along with the number, the name and the
+direction that were learned while the call was still running. When even that is
+gone the handset asks its own call log before it gives up, and an `ended` that
+still names nobody is the case the fold above describes.
+
 One conversation is one line, however many reports it takes and however many
 roads they come down. A report is folded into a line already there when it
 carries the same `call` token; or when it is the call this desktop is already
