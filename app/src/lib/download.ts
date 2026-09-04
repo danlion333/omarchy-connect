@@ -1,5 +1,7 @@
 import { Directory, File, Paths } from 'expo-file-system'
 
+import { fileUriIn } from './filename'
+
 /**
  * Fetches an offered file into the app's cache and answers with its URI.
  *
@@ -24,7 +26,10 @@ export async function downloadOffer(
 ): Promise<string> {
   const dir = new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
   if (!dir.exists) dir.create({ intermediates: true })
-  const target = new File(dir, name)
+  // Built as a finished URI rather than as `new File(dir, name)`: the join
+  // `File` would do leaves `[` and its kind unescaped, and the platform's URI
+  // parser throws on them before the file is ever read. See `fileUriIn`.
+  const target = new File(fileUriIn(dir.uri, name))
   if (target.exists) target.delete()
   const file = await File.downloadFileAsync(url, target, { headers })
   return file.uri
