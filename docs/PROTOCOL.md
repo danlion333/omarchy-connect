@@ -386,7 +386,9 @@ An event is either
 ```jsonc
 { "kind": "sms",  "at": 1724600000000, "from": "+1555…", "name": "Mum", "body": "dinner at eight" }
 { "kind": "call", "at": 1724600000000, "from": "+1555…", "name": null,
-  "state": "ringing" | "active" | "ended", "missed": true, "direction": "incoming" }
+  "state": "dialing" | "ringing" | "active" | "ended", "missed": true,
+  "direction": "incoming" | "outgoing" | "missed", "seconds": 154,
+  "call": "a token for this conversation", "startedAt": 1724600012000 }
 { "kind": "notification", "at": 1724600000000, "app": "com.apple.mobilecal",
   "appName": "Calendar", "title": "Standup", "body": "in 10 minutes" }
 ```
@@ -413,12 +415,32 @@ carries the message that landed a second before the phone dialled, and that
 one still interrupts. A report with no `at` is treated as happening now, which
 is what the roads with no clock of their own — hands-free, ANCS — send.
 
-The same call reaching the desktop down more than one road at once is stored
-once. A `call` entry counts as the same call when it shares a state with one
-recorded in the last six seconds and either shares its number or brings one it
-did not have — which is what folds an iPhone's `+380…` from the hands-free link
-together with its `Тарас` from ANCS instead of ringing twice. The first road to
-arrive keeps its `via`, which is `"app"`, `"bluetooth"` or `"ancs"`.
+`call` is the phone's own token for one conversation, and `startedAt` is the
+handset's clock reading for the moment somebody picked up — which on a call the
+phone placed is minutes after the desktop was told the line went off-hook, so
+it displaces the desktop's guess whenever it arrives. Both are optional: the
+roads with no app on the other end (hands-free, ANCS) send neither.
+
+One conversation is one line, however many reports it takes and however many
+roads they come down. A report is folded into a line already there when it
+carries the same `call` token; or when it is the call this desktop is already
+holding, moving on from ringing to answered to over; or — for the roads that
+carry no token — when it shares a state with a line recorded in the last six
+seconds and either shares its number or brings one it did not have, which is
+what folds an iPhone's `+380…` from the hands-free link together with its
+`Тарас` from ANCS instead of ringing twice. The first road to arrive keeps its
+`via`, which is `"app"`, `"bluetooth"` or `"ancs"`.
+
+A report that names nobody — no `from`, no `name` — is not read as a new call
+even when it carries a token the desktop has never seen, because most `ended`
+reports are exactly that: Android broadcasts the end of a call without the
+number in it. An anonymous `ended` closes the conversation the desktop is
+holding, or failing that the newest line in the history that was never seen to
+end. One that belongs to neither, and carries no `seconds` and no `missed`
+either, takes the call card and the clock down and is *not* written to the
+history: a row saying `unknown` with nothing but a timestamp under it is not a
+record of anything, and counting it would count a second call for a
+conversation that was already counted.
 
 `phone.sent` is the phone answering a `send` instruction. The desktop has no
 radio, so `POST /api/sms` emits a `phone` event carrying `{ action: "send", id,
