@@ -1,11 +1,4 @@
-import {
-  linkService,
-  micSupported,
-  hasMicPermission,
-  requestMicPermission,
-  startMic,
-  stopMic,
-} from '../../modules/omarchy-link'
+import { linkService, micSupported, hasMicPermission, startMic, stopMic } from '../../modules/omarchy-link'
 import { CHUNK_MS, frame } from '../lib/micframe'
 import type { ConnectClient } from './client'
 
@@ -67,8 +60,19 @@ export function startMicResponder(client: ConnectClient): () => void {
     try {
       if (!micSupported()) throw new Error('this phone cannot stream its microphone')
       if (stream !== null) throw new Error('this phone is already streaming its microphone')
-      if (!hasMicPermission() && !(await requestMicPermission())) {
-        throw new Error('microphone access was denied on the phone')
+      // Refused rather than asked for. A permission dialog needs an activity,
+      // and the whole point of this road is that the desktop can ask while the
+      // phone is in a pocket — so a request from here either shows a dialog
+      // nobody sees or, with no activity at all, never settles, and the
+      // desktop times out on a handset that was about to say no anyway.
+      //
+      // Worth naming the case that made this concrete: Android's **one-time**
+      // grant. A "only this time" answer to the microphone prompt is revoked
+      // as soon as the app has been in the background for a while, so a phone
+      // that streamed happily an hour ago reports the permission gone, and the
+      // sentence below is what the desktop prints instead of hanging.
+      if (!hasMicPermission()) {
+        throw new Error('microphone access is not granted on the phone — open the app and allow it while using the app')
       }
       startMic(Number(data.chunkMs) || CHUNK_MS)
       stream = Number(data.stream)
