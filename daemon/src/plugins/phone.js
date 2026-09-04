@@ -64,6 +64,21 @@ const SWEEP_MS = 5000
 /** Two roads to the same phone means the same call can arrive twice. */
 const DEDUPE_MS = 6000
 /**
+ * How many mirrored messages back the daemon can still recognise its own.
+ *
+ * A batch that reaches `ingest` and whose answer is lost on the way home is
+ * sent again by the phone, which has no way of knowing the daemon already
+ * has it — see `identity`. Recognising the second copy means remembering
+ * the first, and remembering cannot be free: a handset that mirrors all day
+ * would otherwise grow this map for as long as the daemon runs.
+ *
+ * Well past `HISTORY`, because the memory has to outlive the row: a message
+ * pushed off the end of the panel by fifty newer ones must still not be
+ * written down twice when a socket drops. Well short of anything anybody
+ * would call an archive, because that is what the phone is for.
+ */
+const MIRROR_MEMORY = 256
+/**
  * How late a report may be and still be worth interrupting somebody over.
  *
  * A phone off the network keeps its calls and messages in a backlog and hands
@@ -855,6 +870,94 @@ function enrich(existing, incoming) {
   }
 }
 
+/**
+ * Every mirrored message this daemon has already written down, newest last.
+ *
+ * Keyed by `identity`, valued by the history entry it produced, and bounded
+ * by `MIRROR_MEMORY` — the oldest key is dropped when the map is full, the
+ * way `history` drops the oldest row. A key that is hit moves back to the
+ * end, so a conversation that is still going is not forgotten because of a
+ * flood of other people's messages.
+ */
+const mirrored = new Map()
+
+/**
+ * What makes two reports the same message.
+ *
+ * The phone takes a batch out of its queue, sends it, and puts it back if the
+ * answer never came — and the answer not coming says nothing about whether
+ * the daemon got the batch. A socket dropped mid-request, or a request that
+ * outlived the app's twelve-second timeout, both end with the phone holding a
+ * batch the desktop may already have ingested; on the next connection it
+ * sends it again. Without something to recognise it by, the second copy is a
+ * second row in the panel, a second tick on the counter and a second card on
+ * the screen, and that is not a rare race — it is what Doze, a Wi-Fi handover
+ * and a daemon restart do every time.
+ *
+ * Calls are not asked: `twin` already folds a conversation reported twice,
+ * off the token the handset stamps on it, and it does more than dedupe — it
+ * follows one call from ringing to over. This is the equivalent guarantee for
+ * the two kinds that have no such life, and it is deliberately dumber.
+ *
+ * Two roads to a key, in the order they can be trusted:
+ *
+ *   1. `key`, stamped by whoever first saw the message. The app writes one
+ *      onto every SMS at the moment the broadcast arrives, so the same
+ *      identifier rides the live event and the copy that `Backlog` kept
+ *      across a process death — and two texts that happen to read alike are
+ *      still two messages.
+ *   2. A digest of what the message *is*: kind, clock, correspondent, app and
+ *      text. Nothing is asked of the sender for this one, which is what makes
+ *      it the answer for a phone running an older build, and for anything
+ *      already sitting in a backlog written before this existed.
+ *
+ * A report with no key and no clock of its own gets neither, and is recorded
+ * as it always was. That is the hands-free and ANCS road, which does not
+ * replay batches — its duplicate is two roads announcing one event at once,
+ * which is `twin`'s window, not this.
+ */
+function identity(raw, kind, device) {
+  if (kind === 'call') return null
+  const who = text(device?.id, 64) || text(device?.name, 64) || 'unknown'
+  const stamped = text(raw.key, 128)
+  if (stamped) return `${who}\u0000k:${stamped}`
+  if (!Number.isFinite(raw.at)) return null
+  const digest = crypto
+    .createHash('sha256')
+    .update(
+      JSON.stringify([
+        kind,
+        raw.at,
+        person(raw.from, 32),
+        person(raw.name, 64),
+        text(raw.app, 128),
+        text(raw.title, 128),
+        text(raw.body, 2000),
+      ]),
+    )
+    .digest('hex')
+    .slice(0, 32)
+  return `${who}\u0000h:${digest}`
+}
+
+/** The entry this key already produced, if it is still remembered. */
+function recall(key) {
+  if (!key) return null
+  const entry = mirrored.get(key)
+  if (!entry) return null
+  // Touched, so the ring forgets the quiet correspondents first.
+  mirrored.delete(key)
+  mirrored.set(key, entry)
+  return entry
+}
+
+/** Remember it, and forget the oldest if that puts the map over its bound. */
+function memorise(key, entry) {
+  if (!key) return
+  mirrored.set(key, entry)
+  while (mirrored.size > MIRROR_MEMORY) mirrored.delete(mirrored.keys().next().value)
+}
+
 const KINDS = new Set(['call', 'sms', 'notification'])
 const ROADS = new Set(['bluetooth', 'ancs', 'app'])
 
@@ -874,6 +977,16 @@ const ROADS = new Set(['bluetooth', 'ancs', 'app'])
 function record(raw, device) {
   const kind = KINDS.has(raw.kind) ? raw.kind : 'sms'
   const stale = Number.isFinite(raw.at) && Date.now() - raw.at > REPLAY_MS
+  /**
+   * The same message, arriving a second time because the phone never heard
+   * that the first one landed. It is answered with the row that was already
+   * written: nothing is counted, nothing is added to the history, and `fresh`
+   * being false is what keeps `ingest` from raising a second card — exactly
+   * what `twin` does for a call reported twice. See `identity`.
+   */
+  const key = identity(raw, kind, device)
+  const already = recall(key)
+  if (already) return { entry: already, fresh: false, stale, duplicate: true }
   const entry = {
     id: crypto.randomUUID(),
     kind,
@@ -939,6 +1052,7 @@ function record(raw, device) {
   }
   history.unshift(entry)
   history.length = Math.min(history.length, HISTORY)
+  memorise(key, entry)
   return { entry, fresh: true, stale }
 }
 
@@ -972,7 +1086,7 @@ function anticipate(entry, stale = false) {
 
 /** Store it, announce it if it is news, and tell the panel either way. */
 function ingest(raw, device = null) {
-  const { entry, fresh, stale, named, advanced, retimed, dropped } = record(raw, device)
+  const { entry, fresh, stale, named, advanced, retimed, dropped, duplicate } = record(raw, device)
   if (entry.kind === 'call') {
     remember(entry, device)
     anticipate(entry, stale)
@@ -995,7 +1109,7 @@ function ingest(raw, device = null) {
   // an `ended` comes down.
   if (!stale && (fresh || dropped || advanced || retimed || (named && entry.state === 'ringing'))) notify(entry)
   bus?.emit('event', 'phone', { action: 'received', entry })
-  return { entry, fresh, stale }
+  return { entry, fresh, stale, duplicate }
 }
 
 export function recent(limit = 10) {
@@ -1889,7 +2003,14 @@ export default {
       // history and raises nothing — looks exactly like mirroring being broken
       // to whoever is reading the journal.
       const replayed = stored.filter((r) => r.stale).length
+      // The other thing a quiet batch can mean, and the one nobody would
+      // guess from the outside: the phone sent this pile before, the answer
+      // was lost with the socket, and it has just sent it again. Saying so is
+      // what makes an idempotent report distinguishable from a broken one.
+      const echoed = stored.filter((r) => r.duplicate).length
       if (fresh) log.info(`phone reported ${fresh} telephony event(s)`)
+      if (echoed)
+        log.info(`${echoed} event(s) in that batch were already recorded — the phone never heard the first answer`)
       if (replayed)
         log.info(`${replayed} event(s) in that batch had already been sitting on the phone — recorded, not announced`)
       return { ok: true, stored: fresh }

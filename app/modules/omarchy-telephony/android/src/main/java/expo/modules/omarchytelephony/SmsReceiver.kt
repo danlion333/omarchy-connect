@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.provider.Telephony
+import java.util.UUID
 
 /**
  * One incoming SMS. Long messages arrive as several parts in the same
@@ -28,6 +29,20 @@ class SmsReceiver : BroadcastReceiver() {
     Trace.evt("sms.received", "parts" to parts.size, "from" to Trace.mark(from), "chars" to Trace.len(body))
     val event = mapOf(
       "kind" to "sms",
+      /**
+       * This message, told apart from every other one for as long as it
+       * matters.
+       *
+       * The desktop is sent a batch and, if the socket dies before the answer
+       * comes back, sends the same batch again on the next connection —
+       * because nothing on this side can know whether the first one landed.
+       * The key is what lets the desktop recognise the second copy instead of
+       * writing a second row, ticking the counter again and raising a second
+       * card. It is minted here, once, at the moment the broadcast arrives,
+       * so the live event and the copy `Backlog` keeps across a process death
+       * are the same message and say so.
+       */
+      "key" to UUID.randomUUID().toString(),
       "at" to System.currentTimeMillis(),
       "from" to from,
       "name" to Contacts.nameFor(context, from),
