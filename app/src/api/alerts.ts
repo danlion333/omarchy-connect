@@ -51,6 +51,25 @@ export const DEFAULT_ALERTS: AlertPrefs = { waiting: true, done: true, files: tr
  */
 const WORTH_WAITING_FOR = 60_000
 
+/**
+ * How long a question has to have been *gone* before its card comes down.
+ *
+ * The other end of the same idea as `WORTH_WAITING_FOR`, and the answer to
+ * the complaint this was built for: cards that "arrive and literally vanish
+ * two seconds later". The desktop can stop saying `waiting` for a moment
+ * without the question having been answered — the daemon's own tail poll runs
+ * every two seconds, and a session with subagents out has other things
+ * reporting under its name — and a card taken down inside that moment is a
+ * notification nobody could have read, which teaches people to ignore the one
+ * channel this whole screen exists for.
+ *
+ * So a card that is already up survives a gap this long. Two and a half of the
+ * desktop's polls: longer than any flap seen on the wire, short enough that a
+ * question answered at the keyboard clears off the phone about as fast as you
+ * can put it down.
+ */
+const SETTLE_MS = 5_000
+
 let prefs: AlertPrefs = { ...DEFAULT_ALERTS }
 
 /** The session whose chat is open right now, if any. */
@@ -82,6 +101,34 @@ const workingSince = new Map<string, number>()
 const finished = new Set<string>()
 
 /**
+ * Announced sessions that have stopped saying `waiting`, and when they stopped.
+ *
+ * A card is not taken down the instant the list disagrees with it; it is taken
+ * down when the list has disagreed with it for `SETTLE_MS`. See there.
+ */
+const settling = new Map<string, number>()
+
+/** The last list seen, so the settle can be re-run without one arriving. */
+let latest: AgentSession[] = []
+let settleTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * Come back to the last list once the shortest hold has run out.
+ *
+ * Nothing else would: the list is pushed, and a desktop whose agent went quiet
+ * pushes nothing. Without this the held card would hang on the shade until the
+ * next thing happened to that session, which for an agent that finished is
+ * never.
+ */
+function armSettle() {
+  if (settleTimer) return
+  settleTimer = setTimeout(() => {
+    settleTimer = null
+    syncAgentAlerts(latest)
+  }, SETTLE_MS)
+}
+
+/**
  * Coming back to a chat that was left open is reading it again, and whatever
  * the shade raised about that session while the phone was away has been seen
  * by the act of returning to it.
@@ -98,6 +145,7 @@ export function setAlertPrefs(next: AlertPrefs) {
   prefs = next
   if (before.waiting && !next.waiting) {
     announced.clear()
+    settling.clear()
     clearAlerts('agent')
   }
   if (before.done && !next.done) {
@@ -123,6 +171,7 @@ export function focusAgent(id: string | null) {
   clearAlert('agent', id)
   clearAlert('done', id)
   finished.delete(id)
+  settling.delete(id)
   // Remembered as announced rather than forgotten: leaving the chat with the
   // agent still waiting should not fire an alert for a question just read.
   if (!announced.has(id)) announced.set(id, '')
@@ -134,6 +183,10 @@ export function resetAlerts() {
   seen.clear()
   workingSince.clear()
   finished.clear()
+  settling.clear()
+  latest = []
+  if (settleTimer) clearTimeout(settleTimer)
+  settleTimer = null
   clearEveryAlert()
 }
 
@@ -148,6 +201,7 @@ export function resetAlerts() {
 export function syncAgentAlerts(sessions: AgentSession[]) {
   const now = Date.now()
   const present = new Set(sessions.map((s) => s.id))
+  latest = sessions
 
   /* ── an agent that finished ───────────────────────────────────────── */
 
@@ -197,7 +251,25 @@ export function syncAgentAlerts(sessions: AgentSession[]) {
   const waiting = new Map(sessions.filter((s) => s.state === 'waiting').map((s) => [s.id, s]))
 
   for (const id of [...announced.keys()]) {
-    if (waiting.has(id)) continue
+    if (waiting.has(id)) {
+      // Asking again inside the hold is the same question still standing, not
+      // a new one: the card stays exactly where it was, and `announced` still
+      // holds the prompt, so nothing buzzes a second time for it.
+      settling.delete(id)
+      continue
+    }
+    // A session that has left the list altogether cannot be answered from
+    // here, so its card goes at once. Everything still on the list gets the
+    // hold: it may simply be a desktop that said `working` for a moment.
+    if (present.has(id)) {
+      const since = settling.get(id) ?? now
+      settling.set(id, since)
+      if (now - since < SETTLE_MS) {
+        armSettle()
+        continue
+      }
+    }
+    settling.delete(id)
     clearAlert('agent', id)
     announced.delete(id)
   }

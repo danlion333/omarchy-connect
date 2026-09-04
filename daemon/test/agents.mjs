@@ -58,6 +58,8 @@ const cleanEnv = Object.fromEntries(
 
 const line = (obj) => JSON.stringify(obj) + '\n'
 const at = '2026-08-25T19:24:33.475Z'
+/** A transcript stamps every entry, and what it stamps them with is the clock. */
+const now = (offset = 0) => new Date(Date.now() + offset).toISOString()
 
 fs.writeFileSync(
   transcript,
@@ -809,10 +811,12 @@ await hook('Notification', { message: 'Claude needs your permission to use Bash'
 await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting')
 
 // Answering at the keyboard fires no hook we subscribe to, so the transcript
-// moving again is what has to clear `waiting`.
+// moving again is what has to clear `waiting` — the answer being written down
+// now, which is why this line is stamped now rather than with the fixture's
+// hour. A line older than the question is the case below.
 fs.appendFileSync(
   transcript,
-  line({ type: 'assistant', timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: 'Running it now.' }] } }),
+  line({ type: 'assistant', timestamp: now(), message: { role: 'assistant', content: [{ type: 'text', text: 'Running it now.' }] } }),
 )
 check('transcript activity clears a stale waiting', Boolean(await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')))
 
@@ -845,6 +849,49 @@ await settle()
 check(
   'a self-answering mode never says waiting',
   (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.state === 'working',
+)
+
+/* ── a card that stays up long enough to read ──────────────────────────── */
+
+// The complaint this section is here for: a permission card that arrives on
+// the phone and is gone about two seconds later. Two things were taking it
+// down, and neither of them was an answer.
+const stateOf = async () => (await req('agents.list')).sessions.find((s) => s.id === `claude:${SESSION}`)?.state
+
+await hook('PermissionRequest', { tool_name: 'Bash', tool_input: { command: 'rm -rf build' }, permission_mode: 'default' })
+await waitFor(events, (e) => e.kind === 'state' && e.state === 'waiting' && String(e.prompt || '').includes('rm -rf build'))
+
+// One: the turn that asks. The tool call is written to the transcript before
+// the prompt is drawn — it is what the prompt is about — so the first tail
+// read after the hook delivers a line that is *older* than the question, and
+// it used to be read as the session moving on.
+fs.appendFileSync(
+  transcript,
+  line({
+    type: 'assistant',
+    timestamp: now(-4000),
+    message: { role: 'assistant', content: [{ type: 'text', text: 'Clearing the build directory.' }] },
+  }),
+)
+await settle(2600)
+check('a transcript line older than the question does not answer it', (await stateOf()) === 'waiting', await stateOf())
+
+// Two: the workers. A subagent's tool calls fire these hooks under the
+// session's own id and transcript — a sidechain has neither of its own — and
+// `agent_id` is the only thing in the payload that says so. Five workers
+// hammering tools is not an answer to the question their session is stopped
+// at, and under `/loop` it was taking the card down every couple of seconds.
+await hook('PostToolUse', { tool_name: 'Bash', tool_use_id: 'toolu_worker', agent_id: 'sub-9', agent_type: 'general-purpose' })
+await hook('PostToolBatch', { agent_id: 'sub-9', agent_type: 'general-purpose' })
+await settle()
+check('a subagent at work does not answer its session\'s question', (await stateOf()) === 'waiting', await stateOf())
+
+// And the answer still answers, from either end.
+await hook('PostToolBatch')
+check(
+  'the session\'s own finished batch still clears the prompt',
+  Boolean(await waitFor(events, (e) => e.kind === 'state' && e.state === 'working')),
+  await stateOf(),
 )
 
 // The payload names its own kind these days, and the name outranks the
