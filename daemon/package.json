@@ -17,6 +17,7 @@
     "test:tls": "node test/tls.mjs",
     "test:calls": "node test/calls.mjs",
     "test:call-close": "node test/call-close.mjs",
+    "test:call-abandoned": "node test/call-abandoned.mjs",
     "test:otp": "node test/otp.mjs",
     "test:locate": "node test/locate.mjs",
     "test:ios": "node test/ios.mjs",

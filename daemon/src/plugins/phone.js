@@ -87,6 +87,24 @@ const DEDUPE_MS = 6000
 const REPLAY_MS = 2 * 60 * 1000
 /** Long enough to reach the desk, short enough that voicemail wins after. */
 const RING_TIMEOUT_MS = 45_000
+/**
+ * How long a conversation nobody has said another word about stays believed.
+ *
+ * A call the desktop is only mirroring lives entirely on reports from the
+ * handset, and the report that ends it is the one Android is least reliable
+ * about sending: an app force-stopped, killed for memory or frozen by Doze
+ * mid-conversation never gets to broadcast the hang-up, and the desktop was
+ * left holding `active` until the daemon was restarted — a card repainting
+ * itself every second and a hands-free link that could never be put down.
+ *
+ * The socket closing is the sharp answer to that and is handled where it
+ * happens; this is the blunt one, for the phone that keeps its socket and
+ * simply stops talking about the call. Four hours is well past any call worth
+ * timing and well short of "until the next reboot", and it is deliberately
+ * generous: this is the last resort, not the first, and a long real
+ * conversation must not be taken off the screen while it is still going.
+ */
+const ACTIVE_TIMEOUT_MS = 4 * 60 * 60 * 1000
 /** About as long as the code on it is good for. */
 const CODE_TIMEOUT_MS = 60_000
 /** How long "123456 copied" stays up in place of the card that copied it. */
@@ -117,6 +135,21 @@ let ringingId = 0
 let queuedRing = null
 /** The call a remote control should act on, from whichever road saw it. */
 let live = null
+/**
+ * Which handset's socket is the reason `live` is up, when a socket is.
+ *
+ * Only the app road has one — a call the hands-free profile or an iPhone put
+ * there does not depend on a websocket and must not come down with one. The
+ * id is kept here rather than on the entry because it is nobody's business but
+ * this module's: the history rows go to the panel, and which device id
+ * reported a call is not something the panel draws.
+ */
+let liveDevice = null
+/**
+ * When the handset last said anything about that call, so a conversation
+ * nobody ever closed can be aged out. See `ACTIVE_TIMEOUT_MS`.
+ */
+let liveSeen = 0
 /**
  * When the conversation actually started — the moment somebody picked up, not
  * the moment the phone rang.
@@ -941,7 +974,7 @@ function anticipate(entry, stale = false) {
 function ingest(raw, device = null) {
   const { entry, fresh, stale, named, advanced, retimed, dropped } = record(raw, device)
   if (entry.kind === 'call') {
-    remember(entry)
+    remember(entry, device)
     anticipate(entry, stale)
   }
   // A phone that is still ringing is announced again once its caller becomes
@@ -1196,7 +1229,17 @@ export function liveCall() {
   // A phone that rang and was never reported again: voicemail has it by now,
   // and offering to answer it would be a lie.
   if (live.state === 'ringing' && Date.now() - live.receivedAt > RING_TIMEOUT_MS) {
-    live = null
+    forgetLive()
+    return null
+  }
+  // And the same watchdog for the other half of a conversation. A read path
+  // that changes something is unusual, and it is on purpose in both branches:
+  // the desktop's belief in a call is only ever wrong at the moment somebody
+  // asks about it, and there is nothing else — no report, no socket event —
+  // coming to correct it. See `ACTIVE_TIMEOUT_MS`.
+  if (live.state === 'active' && liveSeen && Date.now() - liveSeen > ACTIVE_TIMEOUT_MS) {
+    log.info('a call nobody ever hung up has been dropped: the phone stopped reporting it hours ago')
+    dropLive()
     return null
   }
   return {
@@ -1210,10 +1253,42 @@ export function liveCall() {
   }
 }
 
+/** Everything the desktop believes about a call in progress, forgotten. */
+function forgetLive() {
+  live = null
+  liveDevice = null
+  liveSeen = 0
+}
+
+/**
+ * A conversation the desktop stops believing in without the phone having said
+ * so — the socket carrying it went away, or it aged out.
+ *
+ * Deliberately not the same thing as a call ending: nothing is written to the
+ * history and nothing is counted, because the desktop does not know what
+ * happened. It only stops claiming to. The teardown itself is the same one the
+ * hands-free gateway disappearing already does — the card off the screen, the
+ * clock stopped, the ringtone quiet — because the symptom is the same.
+ */
+function dropLive() {
+  forgetLive()
+  activeSince = 0
+  silence()
+  if (talkTime.running) talkTime.stop()
+}
+
 /** One handset, one conversation: `ended` takes down whatever was offered. */
-function remember(entry) {
-  if (entry.state === 'ringing' || entry.state === 'dialing' || entry.state === 'active') live = entry
-  else if (entry.state === 'ended') live = null
+function remember(entry, device = null) {
+  if (entry.state === 'ringing' || entry.state === 'dialing' || entry.state === 'active') {
+    live = entry
+    liveSeen = Date.now()
+    // Only a call that reached us over a socket can be taken down by one
+    // closing. A hands-free or ANCS report names no device and clears the
+    // field, which is exactly right: that conversation outlives the app.
+    liveDevice = entry.via === 'app' ? (device?.id ?? liveDevice) : null
+  } else if (entry.state === 'ended') {
+    forgetLive()
+  }
   // The clock starts on the first report that says somebody picked up, and a
   // second report of the same conversation must not set it back to zero. Only
   // the call being over stops it — a report that says nothing about the state
@@ -1470,6 +1545,9 @@ function finish(result, action) {
   // a call that is already up.
   if (action === 'answer' && live?.state === 'ringing') {
     live.state = 'active'
+    // A call answered from the panel is a call being heard from, whatever the
+    // handset gets round to reporting: the staleness watchdog counts from here.
+    liveSeen = Date.now()
     // And the clock starts on the button, not on the phone getting round to
     // saying so — a handset that never reports `active` would otherwise be a
     // conversation the desktop never timed.
@@ -1483,7 +1561,7 @@ function finish(result, action) {
     if (inherited && !took) talkTime.close(inherited)
   }
   if (action === 'reject' || action === 'hangup') {
-    live = null
+    forgetLive()
     activeSince = 0
     talkTime.stop()
   }
@@ -1693,6 +1771,30 @@ export default {
      */
     bus.on('presence', (here) => handsfree.presence(here))
 
+    /**
+     * The handset that was mirroring a call going off the network.
+     *
+     * Android kills an app in the middle of a conversation for any number of
+     * ordinary reasons — memory pressure, Doze, a user swiping it away — and
+     * the hang-up it would have broadcast is never sent. What the desktop does
+     * get is the socket dying, which is the only evidence there will be, so it
+     * is treated as evidence: the call this device put up comes down, the
+     * clock stops, and the card stops repainting itself once a second forever.
+     *
+     * Nothing is written to the history and nothing is counted — see
+     * `dropLive`. And nothing happens at all to a conversation that is not
+     * this socket's: a call the desktop can hear over Bluetooth is real
+     * whether or not the app is running, and the hands-free road has its own
+     * teardown on the gateway going away.
+     */
+    bus.on('device-gone', (device) => {
+      if (!device?.id || !liveDevice || device.id !== liveDevice || !live) return
+      log.info(`${device.name || device.id} disconnected during a call — the desktop is no longer holding it`)
+      dropLive()
+      // The link may have been up for the sake of that call and nothing else.
+      handsfree.standDown()
+    })
+
     handsfree
       .start()
       .then((ready) => {
@@ -1762,7 +1864,7 @@ export default {
     locateTimer = null
     locating = null
     talkTime.stop({ quiet: true })
-    live = null
+    forgetLive()
     activeSince = 0
     if (janitor) clearInterval(janitor)
     janitor = null
