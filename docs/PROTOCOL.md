@@ -34,7 +34,9 @@ k  = HKDF-SHA256(es || ee, salt = e_pub || f_pub, info = "omarchy-connect v1 cha
 
 The first 32 bytes of `k` encrypt phone → desktop, the last 32 desktop → phone.
 Every later frame is binary ChaCha20-Poly1305 over the JSON that v1 sent in the
-clear.
+clear — or, phone → desktop only, over a chunk of live microphone (**Live
+audio** below). The two are told apart by the first four bytes of the
+plaintext: a JSON frame begins with `{`, an audio frame with `OCA1`.
 
 Three properties follow, and each is exercised by the test suites:
 
@@ -232,9 +234,9 @@ wins the moment it has one.
 ### Events
 
 ```jsonc
-{ "t": "sub", "events": ["clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
+{ "t": "sub", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "endpoints"] }
 { "t": "unsub", "events": ["stats"] }
-{ "t": "sub.ok", "events": ["clipboard", "notification", "theme", "file", "phone", "agent", "endpoints"] }
+{ "t": "sub.ok", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "endpoints"] }
 { "t": "ev", "event": "stats", "data": { … } }
 ```
 
@@ -261,6 +263,7 @@ itself without waiting for the next tick.
 | `theme` | The active Omarchy theme changes. |
 | `file` | A file arrived from a phone, or the desktop offered one. |
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`) or to say where it is (`action: "locate"`). |
+| `audio` | The desktop is asking the phone to open its microphone (`action: "start"`) or to close it (`action: "stop"`). See **Live audio** below. |
 | `agent` | A coding agent appeared, changed state, or said something new. |
 | `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
 
@@ -276,9 +279,10 @@ offer's own lifetime, twenty files — because a copied screenshot is scaffoldin
 for the next question, not a file anybody meant to keep. Phone → desktop stays
 text: `clipboard.set` takes `{ text }` and nothing else.
 
-The `phone` channel is never delivered to a socket the desktop classed as
-`remote`: a call the desktop is asking a handset to answer has no business
-travelling to a handset that is nowhere near it.
+The `phone` and `audio` channels are never delivered to a socket the desktop
+classed as `remote`: a call the desktop is asking a handset to answer has no
+business travelling to a handset that is nowhere near it, and neither does an
+instruction to switch that handset's microphone on.
 
 `ping`/`pong` frames are available for round-trip measurement; the daemon also
 runs a 20-second WebSocket ping and drops sockets that stop answering, because
@@ -339,6 +343,19 @@ on every road out: a recording is a way of typing, not a file anybody meant to
 keep. Gated on the same switch as agent control, because the bytes cannot reach
 the desktop any other way. The capability is `{ available, maxSeconds }` and is
 false on a desktop without `voxtype` or `ffmpeg`.
+
+### audio
+
+| Method | Params | Returns |
+| --- | --- | --- |
+| `audio.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its microphone. |
+| `audio.stopped` | `{ stream, error }` | `{ ok, path, bytes, seconds, dropped, gaps }` — the phone saying it has stopped. |
+| `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps }`. |
+
+The capability is `{ receive, encoding, rate, channels, chunkMs, maxSeconds }`
+and says what the desktop will accept, never what the handset can send —
+whether *this* phone can open a microphone is its own answer, and it gives it
+by starting or by refusing with a reason. See **Live audio**.
 
 ### device
 
@@ -761,7 +778,9 @@ daemon folds them together rather than reporting the call twice: hands-free
 knows the number, ANCS knows the contact, and a call already in the history
 counts as the same call when it shares a state and either a number or a road it
 has not been seen on yet. Answering prefers hands-free — ANCS presses the button
-but moves no audio.
+but moves no audio. Neither road carries the *conversation* to this desktop:
+the live-audio channel below is the phone's own microphone, not the call's, and
+nothing in this protocol taps a telephone call.
 
 ### agents
 
@@ -1440,6 +1459,7 @@ deliberately open.
 | `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
 | `POST /api/locate` | `{ op, seconds? }` | `op` is `start` or `stop`. Rings the paired phone until somebody finds it. Answers `{ ok, locate }`. |
+| `POST /api/mic` | `{ op }` | `op` is `status`, `start` or `stop`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. Answers `{ ok, audio }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
@@ -1586,6 +1606,94 @@ self-releasing wake lock, which is long enough for a connect and a handshake
 and is not the untimed lock the link itself refuses to hold. Announcements are
 acted on only while the link is down; a working socket is never dropped for
 one. Nothing in `hello` or `endpoints` changes.
+
+## Live audio
+
+The phone's microphone, as bytes on the desktop while it is still being spoken
+into. Distinct from `dictation.transcribe`, which is a *file*: a recorder that
+writes an `.m4a`, a `/api/upload` when the person lets go, and text back. That
+road is unchanged and is the right one for "say a sentence and get words". This
+one exists because a microphone has no end, and nothing that only delivers
+after the speaking stops can carry one.
+
+**The desktop asks.** `omarchy-connect mic start` posts to `/api/mic`, which
+puts an instruction on the `audio` channel and holds the request open until the
+handset answers, exactly as `locate` does:
+
+```jsonc
+// desktop → phone, on the audio channel
+{ "t": "ev", "event": "audio", "data": { "action": "start", "id": "<uuid>", "stream": 1,
+  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 100, "maxSeconds": 1800 } }
+
+// phone → desktop, once its recorder is actually open
+{ "t": "req", "id": 4, "method": "audio.started", "params": { "id": "<uuid>", "ok": true } }
+// … or a refusal with the sentence the desktop prints
+{ "t": "req", "id": 4, "method": "audio.started",
+  "params": { "id": "<uuid>", "ok": false, "error": "microphone access was denied on the phone" } }
+```
+
+So a success on the terminal means the phone is recording, not that a message
+went into the dark. A handset that says nothing at all is given 15 seconds.
+
+**The sound travels as binary frames**, inside the same encrypted channel and
+under the same counter nonce as everything else — no second socket, no second
+handshake, no second key:
+
+```
+"OCA1" || stream:uint32be || seq:uint32be || pcm
+  4              4                4           n
+```
+
+`pcm` is signed 16-bit little-endian, mono, 16 kHz: the format `dictation`
+already resamples to for whisper. One frame is 100 ms — 3200 bytes, ten a
+second — far under the 1 MB `maxPayload`, and the rate rather than the size is
+what is new for this channel.
+
+The two numbers are not there for ordering, which the counter nonce already
+gives for free. `stream` is the number the desktop handed out with the
+instruction, so a chunk that was in flight when the stream ended, or one from a
+socket the phone has since replaced, is recognised and dropped rather than
+glued onto the next recording. `seq` counts chunks within one stream from zero,
+so a chunk the phone could not send is a **gap the desktop counts** rather than
+a splice it cannot see. Nothing is ever asked for again: sound that missed its
+moment is worthless by the time it could be resent.
+
+Frames are answered with nothing. A `res` per chunk would double the traffic to
+say what the next chunk already implies, and a chunk the desktop refuses — one
+for a finished stream, one that is not a whole number of samples, one larger
+than 64 KB — is dropped in silence for the same reason.
+
+**What the desktop does with them.** Each stream is written to a WAV in
+`~/.cache/omarchy-connect/audio/`, so it plays with `paplay` and needs nobody
+to remember a sample rate. The cache and not the inbox, and swept — twenty
+files, a day — because a recording is a byproduct, not a file anybody meant to
+keep. `daemon/src/plugins/audio.js` also publishes the chunks as they land, for
+a consumer that wants them live rather than afterwards.
+
+**Backpressure is a ceiling, not a queue.** A microphone produces bytes whether
+or not anything is reading them, which no file transfer ever does. The desktop
+holds at most 256 KB — eight seconds — in front of a sink that is not keeping
+up, and drops the **oldest** chunk to make room: what nobody has heard yet is
+worth more than what was said eight seconds ago. What was dropped is counted
+and reported by `audio.status` and by `omarchy-connect mic stop`.
+
+**Everything ends the stream, and all of them end it cleanly.**
+`omarchy-connect mic stop`, the phone saying `audio.stopped`, the socket dying,
+the daemon stopping, or the 30-minute ceiling: the file is finished and its
+header patched in every case, and the phone gives the microphone back — a
+socket that is no longer connected is a microphone with nowhere to send to.
+A reconnect starts a fresh stream with a fresh number.
+
+**Not down a tunnel.** The `audio` channel is refused to a socket the desktop
+classed as `remote`, the same way `phone` is. A pairing is trust enough to read
+a clipboard from another city; it is not trust enough to switch on a microphone
+in a room nobody at this desktop can see.
+
+**On the handset** this is `AudioRecord` in the link module rather than
+`expo-audio`, which hands back a finished file and no buffers. Recording with
+the screen off needs the foreground service to declare
+`foregroundServiceType="microphone"`, so `LinkService` claims that type
+alongside `connectedDevice` while — and only while — something is recording.
 
 ## File transfer
 

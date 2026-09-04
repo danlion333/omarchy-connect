@@ -31,6 +31,7 @@ import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
 import { startLocateResponder } from './locate'
+import { startMicResponder } from './mic'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -375,6 +376,9 @@ class Link {
     // any of them — only the alarm the link module can play — so it must not
     // be switched off by the same `null` that turns mirroring into a no-op.
     const stopLocating = startLocateResponder(client)
+    // The same shape as locating, and for the same reason: the desktop asks,
+    // the handset answers, and neither needs a screen to be open for it.
+    const stopMicrophone = startMicResponder(client)
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -447,6 +451,7 @@ class Link {
       stopReporting?.()
       stopMirror()
       stopLocating()
+      stopMicrophone()
       offs.forEach((off) => off())
     }
   }

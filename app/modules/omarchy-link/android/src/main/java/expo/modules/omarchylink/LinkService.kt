@@ -56,6 +56,26 @@ class LinkService : Service() {
     var running = false
       private set
 
+    /**
+     * Whether the ongoing notification is also claiming the microphone.
+     *
+     * From Android 14 a foreground service that records has to declare the
+     * `microphone` type, and it has to be declared *before* the input is
+     * opened. Claiming it for the life of the service instead would be simpler
+     * and worse: the type is refused outright when the service starts from a
+     * background context that is not allowed one — `BOOT_COMPLETED`, above
+     * all — and losing the whole link because nobody was recording is a bad
+     * trade for a claim nothing was using.
+     *
+     * So it is added when `Mic` is about to open the input and dropped when it
+     * gives it back, by re-entering the foreground with the two types instead
+     * of one. `startForeground` on a service already in the foreground is how
+     * Android documents changing types; it does not restart anything and the
+     * notification does not flash.
+     */
+    @Volatile
+    private var microphone = false
+
     fun start(context: Context) {
       val app = context.applicationContext
       ContextCompat.startForegroundService(app, Intent(app, LinkService::class.java))
@@ -65,6 +85,24 @@ class LinkService : Service() {
       val app = context.applicationContext
       app.stopService(Intent(app, LinkService::class.java))
     }
+
+    /**
+     * Claim, or give back, the microphone half of the foreground service type.
+     *
+     * Never fatal. A phone that refuses the claim is a phone where the
+     * recording will be stopped when the screen goes off — which is worth a
+     * line in the log and is not worth losing the link over.
+     */
+    fun holdMicrophone(wanted: Boolean) {
+      if (microphone == wanted) return
+      microphone = wanted
+      if (!running) return
+      instance?.goForeground() ?: Trace.warn("mic.foreground.missing", "wanted" to wanted)
+    }
+
+    /** The live service, so `holdMicrophone` has something to re-enter with. */
+    @Volatile
+    private var instance: LinkService? = null
 
     /** Redraws the ongoing notification, if the service is up to be redrawn. */
     fun refresh(context: Context) {
@@ -183,6 +221,7 @@ class LinkService : Service() {
   override fun onCreate() {
     super.onCreate()
     running = true
+    instance = this
     Trace.evt("service.create", "enabled" to LinkPrefs.isEnabled(this))
     // A fresh service instance means a fresh process and no socket: whatever
     // the last incarnation wrote about being connected — the flags and the
@@ -218,17 +257,27 @@ class LinkService : Service() {
   }
 
   private fun goForeground() {
+    val types = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+      0
+    } else if (microphone && Mic.hasPermission(this)) {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+    } else {
+      ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    }
     try {
-      ServiceCompat.startForeground(
-        this,
-        NOTIFICATION_ID,
-        buildNotification(this),
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
-          ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
-        else 0,
-      )
-      Trace.detail("service.foreground", "ok" to true)
+      ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this), types)
+      Trace.detail("service.foreground", "ok" to true, "mic" to microphone)
     } catch (error: Exception) {
+      // The microphone type is the one the system refuses on its own terms —
+      // a service that came up from the background is not eligible for it —
+      // and the link is worth far more than the claim. Drop it and go back to
+      // the type that has always worked; whatever asked for the microphone
+      // hears about it when the recording is cut short.
+      if (types != ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        Trace.fail("service.foreground.microphone.refused", error)
+        microphone = false
+        return goForeground()
+      }
       // Android 12 forbids starting a foreground service from the background
       // outside a handful of exemptions. Losing the service is survivable —
       // the app reconnects the next time it is opened — crashing is not.
@@ -319,6 +368,11 @@ class LinkService : Service() {
   override fun onDestroy() {
     Trace.evt("service.destroy", "task" to taskId)
     running = false
+    instance = null
+    // A recording outliving the service that legitimises it is exactly what
+    // the foreground service type exists to prevent, so it ends here too.
+    microphone = false
+    Mic.stop()
     Announce.stop()
     LinkPrefs.forgetConnection(this)
     // Nothing is left that could carry an answer to the desktop, or fetch a
