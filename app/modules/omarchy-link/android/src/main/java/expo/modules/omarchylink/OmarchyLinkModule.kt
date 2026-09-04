@@ -56,7 +56,14 @@ class OmarchyLinkModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("OmarchyLink")
 
-    Events("onNetworkChange", "onOutbox", "onLinkReconnect", "onLocateFound", "onShareIntent")
+    Events(
+      "onNetworkChange",
+      "onOutbox",
+      "onLinkReconnect",
+      "onLocateFound",
+      "onShareIntent",
+      "onDesktopAnnounce",
+    )
 
     /**
      * Somebody shared to this app while it was already running.

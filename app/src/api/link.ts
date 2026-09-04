@@ -22,6 +22,7 @@ import {
 } from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
 import { orderCandidates } from '../lib/retry'
+import { shouldRedial } from '../lib/announce'
 import { reduceAgents } from '../lib/agents'
 import { remember } from '../lib/clipboard'
 import { merged } from '../lib/state'
@@ -515,6 +516,21 @@ class Link {
         // network. If the phone is parked because the facts are wrong, this
         // is the only way out of it.
         this.client?.reconnectNow(true)
+      })
+      native.addListener('onDesktopAnnounce', (announce) => {
+        // A desktop somewhere on this subnet has just started its daemon. The
+        // packet is a hint and nothing more — it is broadcast, so anything on
+        // the network could have sent it — and `shouldRedial` is where that
+        // is taken seriously: unless it names the key this phone pinned, and
+        // unless the link is actually down, nothing happens at all.
+        const client = this.client
+        if (!client) return
+        if (!shouldRedial(announce, { publicKey: client.publicKey, status: client.status })) return
+        // Forced, for the same reason the notification's button is. A phone
+        // that parked itself on a network Android described badly is exactly
+        // the phone this feature exists for, and the desktop saying it is up
+        // is better evidence than the description.
+        client.reconnectNow(true)
       })
     }
   }

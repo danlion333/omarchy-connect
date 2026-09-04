@@ -189,6 +189,11 @@ class LinkService : Service() {
     // line of prose alike — is stale by definition, and the notification is
     // drawn on the next line.
     LinkPrefs.forgetConnection(this)
+    // The desktop's own "I am up" burst, which is the only thing that brings
+    // a sleeping phone back before its backoff rung comes round. It listens
+    // for exactly as long as this service exists, which is the process that
+    // outlives the desktop being switched off — see `Announce`.
+    Announce.start(this)
     // Android gives a service started with `startForegroundService` five
     // seconds to put up its notification, so this happens before anything
     // that could conceivably block.
@@ -314,6 +319,7 @@ class LinkService : Service() {
   override fun onDestroy() {
     Trace.evt("service.destroy", "task" to taskId)
     running = false
+    Announce.stop()
     LinkPrefs.forgetConnection(this)
     // Nothing is left that could carry an answer to the desktop, or fetch a
     // file it offers to save, so the shade should not keep offering either.
