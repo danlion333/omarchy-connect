@@ -14,7 +14,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentHistoryEntry } from '../api/client'
-import { Body, Button, Card, CardHeader, Divider, Empty } from '../ui/kit'
+import { Body, Button, Card, CardHeader, Divider, Empty, Notice } from '../ui/kit'
 import { Badge, modelLabel, tokens } from '../ui/agentkit'
 import { ago } from '../lib/format'
 import { alpha, font, radius, size, space } from '../theme'
@@ -38,7 +38,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
   const { call, palette, refreshAgents, hello } = useConnection()
   const insets = useSafeAreaInsets()
   const [history, setHistory] = useState<AgentHistoryEntry[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState<string | null>(null)
 
   const caps = (hello?.capabilities?.agents ?? null) as { spawn?: boolean; history?: boolean } | null
@@ -56,7 +56,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
       setError(null)
     } catch (err) {
       setHistory([])
-      setError((err as Error).message)
+      setError(err)
     }
   }, [call])
 
@@ -110,7 +110,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
         // the desktop's business, and there is more than one of them.
         if (res.via !== 'background') onBack()
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setBusy(null)
       }
@@ -145,7 +145,7 @@ export function AgentLaunchScreen({ onBack, onOpen }: { onBack: () => void; onOp
         contentContainerStyle={{ padding: space.lg, paddingBottom: insets.bottom + space.xl, gap: space.lg }}
         keyboardShouldPersistTaps="handled"
       >
-        {error ? <Body tone={palette.red}>{error}</Body> : null}
+        <Notice error={error} onDismiss={() => setError(null)} />
 
         {canSpawn ? (
           <Card>

@@ -15,6 +15,8 @@
  */
 
 /** One file the sharing app handed over, already copied into our own cache. */
+import { errorLine } from './errors.ts'
+
 export type SharedFile = { uri: string; name: string; size?: number }
 
 /**
@@ -93,7 +95,7 @@ export async function deliverShare(payload: SharePayload, sinks: ShareSinks): Pr
       await sinks.upload(file)
       sent.push(file.name)
     } catch (err) {
-      failed.push({ label: file.name, error: (err as Error).message || 'upload failed' })
+      failed.push({ label: file.name, error: errorLine(err, 'upload failed') })
     }
   }
 
@@ -104,13 +106,13 @@ export async function deliverShare(payload: SharePayload, sinks: ShareSinks): Pr
       await sinks.copyText(text)
       sent.push(link ? 'the link' : 'the text')
     } catch (err) {
-      failed.push({ label: link ? 'the link' : 'the text', error: (err as Error).message || 'send failed' })
+      failed.push({ label: link ? 'the link' : 'the text', error: errorLine(err, 'send failed') })
     }
     if (link) {
       try {
         await sinks.openUrl(text)
       } catch (err) {
-        failed.push({ label: 'opening the link', error: (err as Error).message || 'the desktop would not open it' })
+        failed.push({ label: 'opening the link', error: errorLine(err, 'the desktop would not open it') })
       }
     }
   }

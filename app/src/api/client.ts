@@ -9,6 +9,7 @@ import {
   type NetworkFacts,
 } from '../lib/retry.ts'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
+import { errorLine } from '../lib/errors.ts'
 
 export type ConnectionStatus =
   | 'idle'
@@ -684,7 +685,7 @@ export class ConnectClient {
         this.handshake = startHandshake(this.publicKey)
         ws.send(this.handshake.frame.buffer as ArrayBuffer)
       } catch (err) {
-        this.lastError = (err as Error).message
+        this.lastError = errorLine(err, 'the handshake failed')
         ws.close(4003, 'handshake failed')
       }
     }

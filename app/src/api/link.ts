@@ -25,6 +25,7 @@ import { orderCandidates } from '../lib/retry'
 import { reduceAgents } from '../lib/agents'
 import { remember } from '../lib/clipboard'
 import { merged } from '../lib/state'
+import { errorLine } from '../lib/errors.ts'
 import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
@@ -92,6 +93,16 @@ export type LinkState = {
   ready: boolean
   status: ConnectionStatus
   error: string | null
+  /**
+   * The last complaint the desktop sent about something this phone asked for.
+   *
+   * Separate from `error`, which is the socket's own health and is rewritten
+   * by every status event: a desktop that says "no such method" while the link
+   * is perfectly up would have been overwritten within the second, which is
+   * why `server-error` used to be emitted to nobody at all. This one is
+   * cleared only when the user has seen it and dismissed it.
+   */
+  serverError: string | null
   desktop: SavedDesktop | null
   hello: Hello | null
   palette: Palette
@@ -116,6 +127,14 @@ export type LinkState = {
    */
   agentJobs: AgentJob[]
   /**
+   * Why the session list is empty, when it is empty because asking failed.
+   *
+   * `refreshAgents` swallowed its throw and set an empty list, which reads on
+   * screen exactly like a desktop with nothing running — the one case where
+   * "nothing is running" and "I could not find out" must not look the same.
+   */
+  agentsError: string | null
+  /**
    * What the desktop has copied, newest first — a history and not a slot, so
    * the phone can still reach the URL that the next copy overwrote. Capped by
    * `MAX_CLIPBOARD_EVENTS`; `remember` decides what stays.
@@ -139,6 +158,7 @@ const INITIAL: LinkState = {
   ready: false,
   status: 'idle',
   error: null,
+  serverError: null,
   desktop: null,
   hello: null,
   palette: FALLBACK_PALETTE,
@@ -146,6 +166,7 @@ const INITIAL: LinkState = {
   agents: [],
   agentLimits: null,
   agentJobs: [],
+  agentsError: null,
   clipboard: [],
   files: [],
   latencyMs: null,
@@ -413,6 +434,9 @@ class Link {
         }
       }),
       client.on('latency', (value: number) => this.patch({ latencyMs: value })),
+      // The desktop objecting to something. It reaches a banner in the tab
+      // shell; before this listener existed it reached nothing whatsoever.
+      client.on('server-error', (message: string) => this.patch({ serverError: errorLine(message, 'the desktop refused that') })),
     ]
     return () => {
       stopReporting?.()
@@ -767,6 +791,11 @@ class Link {
     this.client?.reconnectNow(true)
   }
 
+  /** The user has read the desktop's complaint; the banner can go. */
+  dismissServerError() {
+    this.patch({ serverError: null })
+  }
+
   /**
    * Take an address somebody typed in, having checked it is the right machine.
    *
@@ -867,14 +896,17 @@ class Link {
     try {
       const res = await client.call<{ sessions: AgentSession[]; limits?: AgentLimits | null }>('agents.list', {})
       this.setAgents(res.sessions || [])
+      this.patch({ agentsError: null })
       // The list carries the limits with it, so the status line is filled by
       // the same round trip that fills the screen under it rather than by a
       // second call the app would have to remember to make.
       if (res.limits !== undefined) this.patch({ agentLimits: res.limits })
-    } catch {
+    } catch (error) {
       // Disabled on the desktop, or an older daemon: an empty list is the
-      // honest answer, and the screen says why.
+      // honest answer, and the screen says why — and now it can also say why
+      // when the answer never arrived, instead of showing an empty list.
       this.setAgents([])
+      this.patch({ agentsError: errorLine(error, 'the desktop did not send its agents') })
     }
   }
 

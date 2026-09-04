@@ -20,7 +20,7 @@ import * as Sharing from 'expo-sharing'
 import { File } from 'expo-file-system'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Screen, Value } from '../ui/kit'
+import { Body, Button, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, Value } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
 import { downloadOffer } from '../lib/download'
 import { saveToGallery } from '../lib/gallery'
@@ -74,7 +74,8 @@ export function ShareScreen({
   const [saved, setSaved] = useState<Record<string, true>>({})
   const [viewing, setViewing] = useState<string | null>(null)
   const [note, setNote] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  /** Whatever was thrown, untouched — `Notice` is what makes it readable. */
+  const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState<string | null>(null)
   /** The history entry last tapped, so its row can say so. */
   const [copied, setCopied] = useState<string | null>(null)
@@ -123,7 +124,7 @@ export function ShareScreen({
   }
 
   const fail = (err: unknown) => {
-    setError((err as Error).message)
+    setError(err)
     setNote(null)
   }
 
@@ -442,16 +443,8 @@ export function ShareScreen({
     <Screen>
       <Caps style={{ marginBottom: space.md }}>Share</Caps>
 
-      {note ? (
-        <Body tone={palette.green} style={{ marginBottom: space.md, fontSize: size.label }}>
-          {note}
-        </Body>
-      ) : null}
-      {error ? (
-        <Body tone={palette.red} style={{ marginBottom: space.md, fontSize: size.label }}>
-          {error}
-        </Body>
-      ) : null}
+      <Notice error={note} tone="ok" />
+      <Notice error={error} onDismiss={() => setError(null)} />
       {busy === 'incoming' ? (
         <Body tone={palette.muted} style={{ marginBottom: space.md, fontSize: size.label }}>
           sending what was shared…

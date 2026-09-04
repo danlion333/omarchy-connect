@@ -5,7 +5,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentSession, AgentSkill } from '../api/client'
-import { Body, Caps } from '../ui/kit'
+import { Body, Caps, Notice } from '../ui/kit'
 import { Badge } from '../ui/agentkit'
 import { alpha, font, radius, size, space } from '../theme'
 
@@ -43,7 +43,7 @@ export function AgentSkillsSheet({
   const { call, palette } = useConnection()
   const insets = useSafeAreaInsets()
   const [entries, setEntries] = useState<AgentSkill[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [query, setQuery] = useState('')
   const [running, setRunning] = useState<string | null>(null)
 
@@ -55,7 +55,7 @@ export function AgentSkillsSheet({
         setEntries([...(res.skills || []), ...(res.commands || []), ...(res.builtins || [])])
         setError(null)
       })
-      .catch((err) => live && setError((err as Error).message))
+      .catch((err) => live && setError(err))
     return () => {
       live = false
     }
@@ -101,7 +101,7 @@ export function AgentSkillsSheet({
         await call('agents.command', { id: session.id, name: entry.name })
         onClose()
       } catch (err) {
-        setError((err as Error).message)
+        setError(err)
       } finally {
         setRunning(null)
       }
@@ -152,11 +152,7 @@ export function AgentSkillsSheet({
         </Pressable>
       </View>
 
-      {error ? (
-        <Body tone={palette.red} style={{ paddingHorizontal: space.lg, paddingBottom: space.sm }}>
-          {error}
-        </Body>
-      ) : null}
+      <Notice error={error} style={{ marginHorizontal: space.lg }} onDismiss={() => setError(null)} />
 
       <ScrollView
         contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: insets.bottom + space.xl, gap: space.lg }}
