@@ -301,10 +301,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   function announceSelf() {
     const target = announceTarget()
     if (!target.host) {
-      log.detail?.('no subnet to announce on — nothing to broadcast to')
+      log.debug('no subnet to announce on — nothing to broadcast to')
       return
     }
     const key = identity().publicKey.toString('hex')
+    announcer?.stop()
     announcer = createAnnouncer({ port: target.port })
     announcer.announce(
       announcement({
@@ -318,6 +319,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       }),
       target.host,
     )
+    log.debug(`announced this desktop on ${target.host}:${target.port}`)
   }
 
   /** Tell whoever is listening that the set of addresses changed under them. */
