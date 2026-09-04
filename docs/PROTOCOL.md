@@ -1511,8 +1511,9 @@ changes. It carries the daemon's identity and address, the paired device with
 its live status and telemetry, recent transfers, counters, the firewall
 verdict, what it would take to wake this desktop, whether TLS is on and under
 which pin, the last mirrored messages and
-calls, the coding agents this desktop can read and answer, and the argv needed
-to invoke the CLI again.
+calls, the coding agents this desktop can read and answer, whether the phone is
+speaking into this desktop's microphone list, and the argv needed to invoke the
+CLI again.
 
 The `agents` block is what the panel's switch is drawn from:
 `{ enabled, adapters, hooks, write, running, waiting, sessions }`. `write` is
@@ -1524,6 +1525,20 @@ the panel can offer the switch and the *Install hooks* button before anything
 is running. `running`, `waiting` and `sessions` are the live view and are
 cleared when the daemon stops, because with nothing watching they are not
 stale, they are unknown.
+
+The `audio` block is the microphone, in the same two halves the CLI has:
+`{ streaming, stream, since, path, bytes, seconds, dropped, input }`, where
+`input` is `{ available, name, description, enabled, … }`. `streaming` is the
+handset speaking right now; `input.enabled` is whether this desktop is offering
+that sound as a PipeWire source every program can pick. Either can be true
+without the other. `input.available` is `false` on a desktop with no
+pipewire-pulse **and** with the daemon stopped — it is a `pactl info` only a
+running daemon makes — and the panel draws no switch for a thing nothing could
+carry out, keeping it only while a source is loaded so it can be turned back
+off. The snapshot is republished the moment any of this moves, so a microphone
+that has been left on is never a state the desktop keeps to itself. The WAV
+path is in here for the same reason the address is: this file is `0600` in the
+user's own state directory, and it already carries the daemon's local secret.
 
 It is the contract the Omarchy shell plugin reads; anything else that wants to
 watch this daemon can read it too. `OMARCHY_CONNECT_STATE` moves it aside for

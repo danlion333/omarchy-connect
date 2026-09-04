@@ -111,6 +111,18 @@ Item {
   // and the switch has to be reachable to be turned back off.
   readonly property bool agentsAvailable: agents.enabled || agents.adapters.length > 0
 
+  // The phone's microphone, and whether this desktop is offering it as a
+  // source the rest of the system can pick. Switchable from here for the same
+  // reason the agent switch is: the daemon loads and unloads the source live,
+  // so nothing has to be restarted around the click.
+  readonly property var audio: Model.audio(status)
+  readonly property bool micStreaming: audio.streaming
+  readonly property bool micEnabled: audio.input.enabled
+  // A desktop with no pipewire-pulse cannot offer this at all, and a switch
+  // whose only outcome is an error is a question rather than a control. It
+  // still appears while the source is loaded, so it can be turned back off.
+  readonly property bool micAvailable: Model.micShown(audio)
+
   // Whether the phone may reach this desktop from off its own network, and
   // what it would come in over. Switchable from here for the same reason the
   // agent switch is: the daemon applies it live, so the link survives it.
@@ -527,6 +539,23 @@ Item {
 
   function disableAgents() {
     invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent control off…")
+  }
+
+  /**
+   * The phone in this machine's microphone list.
+   *
+   * Worth waiting on rather than firing and forgetting: turning it on loads a
+   * PipeWire module *and* asks the handset to start speaking, and either half
+   * can fail in a way the person who just clicked needs to read — no sound
+   * server here, a phone asleep in another room. `invoke` puts that sentence
+   * in the same place the agent switch puts its own failures.
+   */
+  function enableMic() {
+    invoke(Model.command(root.status, ["mic", "input", "on"]), "Offering the phone as a microphone…")
+  }
+
+  function disableMic() {
+    invoke(Model.command(root.status, ["mic", "input", "off"]), "Taking the phone out of the input list…")
   }
 
   function enableRemote() {

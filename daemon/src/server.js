@@ -227,6 +227,14 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       transfers: [...transfers],
       counters: { ...counters },
       phone: phoneSummary(),
+      // The phone's microphone: whether it is speaking, and whether this
+      // desktop is offering it as an input every program can pick. Both are
+      // switches with no sign of themselves anywhere else on the screen, and
+      // a microphone left on with nothing saying so is the one state a person
+      // should not have to remember. `input.available` shells `pactl` once
+      // per process and answers from a cache afterwards (`lib/pipesource.js`),
+      // so it is safe on a snapshot that is rebuilt on every connection.
+      audio: audioSummary(),
       agents: agentsSummary(),
     }
   }
@@ -1380,6 +1388,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   /* ── Fan-out ───────────────────────────────────────────────────────── */
 
   bus.on('device.report', publishState)
+  // The microphone moved: a stream started or ended, or the desktop's input
+  // was loaded or unloaded. None of that goes through the socket bookkeeping
+  // above, and the panel's only window on it is the status file.
+  bus.on('audio.state', publishState)
 
   bus.on('event', (event, data) => {
     if (event === 'notification') counters.notifications += 1

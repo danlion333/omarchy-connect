@@ -6,6 +6,7 @@ import { loadConfig } from './config.js'
 import { identity, fingerprint, SUITE } from './crypto.js'
 import * as tls from './tls.js'
 import { INBOX } from '../plugins/share.js'
+import { SOURCE_NAME, SOURCE_DESCRIPTION } from './pipesource.js'
 import { detected as detectedAgents } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
 
@@ -142,6 +143,18 @@ export function baseSnapshot({ version = null, port = null } = {}) {
       // survives the daemon; nothing is being counted while it is down.
       timer: { enabled: cfg.callTimer?.enabled !== false, running: false, since: null, seconds: 0, who: null },
     },
+    // The phone's microphone. Nothing streams while the daemon is down — the
+    // socket the sound arrives on is the daemon's — and the input source is
+    // unloaded on the way out, so both halves are honestly off here. What is
+    // *not* claimed is `available`: whether this desktop has a sound server to
+    // load a source into is a question only the running daemon asks (it is a
+    // `pactl info` away), and the panel treats an absent answer the same way
+    // it treats `phone.bluetooth` with the daemon down — unknown, so no switch
+    // is offered for something nothing can carry out.
+    audio: {
+      streaming: false,
+      input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
+    },
     // Sessions are discovered by a running daemon and nothing else, so with it
     // stopped the panel shows the switch and an empty list rather than a stale
     // one. Which agents are *installed*, and whether their hooks are in place,
@@ -195,5 +208,12 @@ export function clear() {
   // stopped there is nothing watching them, so the list is not merely stale,
   // it is unknown.
   snapshot.agents = { ...(snapshot.agents || {}), running: 0, waiting: 0, sessions: [] }
+  // Same for the microphone: the stream died with the socket it came in on and
+  // the input source was unloaded on the way out, so the panel must not be
+  // left showing a phone that is still speaking into a daemon that is gone.
+  snapshot.audio = {
+    streaming: false,
+    input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
+  }
   return publish(snapshot)
 }
