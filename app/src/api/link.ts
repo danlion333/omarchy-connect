@@ -1022,7 +1022,7 @@ class Link {
     await alertClipboardImage({ token, name, size }, async () => {
       const client = this.client
       if (!client) return null
-      return downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
+      return downloadOffer(client.downloadUrl(token), token, name, await client.downloadPass())
     })
   }
 
@@ -1040,7 +1040,7 @@ class Link {
     const client = this.client
     if (!client) return
     try {
-      const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadHeaders())
+      const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadPass())
       await saveToGallery(uri)
       noteFileAlert(token, name, 'in your gallery')
       // Kept on screen for a moment as a receipt, then taken down: the offer

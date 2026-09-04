@@ -3,6 +3,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { XDG_DOWNLOAD } from '../lib/paths.js'
 import { has, spawnDetached, wlCopy, notifyArgs } from '../lib/exec.js'
+import { newKey, SCHEME } from '../lib/filecrypt.js'
 import { log } from '../lib/log.js'
 
 export const INBOX = path.join(XDG_DOWNLOAD, 'Omarchy Connect')
@@ -48,10 +49,16 @@ export function resolveOffer(token) {
  *
  * So the credential stays on the encrypted channel, and the phone asks it for
  * a ticket per transfer: 32 random bytes, good for one request, two minutes,
- * and one direction. Losing one to a sniffer costs the file that was already
- * on the wire in front of them, and nothing else — it cannot be replayed, it
- * cannot be turned into a socket, and it is worthless by the time anyone has
- * read it out of a log.
+ * and one direction. Losing one to a sniffer costs nothing — it cannot be
+ * replayed, it cannot be turned into a socket, and it is worthless by the
+ * time anyone has read it out of a log.
+ *
+ * A ticket now carries a second secret the same way: 32 bytes of key material
+ * the body is sealed under (`lib/filecrypt.js`). It is minted here rather than
+ * derived from the socket's own channel keys so that it belongs to exactly one
+ * transfer and dies with the ticket, and because the HTTP route has a ticket in
+ * its hand and no socket. It only ever exists on the encrypted channel and in
+ * the two processes at the ends of it.
  */
 const tickets = new Map()
 const TICKET_TTL = 2 * 60 * 1000
@@ -64,16 +71,18 @@ function sweepTickets() {
 export function issueTicket(deviceId, use) {
   sweepTickets()
   const value = crypto.randomBytes(32).toString('base64url')
+  const key = newKey()
   const expiresAt = Date.now() + TICKET_TTL
-  tickets.set(value, { deviceId, use, expiresAt })
-  return { ticket: value, use, expiresAt, ttlMs: TICKET_TTL }
+  tickets.set(value, { deviceId, use, key, expiresAt })
+  return { ticket: value, use, key, scheme: SCHEME, expiresAt, ttlMs: TICKET_TTL }
 }
 
 /**
- * Answers with the device the ticket was minted for, or null — and either way
- * the ticket is gone. Deleting before the checks is deliberate: a ticket that
- * was presented for the wrong direction, or after it expired, has been seen
- * by somebody, and a seen ticket is spent whatever it bought.
+ * Answers with the device the ticket was minted for and the key its body is
+ * sealed under, or null — and either way the ticket is gone. Deleting before
+ * the checks is deliberate: a ticket that was presented for the wrong
+ * direction, or after it expired, has been seen by somebody, and a seen
+ * ticket is spent whatever it bought.
  */
 export function redeemTicket(value, use) {
   sweepTickets()
@@ -83,7 +92,7 @@ export function redeemTicket(value, use) {
   tickets.delete(value)
   if (ticket.expiresAt < Date.now()) return null
   if (ticket.use !== use) return null
-  return ticket.deviceId
+  return { deviceId: ticket.deviceId, key: ticket.key }
 }
 
 /** For the suites: nothing outstanding between one daemon and the next. */
@@ -166,10 +175,11 @@ export default {
     },
 
     /**
-     * A one-use pass for one HTTP file transfer, in the direction it names.
-     * Only reachable over the WebSocket, which is encrypted end to end and
-     * already knows which device is asking — which is the whole point: the
-     * long-lived credential never has to leave that channel again.
+     * A one-use pass for one HTTP file transfer, in the direction it names,
+     * and the key that transfer's body is sealed under. Only reachable over
+     * the WebSocket, which is encrypted end to end and already knows which
+     * device is asking — which is the whole point: neither the long-lived
+     * credential nor the content key ever has to leave that channel.
      */
     'share.ticket'({ use = 'upload' } = {}, ctx = {}) {
       if (use !== 'upload' && use !== 'download') throw new Error(`unknown ticket use: ${use}`)

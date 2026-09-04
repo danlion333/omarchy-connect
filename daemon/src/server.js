@@ -23,6 +23,14 @@ import { Bus } from './bus.js'
 import { consumePairingCode, activePairing, createPairingCode } from './pairing.js'
 import { buildMethodTable, collectCapabilities, startPlugins, stopPlugins } from './plugins/index.js'
 import { inboxPathFor, announceReceivedFile, resolveOffer, offerFile, redeemTicket } from './plugins/share.js'
+import {
+  decryptStream,
+  encryptStream,
+  encryptedSize,
+  wantsEncryption,
+  HEADER as ENCRYPTION_HEADER,
+  SCHEME as ENCRYPTION_SCHEME,
+} from './lib/filecrypt.js'
 import { accept as acceptHandshake, identity, fingerprint, SUITE } from './lib/crypto.js'
 import { telemetryFor, forget as forgetTelemetry } from './plugins/device.js'
 import {
@@ -458,8 +466,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
    * sniffer would simply ask for the road that still carries the credential.
    */
   function authFromTicket(req, use) {
-    const deviceId = redeemTicket(req.headers['x-oc-ticket'], use)
-    return deviceId ? findDeviceById(deviceId) : null
+    const redeemed = redeemTicket(req.headers['x-oc-ticket'], use)
+    if (!redeemed) return null
+    const device = findDeviceById(redeemed.deviceId)
+    return device ? { device, key: redeemed.key } : null
   }
 
   /**
@@ -824,18 +834,18 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       if (remoteRefused(req)) {
         return json(res, 403, { error: 'remote access is off on this desktop — run `omarchy-connect remote on` there' })
       }
-      const device = authFromTicket(req, 'upload')
-      if (!device) return json(res, 401, { error: 'unauthorized' })
-      return receiveUpload(req, res, url, device)
+      const pass = authFromTicket(req, 'upload')
+      if (!pass) return json(res, 401, { error: 'unauthorized' })
+      return receiveUpload(req, res, url, pass.device, pass.key)
     }
 
     if (req.method === 'GET' && url.pathname.startsWith('/api/download/')) {
       if (remoteRefused(req)) {
         return json(res, 403, { error: 'remote access is off on this desktop — run `omarchy-connect remote on` there' })
       }
-      const device = authFromTicket(req, 'download')
-      if (!device) return json(res, 401, { error: 'unauthorized' })
-      return sendOffer(req, res, url.pathname.slice('/api/download/'.length))
+      const pass = authFromTicket(req, 'download')
+      if (!pass) return json(res, 401, { error: 'unauthorized' })
+      return sendOffer(req, res, url.pathname.slice('/api/download/'.length), pass.key)
     }
 
     json(res, 404, { error: 'not found' })
@@ -856,7 +866,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
    * back so the phone can name it in `agents.attach`. Everything else is a
    * file transfer and behaves exactly as it always has.
    */
-  function receiveUpload(req, res, url, device) {
+  function receiveUpload(req, res, url, device, contentKey) {
     const rawName = req.headers['x-oc-filename'] || url.searchParams.get('name') || `upload-${Date.now()}`
     const dest = String(req.headers['x-oc-dest'] || url.searchParams.get('dest') || 'inbox')
     const forAgent = dest === 'agent'
@@ -864,8 +874,18 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     // agents off there is nothing on this desktop that would ever read it.
     if (forAgent && !agentsEnabled()) return json(res, 403, { error: 'agent control is off' })
     const cap = forAgent ? agentDrops.MAX_DROP : MAX_UPLOAD
+    // A phone that says its body is sealed gets it opened on the way to disk,
+    // under the key that came with its ticket. A phone that does not is one
+    // paired before this existed, and is still served in the clear rather than
+    // broken in silence — it can never be a downgrade, because the ticket it
+    // would have to hold to try only ever travelled inside the encrypted
+    // socket that the desktop's pinned identity key stands behind.
+    const sealed = wantsEncryption(req.headers[ENCRYPTION_HEADER])
+    // The declared length is what is on the wire, so on a sealed body it is
+    // measured with the frame tags on. Comparing it to the plain cap would
+    // refuse a file that fits.
     const declared = Number(req.headers['content-length'] || 0)
-    if (declared > cap) return json(res, 413, { error: 'file too large' })
+    if (declared > (sealed ? encryptedSize(cap) : cap)) return json(res, 413, { error: 'file too large' })
 
     // The name arrives percent-encoded because a header cannot carry a
     // newline or a Cyrillic letter, but `decodeURIComponent` throws on plenty
@@ -892,13 +912,25 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       req.destroy()
     }
 
-    req.on('data', (chunk) => {
+    let plain = req
+    if (sealed) {
+      const opener = decryptStream(contentKey)
+      // The cap has to be counted on what lands on disk rather than on what
+      // arrives, or a sealed file would be measured with its tags on.
+      opener.on('error', (err) => fail(400, err.message))
+      req.on('error', () => fail(400, 'upload failed'))
+      req.pipe(opener)
+      plain = opener
+    } else {
+      req.on('error', () => fail(400, 'upload failed'))
+    }
+
+    plain.on('data', (chunk) => {
       written += chunk.length
       if (written > cap) fail(413, 'file too large')
     })
-    req.on('error', () => fail(400, 'upload failed'))
     out.on('error', (err) => fail(500, err.message))
-    req.pipe(out)
+    plain.pipe(out)
 
     out.on('close', () => {
       if (aborted) return
@@ -916,7 +948,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     })
   }
 
-  function sendOffer(req, res, token) {
+  function sendOffer(req, res, token, contentKey) {
     const offer = resolveOffer(token)
     if (!offer) return json(res, 404, { error: 'offer expired or unknown' })
     let stat
@@ -925,12 +957,22 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     } catch {
       return json(res, 404, { error: 'file is gone' })
     }
+    // The other direction of the same bargain: seal it when the phone asked
+    // for a sealed body, send it flat when the phone is too old to ask. The
+    // sealed length is arithmetic rather than a guess, so `content-length` is
+    // still exact and the phone still gets a progress bar.
+    const sealed = wantsEncryption(req.headers[ENCRYPTION_HEADER])
     res.writeHead(200, {
       'content-type': 'application/octet-stream',
-      'content-length': stat.size,
+      'content-length': sealed ? encryptedSize(stat.size) : stat.size,
       'content-disposition': `attachment; filename="${offer.name.replace(/"/g, '')}"`,
+      ...(sealed ? { [ENCRYPTION_HEADER]: ENCRYPTION_SCHEME } : {}),
     })
-    fs.createReadStream(offer.path).pipe(res)
+    const body = fs.createReadStream(offer.path)
+    if (!sealed) return body.pipe(res)
+    const sealer = encryptStream(contentKey)
+    sealer.on('error', () => res.destroy())
+    return body.pipe(sealer).pipe(res)
   }
 
   /* ── WebSocket ─────────────────────────────────────────────────────── */

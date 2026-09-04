@@ -10,6 +10,7 @@ import {
 } from '../lib/retry.ts'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
 import { errorLine } from '../lib/errors.ts'
+import { HEADER as ENCRYPTION_HEADER, SCHEME as ENCRYPTION_SCHEME } from './filecrypt.ts'
 
 export type ConnectionStatus =
   | 'idle'
@@ -1351,8 +1352,9 @@ export class ConnectClient {
    * encrypted socket and each transfer asks that socket for a ticket instead:
    * two minutes, one request, worthless to anyone who reads it afterwards.
    */
-  private fileTicket(use: 'upload' | 'download'): Promise<string> {
-    return this.call<{ ticket: string }>('share.ticket', { use }).then((res) => res.ticket)
+  private async fileTicket(use: 'upload' | 'download'): Promise<{ ticket: string; key: string }> {
+    const res = await this.call<{ ticket: string; key?: string }>('share.ticket', { use })
+    return { ticket: res.ticket, key: typeof res.key === 'string' ? res.key : '' }
   }
 
   /**
@@ -1360,13 +1362,25 @@ export class ConnectClient {
    * is the share inbox, which notifies and is kept; `agent` is the swept cache
    * a picture waits in while an agent is told where to look, and the desktop
    * answers that one with the path it wrote.
+   *
+   * The pass carries the key as well as the ticket, because the body is sealed
+   * (`api/filecrypt`) — the socket is encrypted and the file route never was,
+   * and TLS is off on a fresh desktop and unavailable to an Expo Go build. A
+   * desktop too old to mint a key answers without one, and the caller sends the
+   * body flat rather than failing: the alternative is file transfer breaking in
+   * silence the day one of the two ends updates first.
    */
-  async uploadHeaders(filename: string, dest: 'inbox' | 'agent' = 'inbox') {
+  async uploadPass(filename: string, dest: 'inbox' | 'agent' = 'inbox'): Promise<TransferPass> {
+    const { ticket, key } = await this.fileTicket('upload')
     return {
-      'x-oc-ticket': await this.fileTicket('upload'),
-      'x-oc-filename': encodeURIComponent(filename),
-      'x-oc-dest': dest,
-      'content-type': 'application/octet-stream',
+      key,
+      headers: {
+        'x-oc-ticket': ticket,
+        'x-oc-filename': encodeURIComponent(filename),
+        'x-oc-dest': dest,
+        'content-type': 'application/octet-stream',
+        ...(key ? { [ENCRYPTION_HEADER]: ENCRYPTION_SCHEME } : {}),
+      },
     }
   }
 
@@ -1375,7 +1389,19 @@ export class ConnectClient {
     return `${this.baseUrl}/api/download/${offerToken}`
   }
 
-  async downloadHeaders() {
-    return { 'x-oc-ticket': await this.fileTicket('download') }
+  /** The same bargain in the other direction: ask sealed, get sealed. */
+  async downloadPass(): Promise<TransferPass> {
+    const { ticket, key } = await this.fileTicket('download')
+    return {
+      key,
+      headers: { 'x-oc-ticket': ticket, ...(key ? { [ENCRYPTION_HEADER]: ENCRYPTION_SCHEME } : {}) },
+    }
   }
 }
+
+/**
+ * One transfer's pass: the headers that authorise it, and the key its body is
+ * sealed under. An empty key means this desktop is too old to seal, and the
+ * bytes go the way they always did.
+ */
+export type TransferPass = { headers: Record<string, string>; key: string }

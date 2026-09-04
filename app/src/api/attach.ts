@@ -4,6 +4,7 @@ import * as ImagePicker from 'expo-image-picker'
 import { Directory, File, Paths } from 'expo-file-system'
 
 import { fileUriIn } from '../lib/filename'
+import { uploadFile } from '../lib/transfer'
 import type { ConnectClient } from './client'
 
 /**
@@ -91,10 +92,11 @@ export async function fromClipboard(): Promise<Picked | null> {
  * actually look at with pictures nobody asked to keep.
  */
 export async function upload(client: ConnectClient, picked: Picked): Promise<string> {
-  const result = await new File(picked.uri).upload(`${client.baseUrl}/api/upload`, {
-    httpMethod: 'POST',
-    headers: await client.uploadHeaders(picked.name, 'agent'),
-  })
+  const result = await uploadFile(
+    `${client.baseUrl}/api/upload`,
+    picked.uri,
+    await client.uploadPass(picked.name, 'agent'),
+  )
   let body: { path?: string; error?: string } = {}
   try {
     body = JSON.parse(result.body || '{}')

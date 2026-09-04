@@ -1,6 +1,8 @@
 import { Directory, File, Paths } from 'expo-file-system'
 
+import type { TransferPass } from '../api/client'
 import { fileUriIn } from './filename'
+import { openFile } from './transfer'
 
 /**
  * Fetches an offered file into the app's cache and answers with its URI.
@@ -13,17 +15,18 @@ import { fileUriIn } from './filename'
  * thing keep their own bytes — and their own name, which is what the gallery
  * and the share sheet end up showing.
  *
- * The headers carry the one-use ticket the desktop wants for this fetch. The
- * URL carries only which file is being asked for, because a URL is the part
- * of a request that gets written down — proxy logs, history, a crash report —
- * and a credential written down outlives the transfer by years.
+ * The pass carries the one-use ticket the desktop wants for this fetch, and
+ * the key the body comes sealed under. The URL carries only which file is
+ * being asked for, because a URL is the part of a request that gets written
+ * down — proxy logs, history, a crash report — and a credential written down
+ * outlives the transfer by years.
+ *
+ * A sealed body lands beside the real file and is opened into it, because the
+ * platform downloader writes to disk and knows nothing about frames. A desktop
+ * too old to seal hands us an empty key and the download is what it always
+ * was.
  */
-export async function downloadOffer(
-  url: string,
-  token: string,
-  name: string,
-  headers: Record<string, string> = {},
-): Promise<string> {
+export async function downloadOffer(url: string, token: string, name: string, pass: TransferPass): Promise<string> {
   const dir = new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
   if (!dir.exists) dir.create({ intermediates: true })
   // Built as a finished URI rather than as `new File(dir, name)`: the join
@@ -31,6 +34,13 @@ export async function downloadOffer(
   // parser throws on them before the file is ever read. See `fileUriIn`.
   const target = new File(fileUriIn(dir.uri, name))
   if (target.exists) target.delete()
-  const file = await File.downloadFileAsync(url, target, { headers })
-  return file.uri
+  if (!pass.key) {
+    const file = await File.downloadFileAsync(url, target, { headers: pass.headers })
+    return file.uri
+  }
+  const wrapped = new File(fileUriIn(dir.uri, `${name}.ocf1`))
+  if (wrapped.exists) wrapped.delete()
+  const sealed = await File.downloadFileAsync(url, wrapped, { headers: pass.headers, idempotent: true })
+  await openFile(sealed, target, pass.key)
+  return target.uri
 }
