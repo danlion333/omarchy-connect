@@ -9,7 +9,6 @@ import {
   Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   TextInput,
   View,
 } from 'react-native'
@@ -23,20 +22,35 @@ import type { AgentBlock, AgentEvent, AgentQuestion, AgentSession, AgentTasks, A
 import * as attach from '../api/attach'
 import type { Attachment, Picked } from '../api/attach'
 import * as dictate from '../api/dictate'
-import { Body, Button, Caps, Chip, Meter, Notice } from '../ui/kit'
+import {
+  Body,
+  Button,
+  Caps,
+  Chip,
+  Empty,
+  Hint,
+  IconButton,
+  Label,
+  Meter,
+  Mono,
+  Notice,
+  Title,
+  type IconName,
+} from '../ui/kit'
 import { errorLine } from '../lib/errors'
 import { StatusLine, inPane } from '../ui/agentkit'
 import { AgentSkillsSheet } from './AgentSkillsSheet'
 import { Markdown } from '../ui/markdown'
-import { ago } from '../lib/format'
+import { ago, clock } from '../lib/format'
 import {
   capBlocks,
   groupBlocks,
   sameRow,
   sameToolRun,
   type ChatRow,
+  type Group,
 } from '../lib/transcript'
-import { alpha, font, radius, size, space } from '../theme'
+import { MAX_FONT_SCALE, alpha, font, line, radius, size, space, touch } from '../theme'
 
 /**
  * One agent conversation, read from the desktop.
@@ -64,10 +78,12 @@ export function AgentChatScreen({
    */
   onWorker?: (worker: AgentWorker) => void
 }) {
-  const { call, client, palette } = useConnection()
+  const { call, client, palette, hello, status, error: linkError, reconnect } = useConnection()
   const [blocks, setBlocks] = useState<AgentBlock[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>(null)
+  /** Bumped by the retry on a failed open; nothing else reads it. */
+  const [attempt, setAttempt] = useState(0)
   const [expanded, setExpanded] = useState<Record<number, string>>({})
   // The terminal as it actually looks. A permission prompt is drawn on screen
   // and never written to the transcript, so the numbered options this phone is
@@ -151,7 +167,7 @@ export function AgentChatScreen({
       // Closing is what stops the desktop tailing a transcript nobody reads.
       call('agents.close', { id: session.id }).catch(() => {})
     }
-  }, [call, session.id])
+  }, [call, session.id, attempt])
 
   /**
    * Come back after a reconnect.
@@ -262,10 +278,63 @@ export function AgentChatScreen({
     [call, session.id],
   )
 
+  /**
+   * The keys and commands the top of the screen sends — an interrupt, a
+   * compact, an answer to a prompt the transcript never saw. One guard for all
+   * of them, so the button that was pressed is the one that spins and the
+   * failure lands under the header rather than inside the composer that had
+   * nothing to do with it.
+   */
+  const [acting, setActing] = useState<string | null>(null)
+  const [actError, setActError] = useState<unknown>(null)
+  const act = useCallback(async (name: string, what: () => Promise<unknown>) => {
+    setActing(name)
+    setActError(null)
+    try {
+      await what()
+    } catch (err) {
+      setActError(err)
+    } finally {
+      setActing(null)
+    }
+  }, [])
+  const press = useCallback(
+    (key: string) => void act(key, () => call('agents.key', { id: session.id, key })),
+    [act, call, session.id],
+  )
+  // Compacting is the one command that earns a permanent button, and only
+  // once it is the thing you would want. A conversation past two thirds of
+  // its window is about to start losing the beginning of itself, and on a
+  // phone that is news you would otherwise never get — nothing else on this
+  // screen is going to mention it.
+  const canCommand = (hello?.capabilities?.agents as { commands?: boolean } | undefined)?.commands === true
+  const crowded = canCommand && (session.vitals?.context?.percent ?? 0) >= 66
+  const compact = useCallback(
+    () => void act('compact', () => call('agents.command', { id: session.id, name: 'compact' })),
+    [act, call, session.id],
+  )
+
   const groups = useMemo(() => groupBlocks(blocks), [blocks])
 
-  const stateTone =
-    session.state === 'waiting' ? palette.orange : session.state === 'working' ? palette.green : palette.muted
+  /**
+   * The question the agent is stopped on, if it is stopped on one.
+   *
+   * Drawn above the composer rather than at its place in the transcript: it is
+   * the one thing on this screen that wants a decision, and a decision should
+   * not have to be scrolled to. Once answered it goes back into the record
+   * where it happened. There is only ever one — an agent that has asked is an
+   * agent that has stopped — but the search runs from the end regardless.
+   */
+  const pending = useMemo<Extract<Group, { kind: 'row' }> | null>(() => {
+    for (let i = groups.length - 1; i >= 0; i -= 1) {
+      const group = groups[i]
+      if (group.kind === 'row' && group.row.block.kind === 'question' && !group.row.result) return group
+    }
+    return null
+  }, [groups])
+
+  const offline = status !== 'connected'
+  const settling = status === 'connecting' || status === 'reconnecting'
 
   return (
     <KeyboardAvoidingView
@@ -278,17 +347,33 @@ export function AgentChatScreen({
     >
       <Header
         session={session}
-        tone={stateTone}
         onBack={onBack}
         raw={raw !== null}
         onToggleRaw={inPane(session) ? () => setRaw((was) => (was === null ? '' : null)) : undefined}
         onStatus={() => setSkills(true)}
+        onCompact={crowded && session.writable ? compact : undefined}
+        onStop={session.writable ? () => press('C-c') : undefined}
+        acting={acting}
       />
 
       {/* Pinned rather than scrolled past: this is status, not conversation.
           It is also the only thing on the screen that answers "is it nearly
           done", which is the question that brought anyone here. */}
       <TaskStrip session={session} />
+
+      {offline || actError ? (
+        <View style={{ paddingHorizontal: space.lg, paddingTop: space.md }}>
+          {offline ? (
+            <Notice
+              tone="warning"
+              icon="wifi-off"
+              error={linkError || (settling ? 'Reconnecting to the desktop' : 'Not connected to the desktop')}
+              action={settling ? null : { label: 'Reconnect', icon: 'refresh-cw', onPress: reconnect }}
+            />
+          ) : null}
+          <Notice error={actError} onDismiss={() => setActError(null)} />
+        </View>
+      ) : null}
 
       {raw !== null ? <RawScreen session={session} /> : null}
 
@@ -304,56 +389,70 @@ export function AgentChatScreen({
         }}
         scrollEventThrottle={120}
       >
-        {loading ? <ActivityIndicator color={palette.accent} style={{ marginTop: space.xl }} /> : null}
-        <Notice error={error} onDismiss={() => setError(null)} />
+        {loading ? <TranscriptSkeleton /> : null}
+        <Notice
+          error={error}
+          onDismiss={() => setError(null)}
+          action={{ label: 'Try again', icon: 'refresh-cw', onPress: () => setAttempt((n) => n + 1) }}
+        />
         {!loading && !error && !groups.length ? (
-          <Body tone={palette.muted} style={{ textAlign: 'center', marginTop: space.xl }}>
-            Nothing in this transcript yet
-          </Body>
+          <Empty
+            icon="message-square"
+            text={session.state === 'starting' ? 'Starting · nothing in the transcript yet' : 'Nothing said yet'}
+          />
         ) : null}
 
-        {groups.map((group, i) =>
-          group.kind === 'tools' ? (
-            <ToolRun
-              key={group.seq}
-              rows={group.rows}
-              // The run at the end is the one happening now: never fold it.
-              live={i === groups.length - 1}
-              expanded={expanded}
-              onExpand={expand}
-            />
+        {groups.map((group, i) => {
+          // The pending question is drawn above the composer instead.
+          if (group === pending) return null
+          const mark = dayMark(i > 0 ? groupAt(groups[i - 1]) : undefined, groupAt(group))
+          const item =
+            group.kind === 'tools' ? (
+              <ToolRun
+                key={group.seq}
+                rows={group.rows}
+                // The run at the end is the one happening now: never fold it.
+                live={i === groups.length - 1}
+                expanded={expanded}
+                onExpand={expand}
+              />
+            ) : (
+              <Row
+                key={group.seq}
+                session={session}
+                block={group.row.block}
+                result={group.row.result}
+                expanded={expanded[group.row.block.seq]}
+                onExpand={expand}
+                onAnswer={answer}
+              />
+            )
+          return mark ? (
+            <React.Fragment key={group.seq}>
+              <DayMark label={mark} />
+              {item}
+            </React.Fragment>
           ) : (
-            <Row
-              key={group.seq}
-              session={session}
-              block={group.row.block}
-              result={group.row.result}
-              expanded={expanded[group.row.block.seq]}
-              onExpand={expand}
-              onAnswer={answer}
-            />
-          ),
-        )}
+            item
+          )
+        })}
 
         {live ? <LiveText text={live} /> : null}
 
         {session.state === 'working' ? <Working /> : null}
 
-        {session.state === 'waiting' && session.prompt && !groups.some((g) => g.kind === 'row' && g.row.block.kind === 'question' && !g.row.result) ? (
-          <View
-            style={{
-              borderLeftWidth: 2,
-              borderLeftColor: palette.orange,
-              backgroundColor: alpha(palette.orange, 0.08),
-              padding: space.md,
-              borderRadius: radius.sm,
-            }}
-          >
-            <Caps tone={palette.orange}>Waiting for you</Caps>
-            <Body style={{ marginTop: space.xs }}>{session.prompt}</Body>
-          </View>
-        ) : null}
+        {session.state === 'gone' ? <Hint icon="slash">Gone · this agent is no longer running</Hint> : null}
       </ScrollView>
+
+      {pending ? (
+        <Pinned keyboard={keyboard}>
+          <QuestionCard session={session} block={pending.row.block} result={pending.row.result} onAnswer={answer} live />
+        </Pinned>
+      ) : session.state === 'waiting' && session.prompt ? (
+        <Pinned keyboard={keyboard}>
+          <WaitingCard session={session} onKey={session.writable ? press : undefined} acting={acting} />
+        </Pinned>
+      ) : null}
 
       <Composer
         session={session}
@@ -387,6 +486,68 @@ export function useKeyboardOpen(): boolean {
   }, [])
   return open
 }
+
+/* ── time ────────────────────────────────────────────────────────────── */
+
+/** When a group happened: the first block in it. */
+const groupAt = (group: Group): number => (group.kind === 'tools' ? group.rows[0].block.at : group.row.block.at)
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/**
+ * The day a message belongs to, said only when it changes.
+ *
+ * A transcript is read in order and timestamps on every turn are noise the
+ * reader learns to skip; a line saying "yesterday" where yesterday began is
+ * the one piece of time that changes how the rest is read. Today is not
+ * announced at the top of a chat that is all today.
+ */
+function dayMark(previous: number | undefined, at: number): string | null {
+  if (!at) return null
+  const day = new Date(at)
+  const today = new Date()
+  if (previous !== undefined) {
+    if (new Date(previous).toDateString() === day.toDateString()) return null
+    if (day.toDateString() === today.toDateString()) return 'today'
+  } else if (day.toDateString() === today.toDateString()) {
+    return null
+  }
+  const yesterday = new Date(today)
+  yesterday.setDate(today.getDate() - 1)
+  if (day.toDateString() === yesterday.toDateString()) return 'yesterday'
+  return `${day.getDate()} ${MONTHS[day.getMonth()]}`
+}
+
+function DayMark({ label }: { label: string }) {
+  return (
+    <View style={{ alignItems: 'center', paddingVertical: space.xs }}>
+      <Caps>{label}</Caps>
+    </View>
+  )
+}
+
+/**
+ * The bottom of the screen that is not the composer: a question, a prompt.
+ *
+ * Bounded so a question with nine long options cannot push the field it sits
+ * over off the screen, and bounded harder while the keyboard is up, because
+ * then the screen is down to a few lines and the field is the one being used.
+ */
+function Pinned({ keyboard, children }: { keyboard: boolean; children: React.ReactNode }) {
+  const palette = usePalette()
+  return (
+    <ScrollView
+      style={{ maxHeight: keyboard ? 180 : 380, flexGrow: 0, backgroundColor: palette.background }}
+      contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: space.md }}
+      keyboardShouldPersistTaps="handled"
+      nestedScrollEnabled
+    >
+      {children}
+    </ScrollView>
+  )
+}
+
+/* ── the head of the screen ──────────────────────────────────────────── */
 
 /**
  * The list the agent is working through, folded to one line.
@@ -424,15 +585,14 @@ function TaskStrip({ session }: { session: AgentSession }) {
   const fraction = summary.total ? summary.done / summary.total : 0
   // Between two tasks an agent has not stopped, and a strip that says
   // "nothing in progress" in that moment reads as though it had.
-  const line =
+  const headline =
     summary.active ||
-    (summary.next ? `next: ${summary.next}` : summary.done === summary.total ? 'all done' : 'nothing in progress')
+    (summary.next ? `Next · ${summary.next}` : summary.done === summary.total ? 'All done' : 'Between tasks')
 
   return (
     <View
       style={{
         paddingHorizontal: space.lg,
-        paddingVertical: space.sm,
         backgroundColor: palette.darker_background,
         borderBottomWidth: StyleSheet.hairlineWidth * 2,
         borderBottomColor: palette.lighter_background,
@@ -440,18 +600,22 @@ function TaskStrip({ session }: { session: AgentSession }) {
     >
       <Pressable
         onPress={() => setOpen((was) => !was)}
-        style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', gap: space.sm, opacity: pressed ? 0.6 : 1 })}
+        accessibilityRole="button"
+        accessibilityLabel={`${summary.done} of ${summary.total} tasks done`}
+        accessibilityState={{ expanded: open }}
+        style={({ pressed }) => ({
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: space.sm,
+          minHeight: touch - 4,
+          opacity: pressed ? 0.6 : 1,
+        })}
       >
-        <Feather name={open ? 'chevron-down' : 'chevron-right'} size={12} color={palette.muted} />
-        <Text
-          style={{ flex: 1, color: palette.light_foreground, fontFamily: font.regular, fontSize: size.label }}
-          numberOfLines={1}
-        >
-          {line}
-        </Text>
-        <Text style={{ color: palette.muted, fontFamily: font.medium, fontSize: size.micro }}>
+        <Feather name={open ? 'chevron-down' : 'chevron-right'} size={13} color={palette.muted} />
+        <Label style={{ flex: 1 }}>{headline}</Label>
+        <Caps tone={palette.light_foreground}>
           {summary.done}/{summary.total}
-        </Text>
+        </Caps>
         <View style={{ width: 44 }}>
           <Meter fraction={fraction} tone={fraction === 1 ? palette.green : palette.accent} height={3} />
         </View>
@@ -460,38 +624,36 @@ function TaskStrip({ session }: { session: AgentSession }) {
       {open ? (
         // A long plan must not push the conversation off the screen: the strip
         // is a header, and a header that takes half the display is a screen.
-        <ScrollView nestedScrollEnabled style={{ maxHeight: 200, marginTop: space.sm }} contentContainerStyle={{ gap: 3 }}>
-          {(list?.tasks || []).map((task) => (
-            <View key={task.id} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
-              <Feather
-                name={
-                  task.status === 'completed' ? 'check-square' : task.status === 'in_progress' ? 'play' : 'square'
-                }
-                size={12}
-                color={
-                  task.status === 'completed'
-                    ? palette.green
-                    : task.status === 'in_progress'
-                      ? palette.accent
-                      : palette.muted
-                }
-                style={{ marginTop: 3 }}
-              />
-              <Text
-                style={{
-                  flex: 1,
-                  color: task.status === 'completed' ? palette.muted : palette.light_foreground,
-                  fontFamily: task.status === 'in_progress' ? font.medium : font.regular,
-                  fontSize: size.micro,
-                  lineHeight: 16,
-                  textDecorationLine: task.status === 'completed' ? 'line-through' : 'none',
-                }}
-                numberOfLines={2}
-              >
-                {task.subject}
-              </Text>
-            </View>
-          ))}
+        <ScrollView
+          nestedScrollEnabled
+          style={{ maxHeight: 200 }}
+          contentContainerStyle={{ gap: space.xs, paddingBottom: space.md }}
+        >
+          {(list?.tasks || []).map((task) => {
+            const done = task.status === 'completed'
+            const now = task.status === 'in_progress'
+            return (
+              <View key={task.id} style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
+                <Feather
+                  name={done ? 'check-square' : now ? 'play' : 'square'}
+                  size={12}
+                  color={done ? palette.green : now ? palette.accent : palette.muted}
+                  style={{ marginTop: 3 }}
+                />
+                <Label
+                  numberOfLines={2}
+                  style={{
+                    flex: 1,
+                    color: done ? palette.muted : palette.light_foreground,
+                    fontFamily: now ? font.medium : font.regular,
+                    textDecorationLine: done ? 'line-through' : 'none',
+                  }}
+                >
+                  {task.subject}
+                </Label>
+              </View>
+            )
+          })}
           {list === null ? <ActivityIndicator size="small" color={palette.accent} /> : null}
         </ScrollView>
       ) : null}
@@ -503,35 +665,54 @@ function TaskStrip({ session }: { session: AgentSession }) {
  * Who this is, what it is running as, and how it is doing.
  *
  * Two rows rather than one because they answer different questions and only
- * one of them changes. The top row is identity — whose conversation, in what
- * directory, and whether it is moving. The bottom is the desktop's own status
- * line: model, context meter, permission mode, branch. On the desktop that
- * line is glanced at; here it is what tells you whether to send the agent off
- * on something long or compact it first, which is a decision you can only make
- * before you type.
+ * one of them changes. The top row is identity — whose conversation, and
+ * whether it is moving. The bottom is the desktop's own status line: model,
+ * context meter, permission mode. On the desktop that line is glanced at; here
+ * it is what tells you whether to send the agent off on something long or
+ * compact it first, which is a decision you can only make before you type.
  *
  * The status line is a button because the thing you do about a full context is
  * a slash command, and the sheet holding those is one tap from where the
  * number that prompted it is drawn.
+ *
+ * Three actions can sit on the right and rarely do at once: the terminal is
+ * there only for a session in a pane, compact only while the context is
+ * crowded, and the interrupt only where a key can reach.
+ *
+ * Not a `ScreenHeader`, on purpose. This is a chat, not a tab: the name on it
+ * is the conversation's own title rather than a caps label, and a back button
+ * has to come before it because there is nowhere else to go.
  */
 function Header({
   session,
-  tone,
   onBack,
   raw,
   onToggleRaw,
   onStatus,
+  onCompact,
+  onStop,
+  acting,
 }: {
   session: AgentSession
-  tone: string
   onBack: () => void
   raw: boolean
   onToggleRaw?: () => void
   onStatus?: () => void
+  onCompact?: () => void
+  onStop?: () => void
+  acting: string | null
 }) {
   const palette = usePalette()
   const insets = useSafeAreaInsets()
   const vitals = session.vitals ?? null
+  const tone =
+    session.state === 'waiting'
+      ? palette.orange
+      : session.state === 'working'
+        ? palette.green
+        : session.state === 'gone'
+          ? palette.red
+          : palette.muted
 
   return (
     <View
@@ -542,42 +723,49 @@ function Header({
         backgroundColor: palette.dark_background,
         borderBottomWidth: StyleSheet.hairlineWidth * 2,
         borderBottomColor: palette.lighter_background,
+        flexDirection: 'row',
+        alignItems: 'center',
         gap: space.sm,
       }}
     >
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-        <Pressable onPress={onBack} hitSlop={12}>
-          <Feather name="chevron-left" size={22} color={palette.foreground} />
-        </Pressable>
-        <View style={{ flex: 1 }}>
-          <Text
-            style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.value }}
-            numberOfLines={1}
-          >
-            {session.title}
-          </Text>
-          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
-            {session.job ? `background · ${session.job.detail || session.job.state}` : `${session.agent} · ${session.cwd || '—'}`}
-          </Text>
+      <IconButton icon="chevron-left" label="Back" onPress={onBack} />
+      <View style={{ flex: 1, minWidth: 0, marginLeft: space.xs, gap: 2 }}>
+        <Title>{session.title}</Title>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: line.micro }}>
+          <Pulse tone={tone} on={session.state === 'working'} size={7} />
+          <Caps tone={tone}>{session.state}</Caps>
+          {vitals ? (
+            <Pressable
+              onPress={onStatus}
+              disabled={!onStatus}
+              accessibilityRole="button"
+              accessibilityLabel="Skills and commands"
+              style={({ pressed }) => ({ flex: 1, opacity: pressed ? 0.6 : 1 })}
+            >
+              <StatusLine vitals={vitals} dense />
+            </Pressable>
+          ) : null}
         </View>
-        {onToggleRaw ? (
-          <Pressable onPress={onToggleRaw} hitSlop={10}>
-            <Feather name="terminal" size={16} color={raw ? palette.accent : palette.muted} />
-          </Pressable>
-        ) : null}
-        <Pulse tone={tone} on={session.state === 'working'} />
-        <Caps tone={tone}>{session.state}</Caps>
       </View>
-
-      {vitals ? (
-        <Pressable
-          onPress={onStatus}
-          disabled={!onStatus}
-          hitSlop={6}
-          style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
-        >
-          <StatusLine vitals={vitals} />
-        </Pressable>
+      {onToggleRaw ? (
+        <IconButton
+          icon="terminal"
+          label={raw ? 'Show the chat' : 'Show the terminal'}
+          tone={raw ? palette.accent : undefined}
+          onPress={onToggleRaw}
+        />
+      ) : null}
+      {onCompact ? (
+        <IconButton
+          icon="minimize-2"
+          label="Compact the context"
+          tone={palette.orange}
+          loading={acting === 'compact'}
+          onPress={onCompact}
+        />
+      ) : null}
+      {onStop ? (
+        <IconButton icon="square" label="Interrupt the agent" tone={palette.red} loading={acting === 'C-c'} onPress={onStop} />
       ) : null}
     </View>
   )
@@ -587,7 +775,9 @@ function Header({
  * The status dot, breathing while the agent works.
  *
  * A still dot cannot say whether a session is alive or wedged, and that is the
- * question anyone opening this screen is actually asking.
+ * question anyone opening this screen is actually asking. The kit's
+ * `StatusDot` has a `pulse` that only dims; this one moves, and belongs
+ * beside it once a second screen wants a heartbeat.
  */
 function Pulse({ tone, on, size: dot = 8 }: { tone: string; on?: boolean; size?: number }) {
   const value = useRef(new Animated.Value(1)).current
@@ -614,7 +804,40 @@ function Pulse({ tone, on, size: dot = 8 }: { tone: string; on?: boolean; size?:
   )
 }
 
-/** The agent is mid-turn and has not said anything yet. */
+/* ── the transcript ──────────────────────────────────────────────────── */
+
+/**
+ * The shape of a conversation before there is one.
+ *
+ * A question on the right, an answer on the left, a line of ledger under it —
+ * drawn in the card's own greys so the screen reads as "loading a chat"
+ * rather than "blank", and so that the real rows land where the eye already
+ * is.
+ */
+function TranscriptSkeleton() {
+  const palette = usePalette()
+  const bar = (width: `${number}%`, height: number, right?: boolean) => (
+    <View
+      style={{
+        width,
+        height,
+        borderRadius: radius.sm,
+        backgroundColor: right ? palette.selection : palette.dark_background,
+        alignSelf: right ? 'flex-end' : 'flex-start',
+      }}
+    />
+  )
+  return (
+    <View style={{ gap: space.md, paddingTop: space.sm }} accessibilityLabel="Opening the transcript">
+      {bar('55%', 36, true)}
+      {bar('92%', line.body)}
+      {bar('74%', line.body)}
+      {bar('40%', line.label)}
+      {bar('86%', line.body)}
+    </View>
+  )
+}
+
 /**
  * The answer as it is being typed, one poll behind the desktop's own screen.
  *
@@ -624,30 +847,21 @@ function Pulse({ tone, on, size: dot = 8 }: { tone: string; on?: boolean; size?:
  * there. It is set in the same body type as the real thing so the swap is not
  * a jolt, and dimmed a shade, because a draft that looked exactly like the
  * record would be a phone quietly claiming the file says something it does not
- * say yet.
+ * say yet. The line height is the one fixed by the kit, so words arriving a
+ * few at a time extend the paragraph without moving what is already there.
  */
 function LiveText({ text }: { text: string }) {
   const palette = usePalette()
-  return (
-    <Text
-      style={{
-        color: alpha(palette.foreground, 0.75),
-        fontFamily: font.regular,
-        fontSize: size.body,
-        lineHeight: 20,
-      }}
-    >
-      {text}
-    </Text>
-  )
+  return <Body tone={alpha(palette.foreground, 0.75)}>{text}</Body>
 }
 
+/** The agent is mid-turn and has not said anything yet. */
 function Working() {
   const palette = usePalette()
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
       <Pulse tone={palette.green} on size={6} />
-      <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>working</Text>
+      <Hint style={{ flex: 1 }}>Working</Hint>
     </View>
   )
 }
@@ -688,12 +902,12 @@ function RawScreen({ session }: { session: AgentSession }) {
       {screen === null && !error ? <ActivityIndicator color={palette.accent} /> : null}
       {screen !== null ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-          <Text
+          <Mono
             selectable
-            style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.micro, lineHeight: 15 }}
+            style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.micro, lineHeight: line.micro }}
           >
             {screen}
-          </Text>
+          </Mono>
         </ScrollView>
       ) : null}
     </ScrollView>
@@ -729,18 +943,21 @@ function ToolRunView({
   return (
     <View
       style={{
-        gap: 1,
         borderLeftWidth: StyleSheet.hairlineWidth * 2,
         borderLeftColor: palette.lighter_background,
         paddingLeft: space.sm,
       }}
     >
       {hidden ? (
-        <Pressable onPress={() => setUnfolded(true)} hitSlop={6} style={{ paddingVertical: 3 }}>
-          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-            {hidden} more {hidden === 1 ? 'step' : 'steps'}
-          </Text>
-        </Pressable>
+        <Button
+          variant="ghost"
+          compact
+          icon="chevron-up"
+          label={`${hidden} more ${hidden === 1 ? 'step' : 'steps'}`}
+          tone={palette.light_foreground}
+          onPress={() => setUnfolded(true)}
+          style={{ alignSelf: 'flex-start', paddingHorizontal: space.xs, minHeight: 32 }}
+        />
       ) : null}
 
       {shown.map(({ block, result }) => (
@@ -769,10 +986,32 @@ function ToolRunView({
 export const ToolRun = React.memo(ToolRunView, sameToolRun)
 
 /**
+ * The glyph for a tool, by what kind of thing it does.
+ *
+ * Read, search, edit, run, fetch, delegate — six shapes cover every tool a
+ * coding agent has and a line of them scans faster than six names do. A tool
+ * this has never heard of gets the generic glyph rather than nothing, so the
+ * column stays a column.
+ */
+function toolIcon(tool: string | undefined): IconName {
+  const name = (tool || '').toLowerCase()
+  if (!name) return 'tool'
+  if (name.includes('bash') || name.includes('shell') || name.includes('exec')) return 'terminal'
+  if (name.includes('edit') || name.includes('write') || name.includes('notebook')) return 'edit-2'
+  if (name.includes('read') || name.includes('cat')) return 'file-text'
+  if (name.includes('grep') || name.includes('glob') || name.includes('search') || name.includes('find')) return 'search'
+  if (name.includes('web') || name.includes('fetch') || name.includes('http')) return 'globe'
+  if (name.includes('agent') || name.includes('task')) return 'users'
+  if (name.includes('todo') || name.includes('plan')) return 'check-square'
+  if (name.includes('skill')) return 'zap'
+  return 'tool'
+}
+
+/**
  * One tool call, one line.
  *
  * Name, what it was pointed at, and how it went — anything more is the body,
- * and the body is behind a tap. The status lives in the colour of the dot so
+ * and the body is behind a tap. The status lives in the colour of the glyph so
  * that it costs no width at all, and only a failure earns a second line,
  * because a failure is the one result you cannot act on without reading it.
  */
@@ -797,46 +1036,37 @@ function ToolLine({
     <View>
       <Pressable
         onPress={onExpand}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={`${block.tool || 'tool'} ${block.summary || ''}`.trim()}
+        accessibilityState={{ expanded: open }}
         style={({ pressed }) => ({
           flexDirection: 'row',
           alignItems: 'center',
           gap: space.sm,
-          paddingVertical: 3,
+          minHeight: 32,
           paddingHorizontal: space.xs,
           marginLeft: -space.xs,
           borderRadius: radius.sm,
           backgroundColor: pressed || open ? palette.dark_background : 'transparent',
         })}
       >
-        <View style={{ width: 5, height: 5, borderRadius: 3, backgroundColor: tone }} />
-        <Text style={{ color: palette.light_foreground, fontFamily: font.medium, fontSize: size.label }}>
-          {block.tool}
-        </Text>
-        <Text
-          style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}
-          numberOfLines={1}
-        >
+        <Feather name={toolIcon(block.tool)} size={12} color={tone} />
+        <Label style={{ fontFamily: font.medium, flexShrink: 0 }}>{block.tool}</Label>
+        <Label style={{ flex: 1 }} numberOfLines={1}>
           {block.summary}
-        </Text>
+        </Label>
         {status === 'error' ? (
-          <Text style={{ color: palette.red, fontFamily: font.regular, fontSize: size.micro }}>failed</Text>
+          <Caps tone={palette.red}>failed</Caps>
         ) : result?.lines ? (
-          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>{result.lines}L</Text>
+          <Caps>{result.lines}L</Caps>
         ) : null}
       </Pressable>
 
       {status === 'error' && !open ? (
-        <Text
-          style={{
-            color: alpha(palette.red, 0.75),
-            fontFamily: font.regular,
-            fontSize: size.micro,
-            marginLeft: 5 + space.sm,
-          }}
-          numberOfLines={2}
-        >
+        <Label numberOfLines={2} style={{ color: alpha(palette.red, 0.8), marginLeft: 12 + space.sm, marginBottom: space.xs }}>
           {result?.summary}
-        </Text>
+        </Label>
       ) : null}
 
       {open ? (
@@ -853,12 +1083,18 @@ function ToolLine({
           }}
         >
           <ScrollView nestedScrollEnabled style={{ maxHeight: 240 }}>
-            <Text
+            <Mono
               selectable
-              style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.micro, padding: space.md }}
+              style={{
+                color: palette.light_foreground,
+                fontFamily: font.regular,
+                fontSize: size.micro,
+                lineHeight: line.micro,
+                padding: space.md,
+              }}
             >
               {expanded}
-            </Text>
+            </Mono>
           </ScrollView>
         </ScrollView>
       ) : null}
@@ -900,25 +1136,29 @@ function RowView({
 }) {
   const palette = usePalette()
   const [thought, setThought] = useState(false)
+  // When this was said, shown on a long press. A timestamp on every bubble is
+  // the kind of furniture a chat learns to ignore; one on demand is an answer.
+  const [stamp, setStamp] = useState(false)
 
   if (block.kind === 'text') {
     if (block.role === 'user') {
       return (
-        <View
-          style={{
-            alignSelf: 'flex-end',
-            maxWidth: '88%',
-            backgroundColor: palette.selection,
-            borderRadius: radius.md,
-            paddingHorizontal: space.md,
-            paddingVertical: space.sm,
-          }}
-        >
-          <Text
-            style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.body, lineHeight: 20 }}
+        <View style={{ alignItems: 'flex-end' }}>
+          <Pressable
+            onLongPress={() => setStamp((was) => !was)}
+            accessibilityLabel={stamp ? undefined : 'Hold for the time'}
+            style={{
+              maxWidth: '88%',
+              backgroundColor: palette.selection,
+              borderRadius: radius.md,
+              borderBottomRightRadius: radius.sm,
+              paddingHorizontal: space.md,
+              paddingVertical: space.sm,
+            }}
           >
-            {block.text}
-          </Text>
+            <Body tone={palette.bright_foreground}>{block.text}</Body>
+          </Pressable>
+          {stamp ? <Caps style={{ marginTop: space.xs }}>{clock(block.at)}</Caps> : null}
         </View>
       )
     }
@@ -938,15 +1178,16 @@ function RowView({
     return (
       <Pressable
         onPress={() => setThought((was) => !was)}
+        accessibilityRole="button"
+        accessibilityLabel="Thinking"
+        accessibilityState={{ expanded: thought }}
+        hitSlop={6}
         style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}
       >
         <Feather name={thought ? 'chevron-down' : 'chevron-right'} size={12} color={palette.muted} style={{ marginTop: 3 }} />
-        <Text
-          style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label, lineHeight: 18 }}
-          numberOfLines={thought ? undefined : 1}
-        >
+        <Label style={{ flex: 1, opacity: 0.8 }} numberOfLines={thought ? 0 : 1}>
           {block.text}
-        </Text>
+        </Label>
       </Pressable>
     )
   }
@@ -961,9 +1202,9 @@ function RowView({
 
   // A result with no tool call in the window it was loaded from.
   return (
-    <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={2}>
+    <Label numberOfLines={2}>
       {block.summary} · {ago(block.at)}
-    </Text>
+    </Label>
   )
 }
 
@@ -975,6 +1216,8 @@ function RowView({
  * was every answer in the transcript, several times a second.
  */
 export const Row = React.memo(RowView, sameRow)
+
+/* ── questions and prompts ───────────────────────────────────────────── */
 
 /**
  * A multiple-choice question, with the options tappable.
@@ -991,17 +1234,23 @@ export const Row = React.memo(RowView, sameRow)
  * options fall away and what was picked stays. The answer is read off the
  * transcript rather than remembered locally, so a question answered at the
  * keyboard settles here too, with nothing having to tell the phone.
+ *
+ * `live` is the card pinned over the composer: a bordered card in the
+ * waiting colour. In the transcript the same block is a quiet record with a
+ * rule down its side.
  */
 function QuestionCard({
   session,
   block,
   result,
   onAnswer,
+  live,
 }: {
   session: AgentSession | null
   block: AgentBlock
   result?: AgentBlock
   onAnswer?: (seq: number, question: number, choices: number[]) => Promise<{ labels: string[] }>
+  live?: boolean
 }) {
   const palette = usePalette()
   const questions = block.questions || []
@@ -1010,15 +1259,24 @@ function QuestionCard({
 
   return (
     <View
-      style={{
-        borderLeftWidth: 2,
-        borderLeftColor: tone,
-        backgroundColor: answered ? 'transparent' : alpha(palette.orange, 0.07),
-        borderRadius: radius.sm,
-        paddingVertical: space.md,
-        paddingHorizontal: space.md,
-        gap: space.lg,
-      }}
+      style={
+        live
+          ? {
+              backgroundColor: palette.dark_background,
+              borderColor: alpha(palette.orange, 0.45),
+              borderWidth: StyleSheet.hairlineWidth * 2,
+              borderRadius: radius.md,
+              padding: space.lg - 2,
+              gap: space.lg,
+            }
+          : {
+              borderLeftWidth: 2,
+              borderLeftColor: tone,
+              paddingVertical: space.xs,
+              paddingHorizontal: space.md,
+              gap: space.lg,
+            }
+      }
     >
       {questions.map((question, i) => (
         <Question
@@ -1026,6 +1284,7 @@ function QuestionCard({
           session={session}
           question={question}
           picked={pickedFrom(answered?.[question.question], question)}
+          live={Boolean(live)}
           onAnswer={(choices) =>
             onAnswer
               ? onAnswer(block.seq, i, choices)
@@ -1051,15 +1310,20 @@ function pickedFrom(answer: unknown, question: AgentQuestion): string[] | null {
   return answer.split(/\s*,\s*/).filter(Boolean)
 }
 
+/** The option the agent would pick itself, when it says so in the option. */
+const RECOMMENDED = /recommended/i
+
 function Question({
   session,
   question,
   picked,
+  live,
   onAnswer,
 }: {
   session: AgentSession | null
   question: AgentQuestion
   picked: string[] | null
+  live: boolean
   onAnswer: (choices: number[]) => Promise<{ labels: string[] }>
 }) {
   const palette = usePalette()
@@ -1105,29 +1369,31 @@ function Question({
 
   return (
     <View style={{ gap: space.sm }}>
-      {question.header ? <Caps tone={settled ? palette.muted : palette.orange}>{question.header}</Caps> : null}
-      <Text
-        style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.body, lineHeight: 20 }}
-      >
-        {question.question}
-      </Text>
+      <Caps tone={settled ? palette.muted : palette.orange}>{question.header || 'Question'}</Caps>
+      {/* The one place a title may run to several lines: the question is the
+          whole reason the card exists and a truncated question cannot be
+          answered. */}
+      {settled ? <Body>{question.question}</Body> : <Title numberOfLines={0}>{question.question}</Title>}
 
       {settled ? (
         <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }}>
-          <Feather name="check" size={13} color={picked ? palette.green : palette.muted} style={{ marginTop: 3 }} />
-          <Text style={{ flex: 1, color: palette.light_foreground, fontFamily: font.medium, fontSize: size.label }}>
+          <Feather name="check" size={13} color={picked ? palette.green : palette.muted} style={{ marginTop: 2 }} />
+          <Label numberOfLines={3} style={{ flex: 1, fontFamily: font.medium }}>
             {settled.join(' · ')}
-          </Text>
+          </Label>
         </View>
       ) : (
-        <View style={{ gap: 1 }}>
+        <View style={{ gap: space.sm, marginTop: space.xs }}>
           {question.options.map((option, i) => (
-            <Option
+            <OptionRow
               key={option.label}
               n={i + 1}
               option={option}
               checked={checked.includes(i + 1)}
+              recommended={RECOMMENDED.test(option.label) || RECOMMENDED.test(option.description || '')}
+              multi={Boolean(question.multiSelect)}
               enabled={answerable && !busy}
+              busy={busy && !question.multiSelect}
               onPress={() => tap(i + 1)}
             />
           ))}
@@ -1135,27 +1401,20 @@ function Question({
       )}
 
       {question.multiSelect && !settled ? (
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-            pick as many as apply
-          </Text>
-          <Button
-            label={checked.length ? `Send ${checked.length}` : 'Send'}
-            icon="check"
-            tone={palette.orange}
-            disabled={!answerable || !checked.length}
-            loading={busy}
-            onPress={() => submit([...checked].sort((a, b) => a - b))}
-          />
-        </View>
+        <Button
+          label={checked.length ? `Send ${checked.length}` : 'Send'}
+          icon="check"
+          variant="solid"
+          tone={palette.orange}
+          disabled={!answerable || !checked.length}
+          loading={busy}
+          onPress={() => submit([...checked].sort((a, b) => a - b))}
+          style={{ marginTop: space.xs }}
+        />
       ) : null}
 
-      {!session?.writable && !settled ? (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          Reading only — this one has to be answered at the desktop
-        </Text>
-      ) : null}
-      <Notice error={error} style={{ marginBottom: 0 }} />
+      {!session?.writable && !settled ? <Hint icon="eye">Read only · answer this at the desktop</Hint> : null}
+      <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: 0 }} />
     </View>
   )
 }
@@ -1163,68 +1422,155 @@ function Question({
 /**
  * One option: its number, its label, and what it means.
  *
- * The description is the half that decides the question and the half a phone
- * has no room for, so it is kept — two lines of it — rather than folded away
- * behind a tap nobody would take while deciding.
+ * Full width, because a choice is a button and a button on a phone is the
+ * width of a thumb's reach. The description is the half that decides the
+ * question and the half a phone has no room for, so it is kept — two lines of
+ * it — rather than folded away behind a tap nobody would take while deciding.
+ * The recommended one is drawn solid, the way the primary button is
+ * everywhere else.
  */
-function Option({
+function OptionRow({
   n,
   option,
   checked,
+  recommended,
+  multi,
   enabled,
+  busy,
   onPress,
 }: {
   n: number
   option: { label: string; description?: string }
   checked: boolean
+  recommended: boolean
+  multi: boolean
   enabled: boolean
+  busy: boolean
   onPress: () => void
 }) {
   const palette = usePalette()
+  const accent = palette.orange
+  const lit = checked || recommended
   return (
     <Pressable
       onPress={onPress}
       disabled={!enabled}
+      accessibilityRole="button"
+      accessibilityLabel={`${n}. ${option.label}`}
+      accessibilityState={{ disabled: !enabled, checked: multi ? checked : undefined }}
       style={({ pressed }) => ({
         flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         gap: space.sm,
+        minHeight: touch,
         paddingVertical: space.sm,
-        paddingHorizontal: space.sm,
+        paddingHorizontal: space.md,
         borderRadius: radius.sm,
         borderWidth: StyleSheet.hairlineWidth * 2,
-        borderColor: checked ? palette.orange : 'transparent',
-        backgroundColor: checked || pressed ? palette.selection : palette.darker_background,
-        opacity: enabled ? 1 : 0.6,
+        borderColor: lit ? alpha(accent, 0.6) : palette.lighter_background,
+        backgroundColor: lit ? alpha(accent, pressed ? 0.3 : 0.18) : pressed ? palette.selection : palette.darker_background,
+        opacity: enabled || busy ? 1 : 0.5,
       })}
     >
-      <Text
-        style={{
-          color: checked ? palette.orange : palette.muted,
-          fontFamily: font.medium,
-          fontSize: size.label,
-          minWidth: 12,
-          marginTop: 1,
-        }}
-      >
+      <Caps tone={lit ? accent : palette.light_foreground} style={{ minWidth: 14 }}>
         {n}
-      </Text>
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.label }}>
+      </Caps>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Body tone={palette.bright_foreground} style={{ fontFamily: font.medium }}>
           {option.label}
-        </Text>
+        </Body>
         {option.description ? (
-          <Text
-            style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, lineHeight: 15, marginTop: 2 }}
-            numberOfLines={2}
-          >
+          <Label numberOfLines={2} style={{ marginTop: 1 }}>
             {option.description}
-          </Text>
+          </Label>
         ) : null}
       </View>
+      {multi ? (
+        <Feather name={checked ? 'check-square' : 'square'} size={16} color={checked ? accent : palette.muted} />
+      ) : null}
     </Pressable>
   )
 }
+
+/**
+ * A prompt the transcript never saw.
+ *
+ * A permission dialog is drawn on the terminal and written nowhere, so all the
+ * phone has is the sentence the hook reported and the knowledge that the
+ * terminal is sitting on a numbered list with the first entry highlighted.
+ * Allow presses the digit that means yes and Deny presses escape, the two
+ * answers the desktop's list always has; the small row under them is for the
+ * prompts whose second and third options are the interesting ones, and for
+ * taking whatever the cursor is on.
+ */
+function WaitingCard({
+  session,
+  onKey,
+  acting,
+}: {
+  session: AgentSession
+  onKey?: (key: string) => void
+  acting: string | null
+}) {
+  const palette = usePalette()
+  return (
+    <View
+      style={{
+        backgroundColor: palette.dark_background,
+        borderColor: alpha(palette.orange, 0.45),
+        borderWidth: StyleSheet.hairlineWidth * 2,
+        borderRadius: radius.md,
+        padding: space.lg - 2,
+        gap: space.sm,
+      }}
+    >
+      <Caps tone={palette.orange}>Waiting for you</Caps>
+      <Title numberOfLines={0}>{session.prompt}</Title>
+      {onKey ? (
+        <>
+          <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.xs }}>
+            <Button
+              label="Allow"
+              icon="check"
+              variant="solid"
+              tone={palette.green}
+              loading={acting === '1'}
+              disabled={acting !== null}
+              onPress={() => onKey('1')}
+              style={{ flex: 1 }}
+            />
+            <Button
+              label="Deny"
+              icon="x"
+              variant="danger"
+              loading={acting === 'Escape'}
+              disabled={acting !== null}
+              onPress={() => onKey('Escape')}
+              style={{ flex: 1 }}
+            />
+          </View>
+          <View style={{ flexDirection: 'row', gap: space.sm }}>
+            <Button compact label="Option 2" loading={acting === '2'} disabled={acting !== null} onPress={() => onKey('2')} style={{ flex: 1, paddingHorizontal: space.sm }} />
+            <Button compact label="Option 3" loading={acting === '3'} disabled={acting !== null} onPress={() => onKey('3')} style={{ flex: 1, paddingHorizontal: space.sm }} />
+            <Button
+              compact
+              label="Enter"
+              icon="corner-down-left"
+              loading={acting === 'Enter'}
+              disabled={acting !== null}
+              onPress={() => onKey('Enter')}
+              style={{ flex: 1, paddingHorizontal: space.sm }}
+            />
+          </View>
+        </>
+      ) : (
+        <Hint icon="eye">Read only · answer this at the desktop</Hint>
+      )}
+    </View>
+  )
+}
+
+/* ── the composer ────────────────────────────────────────────────────── */
 
 /** Pictures per message — the desktop refuses more, so the phone does not offer it. */
 const MAX_SHOTS = 6
@@ -1241,7 +1587,12 @@ function Thumbnail({ shot, onRemove }: { shot: Attachment; onRemove: () => void 
   const palette = usePalette()
   const settling = !shot.path && !shot.error
   return (
-    <Pressable onPress={onRemove} style={{ width: 56, height: 56 }}>
+    <Pressable
+      onPress={onRemove}
+      accessibilityRole="button"
+      accessibilityLabel={`Remove ${shot.name}`}
+      style={{ width: 56, height: 56 }}
+    >
       <Image
         source={{ uri: shot.uri }}
         style={{
@@ -1278,36 +1629,75 @@ function Thumbnail({ shot, onRemove }: { shot: Attachment; onRemove: () => void 
   )
 }
 
-/** The keys worth a button. Anything longer is typed. */
-const QUICK: { key: string; label: string }[] = [
-  { key: 'Escape', label: 'Esc' },
-  { key: '1', label: '1' },
-  { key: '2', label: '2' },
-  { key: '3', label: '3' },
-  { key: 'Enter', label: '⏎' },
-]
+/**
+ * The microphone while it is open: red, counting, and one tap from done.
+ *
+ * The count is the only honest reassurance a microphone can give — nothing
+ * else on screen proves it is still open — and the limit beside it is the
+ * desktop's, so the moment the recording will be cut short is visible before
+ * it happens.
+ */
+function RecordingPill({
+  held,
+  max,
+  onStop,
+  onDiscard,
+}: {
+  held: number
+  max: number
+  onStop: () => void
+  onDiscard: () => void
+}) {
+  const palette = usePalette()
+  const stamp = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+  return (
+    <Pressable
+      onPress={onStop}
+      onLongPress={onDiscard}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel="Stop recording and transcribe; hold to discard"
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: space.sm,
+        height: 36,
+        paddingHorizontal: space.md,
+        borderRadius: 18,
+        borderWidth: StyleSheet.hairlineWidth * 2,
+        borderColor: alpha(palette.red, 0.6),
+        backgroundColor: alpha(palette.red, pressed ? 0.3 : 0.15),
+      })}
+    >
+      <Pulse tone={palette.red} on size={7} />
+      <Mono style={{ color: palette.red, fontFamily: font.medium, fontSize: size.label, lineHeight: line.label }}>
+        {stamp(held)}
+      </Mono>
+      <Caps tone={alpha(palette.red, 0.7)}>/ {stamp(max)}</Caps>
+      <Feather name="square" size={12} color={palette.red} />
+    </Pressable>
+  )
+}
 
 /**
  * Answering the agent.
  *
- * The text field is the obvious half; the row of keys above it is the one that
- * matters. An agent that has stopped is almost always sitting on a numbered
- * permission prompt, and the useful answer is a single digit — typing "yes"
- * into a menu that wanted "2" is how a remote answer goes wrong. So the quick
- * row sends real keystrokes and the field sends prose, and the two are not the
- * same button.
+ * The text field sends prose, and the row of controls around it does the
+ * three other things a sofa needs: a picture, a slash command, a voice. The
+ * digits a permission prompt wants are not here any more — they are on the
+ * prompt itself, above this row, where the question they answer is drawn.
  *
  * A session on the `wtype` road says so before its first send rather than
  * after. The compositor typing on the user's behalf steals focus for a moment
  * and interleaves with anyone at the real keyboard — that cannot be fixed, but
  * it can be told to the person deciding whether to press send.
  *
- * The paperclip is the third thing it does, and the one that changes what can
- * be asked from a sofa. "Why does this look wrong" is a question about a
- * picture, and until the picture can cross, the answer is to get up. The
- * screenshot goes to the desktop and the agent is handed its path — a terminal
- * carries text and nothing else, so the path *is* how an image is passed, not
- * a workaround for not being able to pass one.
+ * The paperclip is the one that changes what can be asked from a sofa. "Why
+ * does this look wrong" is a question about a picture, and until the picture
+ * can cross, the answer is to get up. The screenshot goes to the desktop and
+ * the agent is handed its path — a terminal carries text and nothing else, so
+ * the path *is* how an image is passed, not a workaround for not being able to
+ * pass one.
  */
 function Composer({
   session,
@@ -1327,9 +1717,15 @@ function Composer({
   const setText = onChangeText
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
+  /**
+   * The message went across and stayed in the agent's own composer. The fix
+   * is one keystroke, and the notice that says so is where the key goes.
+   */
+  const [stuck, setStuck] = useState(false)
   const [acknowledged, setAcknowledged] = useState(false)
   const [shots, setShots] = useState<Attachment[]>([])
   const [sources, setSources] = useState(false)
+  const [focused, setFocused] = useState(false)
   /**
    * Dictation, in the two states it is visible in: holding the microphone
    * open, and waiting for the desktop to say what it heard. They are separate
@@ -1345,16 +1741,18 @@ function Composer({
   const canAttach = (hello?.capabilities?.agents as { attach?: boolean } | undefined)?.attach === true
   const ready = shots.filter((shot) => shot.path)
   const settling = shots.some((shot) => !shot.path && !shot.error)
+  const failed = shots.find((shot) => shot.error)
   const canCommand = (hello?.capabilities?.agents as { commands?: boolean } | undefined)?.commands === true
   const speech = hello?.capabilities?.dictation as { available?: boolean; maxSeconds?: number } | undefined
   const canDictate = speech?.available === true
   const maxHold = speech?.maxSeconds ?? 300
-  const crowded = canCommand && (session.vitals?.context?.percent ?? 0) >= 66
+  const hasText = Boolean(text.trim()) || ready.length > 0
 
   const guard = useCallback(
     async (what: () => Promise<unknown>) => {
       setBusy(true)
       setError(null)
+      setStuck(false)
       try {
         await what()
       } catch (err) {
@@ -1383,7 +1781,10 @@ function Composer({
         // Optimism ends here: a message that was not asked is worse than an
         // error, because the row goes on saying the agent is working and the
         // text this field threw away is the only copy there was.
-        if (result?.submitted === false) throw new Error('typed, but the agent did not take it — it is still in the composer on the desktop')
+        if (result?.submitted === false) {
+          setStuck(true)
+          throw new Error('Typed, but the agent did not take it — it is still in the composer on the desktop')
+        }
       } catch (err) {
         setText(body)
         setShots(ready)
@@ -1472,7 +1873,7 @@ function Composer({
       try {
         const said = await dictate.transcribe(client, call, uri)
         if (said) setText(text.trim() ? `${text.trim()} ${said}` : said)
-        else setError('the desktop heard nothing in that')
+        else setError('The desktop heard nothing in that')
       } catch (err) {
         setError(err)
       } finally {
@@ -1509,7 +1910,7 @@ function Composer({
 
   const frame = {
     paddingHorizontal: space.lg,
-    paddingTop: space.md,
+    paddingTop: space.sm,
     // With the keyboard up it is the keyboard, not the gesture bar, below this
     // row — reserving room for both is how the field ends up half a thumb
     // higher than it needs to be on a screen that has none to spare.
@@ -1518,6 +1919,63 @@ function Composer({
     borderTopWidth: StyleSheet.hairlineWidth * 2,
     borderTopColor: palette.lighter_background,
   }
+
+  /**
+   * The field itself, and the same one in every state the composer has.
+   *
+   * A rounded pill at one line that grows to five: past that a message is a
+   * document and the transcript above it deserves the screen back.
+   */
+  const field = (placeholder: string) => (
+    <TextInput
+      value={text}
+      onChangeText={setText}
+      placeholder={placeholder}
+      placeholderTextColor={palette.muted}
+      autoCapitalize="sentences"
+      autoCorrect
+      multiline
+      // Return adds a newline and the arrow sends, the way every chat
+      // app on a phone works — and here it earns its keep twice over,
+      // because a multi-line message travels as a bracketed paste and
+      // arrives as one message rather than as several half-sent ones.
+      submitBehavior="newline"
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      maxFontSizeMultiplier={MAX_FONT_SCALE}
+      accessibilityLabel={placeholder}
+      style={{
+        flex: 1,
+        minHeight: 36,
+        maxHeight: line.body * 5 + 16,
+        color: palette.bright_foreground,
+        fontFamily: font.regular,
+        fontSize: size.body,
+        lineHeight: line.body,
+        backgroundColor: palette.darker_background,
+        borderColor: focused ? palette.foreground : palette.lighter_background,
+        borderWidth: StyleSheet.hairlineWidth * 2,
+        borderRadius: 18,
+        paddingHorizontal: space.md,
+        paddingTop: 8,
+        paddingBottom: 8,
+        textAlignVertical: 'center',
+      }}
+    />
+  )
+
+  /** The send arrow: solid once there is something to send. */
+  const sendButton = (onPress: () => void, enabled: boolean) => (
+    <IconButton
+      icon="arrow-up"
+      label="Send"
+      onPress={onPress}
+      disabled={!enabled}
+      loading={busy}
+      tone={enabled ? palette.accent : undefined}
+      style={enabled ? { backgroundColor: alpha(palette.accent, 0.18), borderColor: alpha(palette.accent, 0.6) } : undefined}
+    />
+  )
 
   if (!session.writable) {
     // A background conversation that has stopped can still be answered — not
@@ -1548,60 +2006,16 @@ function Composer({
         <View style={{ ...frame, gap: space.sm }}>
           <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: 0 }} />
           <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
-            <TextInput
-              value={text}
-              onChangeText={setText}
-              placeholder="continue in the background…"
-              placeholderTextColor={palette.muted}
-              autoCapitalize="sentences"
-              autoCorrect
-              multiline
-              submitBehavior="newline"
-              style={{
-                flex: 1,
-                maxHeight: 120,
-                color: palette.light_foreground,
-                fontFamily: font.regular,
-                fontSize: size.body,
-                backgroundColor: palette.darker_background,
-                borderColor: palette.lighter_background,
-                borderWidth: 1,
-                borderRadius: radius.sm,
-                paddingHorizontal: space.md,
-                paddingVertical: space.md,
-              }}
-            />
-            <Pressable
-              onPress={continueInBackground}
-              disabled={busy || !text.trim()}
-              style={({ pressed }) => ({
-                paddingHorizontal: space.lg,
-                paddingVertical: space.md,
-                justifyContent: 'center',
-                backgroundColor: pressed ? palette.selection : palette.lighter_background,
-                borderRadius: radius.sm,
-                opacity: busy || !text.trim() ? 0.4 : 1,
-              })}
-            >
-              {busy ? (
-                <ActivityIndicator size="small" color={palette.accent} />
-              ) : (
-                <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
-              )}
-            </Pressable>
+            {field('Reply to resume')}
+            {sendButton(continueInBackground, !busy && Boolean(text.trim()))}
           </View>
-          {keyboard ? null : (
-            <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-              this agent finished — your reply resumes it as a new background run
-            </Text>
-          )}
+          {keyboard ? null : <Hint icon="rotate-cw">Finished · a reply resumes it as a new background run</Hint>}
         </View>
       )
     }
     return (
-      <View style={{ ...frame, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <Feather name="eye" size={14} color={palette.muted} />
-        <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
+      <View style={frame}>
+        <Hint icon="eye">
           {/* Two different reasons wear the same silence, and blaming the
               desktop for the wrong one sends people hunting for a tmux that
               would not have helped. A background agent has no terminal to be
@@ -1609,43 +2023,65 @@ function Composer({
               something this desktop can do on your behalf. */}
           {session.job
             ? session.job.live === false
-              ? 'Reading only — this background agent finished, and starting one from the phone is off'
-              : 'Reading only — this agent is mid-run in the background, with no terminal to type into'
-            : 'Reading only — nothing on that desktop can reach this terminal'}
-        </Text>
+              ? 'Read only · this background agent finished, and the phone cannot start one'
+              : 'Read only · this agent runs in the background with no terminal to type into'
+            : 'Read only · nothing on the desktop can reach this terminal'}
+        </Hint>
       </View>
     )
   }
 
   if (needsWarning) {
     return (
-      <View style={{ ...frame, gap: space.sm }}>
-        <Caps tone={palette.orange}>The desktop will type this itself</Caps>
-        <Body tone={palette.muted}>
-          This agent is in no multiplexer's pane, so the desktop focuses its window and types on your behalf. It steals
-          focus for a moment, and it will interleave with anyone typing at the keyboard. Start it with{' '}
-          <Text style={{ fontFamily: font.medium }}>omarchy-connect agent run</Text> to get a cleaner road.
-        </Body>
-        <Button label="Type anyway" icon="edit-2" tone={palette.orange} onPress={() => setAcknowledged(true)} />
+      <View style={frame}>
+        <Notice
+          tone="warning"
+          icon="edit-2"
+          error={
+            'No pane here, so the desktop focuses the window and types for you.\n' +
+            'It takes focus for a moment and interleaves with anyone at the keyboard. ' +
+            'Start the agent with `omarchy-connect agent run` for a clean road.'
+          }
+          action={{ label: 'Type anyway', icon: 'edit-2', onPress: () => setAcknowledged(true) }}
+          style={{ marginBottom: 0 }}
+        />
       </View>
     )
   }
 
   return (
     <View style={frame}>
-      <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: space.sm }} />
+      <Notice
+        error={error}
+        onDismiss={() => {
+          setError(null)
+          setStuck(false)
+        }}
+        action={stuck ? { label: 'Press Enter', icon: 'corner-down-left', onPress: () => press('Enter') } : null}
+        style={{ marginBottom: space.sm }}
+      />
+      {/* A picture that did not cross says so here as well as on its
+          thumbnail; dismissing the notice drops the picture it is about. */}
+      {failed ? (
+        <Notice
+          error={failed.error}
+          icon="image"
+          onDismiss={() => setShots((prev) => prev.filter((s) => s.key !== failed.key))}
+          style={{ marginBottom: space.sm }}
+        />
+      ) : null}
 
       {/* Where a picture comes from, only while one is being chosen. Three
           sources rather than one because a screenshot is in a different place
           depending on how it got there — and the clipboard, which is where it
           is a second after being cropped, is the one no picker can reach. */}
       {sources ? (
-        <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm }}>
-          <Chip label="Photos" onPress={() => void add(attach.fromLibrary)} />
-          <Chip label="Files" onPress={() => void add(attach.fromFiles)} />
-          <Chip label="Paste" onPress={() => void add(attach.fromClipboard)} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginBottom: space.sm }}>
+          <Chip label="Photos" icon="image" onPress={() => void add(attach.fromLibrary)} />
+          <Chip label="Files" icon="folder" onPress={() => void add(attach.fromFiles)} />
+          <Chip label="Paste" icon="clipboard" onPress={() => void add(attach.fromClipboard)} />
           <View style={{ flex: 1 }} />
-          <Chip label="✕" onPress={() => setSources(false)} />
+          <IconButton icon="x" label="Close" size={34} onPress={() => setSources(false)} />
         </View>
       ) : null}
 
@@ -1653,7 +2089,7 @@ function Composer({
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: space.sm, paddingBottom: space.sm }}
+          contentContainerStyle={{ gap: space.sm, paddingBottom: space.sm, paddingTop: space.xs }}
           keyboardShouldPersistTaps="handled"
         >
           {shots.map((shot) => (
@@ -1662,184 +2098,61 @@ function Composer({
         </ScrollView>
       ) : null}
 
-      {/* The keys scroll and `stop` does not. Seven chips do not fit across a
-          phone, and the one that must always be reachable is the one that
-          interrupts — a row that pushed it off the edge would hide it exactly
-          when it was wanted. */}
-      <View style={{ flexDirection: 'row', gap: space.sm, marginBottom: space.sm, alignItems: 'center' }}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          contentContainerStyle={{ gap: space.sm }}
-          style={{ flex: 1 }}
-        >
-          {QUICK.map((quick) => (
-            <Chip
-              key={quick.key}
-              label={quick.label}
-              tone={session.state === 'waiting' ? palette.orange : undefined}
-              active={session.state === 'waiting'}
-              onPress={() => press(quick.key)}
-            />
-          ))}
-          {/* Compacting is the one command that earns a permanent button, and
-              only once it is the thing you would want. A conversation past two
-              thirds of its window is about to start losing the beginning of
-              itself, and on a phone that is news you would otherwise never
-              get — nothing else on this screen is going to mention it. */}
-          {crowded ? (
-            <Chip
-              label="compact"
-              tone={palette.orange}
-              active
-              onPress={() => void guard(() => call('agents.command', { id: session.id, name: 'compact' }))}
-            />
-          ) : null}
-        </ScrollView>
-        <Chip label="stop" tone={palette.red} onPress={() => press('C-c')} />
-      </View>
-
       <View style={{ flexDirection: 'row', gap: space.sm, alignItems: 'flex-end' }}>
+        {canAttach ? (
+          <IconButton
+            icon="paperclip"
+            label="Attach a picture"
+            onPress={() => setSources((was) => !was)}
+            disabled={shots.length >= MAX_SHOTS}
+            tone={sources ? palette.accent : undefined}
+          />
+        ) : null}
         {/* Everything the agent answers to by name. The reason it sits beside
             the field rather than in a menu somewhere: a slash command is the
             one part of a coding agent already shaped for a device with no
             keyboard, and it should cost one tap to reach. */}
-        {canCommand ? (
-          <Pressable
-            onPress={onSkills}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              paddingHorizontal: space.md,
-              paddingVertical: space.md,
-              justifyContent: 'center',
-              backgroundColor: pressed ? palette.selection : palette.darker_background,
-              borderColor: palette.lighter_background,
-              borderWidth: 1,
-              borderRadius: radius.sm,
-            })}
-          >
-            <Feather name="command" size={16} color={palette.muted} />
-          </Pressable>
-        ) : null}
-        {canAttach ? (
-          <Pressable
-            onPress={() => setSources((was) => !was)}
-            disabled={shots.length >= MAX_SHOTS}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              paddingHorizontal: space.md,
-              paddingVertical: space.md,
-              justifyContent: 'center',
-              backgroundColor: pressed || sources ? palette.selection : palette.darker_background,
-              borderColor: palette.lighter_background,
-              borderWidth: 1,
-              borderRadius: radius.sm,
-              opacity: shots.length >= MAX_SHOTS ? 0.4 : 1,
-            })}
-          >
-            <Feather name="paperclip" size={16} color={sources ? palette.accent : palette.muted} />
-          </Pressable>
-        ) : null}
+        {canCommand ? <IconButton icon="slash" label="Skills and commands" onPress={onSkills} /> : null}
+
+        {field('Message')}
+
         {/* Speak instead of typing, with the desktop doing the listening —
             its Whisper model knows what hyprctl and cherry-pick are, and the
             recording never leaves the two machines that already talk to each
             other. Tap to open the microphone, tap again to send the sound
-            across; hold to throw the take away. */}
-        {canDictate ? (
-          <Pressable
-            onPress={() => void (listening ? heard(true) : listen())}
-            onLongPress={() => void (listening ? heard(false) : null)}
-            disabled={hearing}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              paddingHorizontal: space.md,
-              paddingVertical: space.md,
-              justifyContent: 'center',
-              alignItems: 'center',
-              minWidth: 44,
-              backgroundColor: pressed || listening ? palette.selection : palette.darker_background,
-              borderColor: listening ? palette.red : palette.lighter_background,
-              borderWidth: 1,
-              borderRadius: radius.sm,
-              opacity: hearing ? 0.6 : 1,
-            })}
-          >
-            {hearing ? (
-              <ActivityIndicator size="small" color={palette.accent} />
-            ) : listening ? (
-              /* The count is the only honest reassurance a microphone can
-                 give: nothing else on screen proves it is still open. */
-              <Text style={{ color: palette.red, fontFamily: font.medium, fontSize: size.micro }}>
-                {`${Math.floor(held / 60)}:${String(held % 60).padStart(2, '0')}`}
-              </Text>
-            ) : (
-              <Feather name="mic" size={16} color={palette.muted} />
-            )}
-          </Pressable>
-        ) : null}
-        <TextInput
-          value={text}
-          onChangeText={setText}
-          placeholder={inPane(session) ? 'answer the agent…' : 'the desktop will type this…'}
-          placeholderTextColor={palette.muted}
-          autoCapitalize="sentences"
-          autoCorrect
-          multiline
-          // Return adds a newline and the arrow sends, the way every chat
-          // app on a phone works — and here it earns its keep twice over,
-          // because a multi-line message travels as a bracketed paste and
-          // arrives as one message rather than as several half-sent ones.
-          submitBehavior="newline"
-          style={{
-            flex: 1,
-            maxHeight: 120,
-            color: palette.light_foreground,
-            fontFamily: font.regular,
-            fontSize: size.body,
-            backgroundColor: palette.darker_background,
-            borderColor: palette.lighter_background,
-            borderWidth: 1,
-            borderRadius: radius.sm,
-            paddingHorizontal: space.md,
-            paddingVertical: space.md,
-          }}
-        />
-        <Pressable
-          onPress={send}
-          disabled={busy || settling || (!text.trim() && !ready.length)}
-          style={({ pressed }) => ({
-            paddingHorizontal: space.lg,
-            paddingVertical: space.md,
-            justifyContent: 'center',
-            backgroundColor: pressed ? palette.selection : palette.lighter_background,
-            borderRadius: radius.sm,
-            opacity: busy || settling || (!text.trim() && !ready.length) ? 0.4 : 1,
-          })}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color={palette.accent} />
-          ) : (
-            <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
-          )}
-        </Pressable>
+            across; hold to throw the take away. The microphone stands where
+            the send arrow will, so the row is one control wider than the
+            field and never two. */}
+        {hearing ? (
+          <IconButton icon="mic" label="Transcribing" loading disabled />
+        ) : listening ? (
+          <RecordingPill held={held} max={maxHold} onStop={() => void heard(true)} onDiscard={() => void heard(false)} />
+        ) : canDictate && !hasText && !busy ? (
+          <IconButton icon="mic" label="Dictate" onPress={() => void listen()} />
+        ) : (
+          sendButton(send, !busy && !settling && hasText)
+        )}
       </View>
 
-      {/* Which road in — worth a line while you are reading, worth nothing
-          while you are typing and the screen is down to a few lines. */}
-      {keyboard ? null : (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, marginTop: space.xs }}>
-          {listening
-            ? 'listening — tap to transcribe on the desktop, hold to discard'
-            : hearing
-              ? 'the desktop is reading it back'
-              : shots.length
-                ? 'the desktop keeps the picture and hands the agent its path'
-                : inPane(session)
-                  ? `${session.writable} ${session.pane}`
-                  : 'the desktop types this — focus moves for a moment'}
-        </Text>
-      )}
+      {/* Worth a line while you are reading, worth nothing while you are
+          typing and the screen is down to a few lines. */}
+      {keyboard ? null : listening ? (
+        <Hint icon="mic" style={{ marginTop: space.sm }}>
+          Recording · tap to transcribe on the desktop, hold to discard
+        </Hint>
+      ) : hearing ? (
+        <Hint icon="mic" style={{ marginTop: space.sm }}>
+          Transcribing on the desktop
+        </Hint>
+      ) : shots.length ? (
+        <Hint icon="image" style={{ marginTop: space.sm }}>
+          The desktop keeps the picture and hands the agent its path
+        </Hint>
+      ) : !inPane(session) ? (
+        <Hint icon="edit-2" style={{ marginTop: space.sm }}>
+          The desktop types this · focus moves for a moment
+        </Hint>
+      ) : null}
     </View>
   )
 }
