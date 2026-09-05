@@ -130,8 +130,21 @@ internal object Mic {
     val input = try {
       // VOICE_RECOGNITION rather than MIC: it is the source Android documents
       // as unprocessed for speech — no automatic gain riding over pauses, no
-      // noise suppression tuned for a phone call — which is what a
-      // transcriber and a remote listener both want.
+      // noise suppression tuned for a phone call.
+      //
+      // Nothing about dictation depends on this. Dictation records through
+      // `expo-audio` into an `.m4a` and uploads the file (`app/src/api/
+      // dictate.ts`); it never touches this stream. What depends on it is the
+      // desktop's live input, and it wants unprocessed for a different reason
+      // than a transcriber would: measured on this desk, the untouched signal
+      // has a noise floor around -71 dBFS against the USB webcam's -51 dBFS,
+      // so the desktop can add twenty decibels to it and still be quieter in
+      // the gaps than the device it is being compared to. The level is put
+      // right on the desktop, once, where it can be turned off — see
+      // `Leveller` in `daemon/src/lib/mic.js`. An `AutomaticGainControl`
+      // fitted here would spend that headroom before the desktop ever saw
+      // it, differently on every handset, and could not be undone from the
+      // machine that has to live with the result.
       AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, CHANNEL, ENCODING, bufferBytes)
     } catch (error: Exception) {
       Trace.fail("mic.start.failed", error)

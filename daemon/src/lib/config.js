@@ -68,16 +68,22 @@ const DEFAULTS = {
    * it is off until somebody says otherwise.
    */
   /**
-   * How much louder the desktop makes the phone's microphone.
+   * How loud the phone's microphone is on this desktop.
    *
    * The handset sends what its hardware heard and nothing more — no automatic
    * gain, on purpose (`lib/mic.js` says why) — and on an ordinary phone that
-   * is a voice a Zoom call has to strain for. `gain` is the multiply the
-   * desktop does on the way in, before the WAV and before the PipeWire source,
-   * so both hear the same thing. Four is +12 dB and the default; `1` is the
-   * old behaviour, untouched samples; sixteen is the ceiling.
+   * is a voice a Zoom call has to strain for. Whatever fixes that happens on
+   * the way in, before the WAV and before the PipeWire source, so both hear
+   * the same thing.
+   *
+   * `auto` is the default and means the desktop follows the level: it opens up
+   * slowly for a quiet room and closes fast enough that a laugh does not clip.
+   * `gain` is the constant used instead when somebody has taken the knob —
+   * four is +12 dB, `1` is untouched samples, sixteen is the ceiling — and it
+   * is kept while `auto` is on so that pinning and unpinning is not a number
+   * anybody has to remember.
    */
-  audio: { gain: 4 },
+  audio: { auto: true, gain: 4 },
   otp: { enabled: true, autoCopy: false },
   devices: [],
 }

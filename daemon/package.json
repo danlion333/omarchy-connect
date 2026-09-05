@@ -29,6 +29,7 @@
     "test:remote": "node test/remote.mjs",
     "test:dictation": "node test/dictation.mjs",
     "test:audio": "node test/audio.mjs",
+    "test:audio-level": "node test/audio-level.mjs",
     "test:audio-input": "node test/audio-input.mjs",
     "test:resample": "node test/resample.mjs",
     "test:audio-panel": "node test/audio-panel.mjs",
