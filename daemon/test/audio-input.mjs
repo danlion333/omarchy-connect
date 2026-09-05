@@ -15,12 +15,19 @@
  * daemon called `pactl`" and "sound reached a program that was not this one".
  *
  * The checks that are really about the issue: the source appears with the
- * right name and format; the samples the phone spoke come out of the pipe
- * unchanged; turning it on twice loads one module and not two; turning it off
+ * right name and format; the samples the phone spoke come out of the pipe as
+ * the interpolator meant them (`resample.mjs` is where the interpolator itself
+ * is held to account); turning it on twice loads one module and not two; turning it off
  * unloads it and deletes the pipe; a daemon killed with the input on leaves no
  * orphan behind; a phone that vanishes mid-stream leaves the source loaded and
  * silent rather than broken; the default input is never touched; and a desktop
  * whose `pactl` cannot reach a sound server says it cannot do this at all.
+ *
+ * The stand-in reader is gated on a file so that the suite can also have the
+ * case a person actually meets: the switch is on, the phone is already
+ * speaking, and only then does somebody open Zoom and press record. What that
+ * program must hear first is the last thing said, not the first — the pipe is
+ * a delay, not a reserve.
  */
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
@@ -32,7 +39,18 @@ import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
 import { amplify, buildFrame, RATE, CHUNK_MS } from '../src/lib/mic.js'
-import { SOURCE_NAME, SOURCE_DESCRIPTION } from '../src/lib/pipesource.js'
+import { SOURCE_NAME, SOURCE_DESCRIPTION, RATE as SOURCE_RATE, ringMs } from '../src/lib/pipesource.js'
+import { Upsampler } from '../src/lib/resample.js'
+
+/**
+ * The daemon writes the phone's chunks into the pipe at the module's rate,
+ * not the phone's — that is how the latency came down (see `pipesource.js`).
+ * So what the far end must hold is the interpolated sound, and the suite
+ * grows the same interpolator the daemon does, fresh for every `on`, to say
+ * what that is byte for byte.
+ */
+const FACTOR = SOURCE_RATE / RATE
+const upsampled = () => new Upsampler({ factor: FACTOR })
 
 const PORT = Number(process.env.PORT || 8823)
 const DEAF_PORT = PORT + 1
@@ -55,6 +73,33 @@ const capture = path.join(pulse, 'captured.raw')
 fs.writeFileSync(modulesFile, '')
 
 /**
+ * When the stand-in starts *reading*, as opposed to when it opens the pipe.
+ *
+ * The two are different events and the difference is the whole of this issue.
+ * The reader holds the read end from the moment the module is loaded, because
+ * without it the daemon cannot open the write end at all; it starts draining
+ * only once this file exists, which is the moment a program on the desktop
+ * picks the source and presses record. Everything but the late-reader check
+ * runs with it already there, which is the old behaviour exactly.
+ */
+const gate = path.join(pulse, 'reading')
+fs.writeFileSync(gate, '')
+
+fs.writeFileSync(
+  path.join(pulse, 'reader.sh'),
+  [
+    '#!/bin/bash',
+    // Holding the read end open is what makes a full pipe come back as EAGAIN
+    // rather than the write end refusing to open at all.
+    'exec 3< "$1"',
+    'while [ ! -f "$2" ]; do sleep 0.02; done',
+    'exec cat <&3 >> "$3"',
+    '',
+  ].join('\n'),
+  { mode: 0o755 },
+)
+
+/**
  * `pactl`, reduced to the four verbs this daemon speaks to it — and to the one
  * behaviour that is not bookkeeping: a reader on the other end of the pipe.
  *
@@ -71,6 +116,8 @@ fs.writeFileSync(
     `modules=${JSON.stringify(modulesFile)}`,
     `capture=${JSON.stringify(capture)}`,
     `pidfile=${JSON.stringify(path.join(pulse, 'reader.pid'))}`,
+    `gate=${JSON.stringify(gate)}`,
+    `reader=${JSON.stringify(path.join(pulse, 'reader.sh'))}`,
     'case "$1" in',
     '  info)',
     // The desktop that has the binary and no server: the whole capability
@@ -80,8 +127,9 @@ fs.writeFileSync(
     '  load-module)',
     '    for a in "$@"; do case "$a" in file=*) f="${a#file=}";; esac; done',
     '    idx=$(( $(wc -l < "$modules") + 700 ))',
-    // The real module holds the read end open for as long as it is loaded.
-    '    setsid cat "$f" >> "$capture" 2>/dev/null &',
+    // The real module holds the read end open for as long as it is loaded —
+    // and, like the real one, does not necessarily read from it.
+    '    setsid bash "$reader" "$f" "$gate" "$capture" >/dev/null 2>&1 &',
     '    echo $! > "$pidfile"',
     '    shift 1',
     '    printf "%s\\t%s\\t%s\\n" "$idx" "$*" "loaded" >> "$modules"',
@@ -227,17 +275,33 @@ const input = on.body?.audio?.input
 check('the switch answers with a loaded source', input?.enabled === true, JSON.stringify(on.body))
 check('exactly one module is loaded for it', modules().length === 1, modules().join(' | '))
 check(
-  'declared as the format the phone already sends, under a name a person can find',
+  'declared at a multiple of the phone\'s rate, mono, under a name a person can find',
   /source_name=omarchy_connect_phone/.test(modules()[0]) &&
     /format=s16le/.test(modules()[0]) &&
-    /rate=16000/.test(modules()[0]) &&
+    new RegExp(`rate=${SOURCE_RATE}\\b`).test(modules()[0]) &&
     /channels=1/.test(modules()[0]),
   modules()[0],
+)
+check(
+  'a multiple that keeps PipeWire\'s ring under a tenth of a second',
+  Number.isInteger(FACTOR) && FACTOR >= 1 && ringMs(SOURCE_RATE) <= 100,
+  `${SOURCE_RATE} Hz is ${FACTOR}x, ring ${ringMs(SOURCE_RATE)} ms`,
 )
 check(
   'with a description that survives being parsed twice',
   /node\.description='Omarchy Connect \(phone\)'/.test(modules()[0]),
   modules()[0],
+)
+check(
+  'and told to keep reading while nothing is listening',
+  /node\.always-process=true/.test(modules()[0]),
+  modules()[0],
+)
+check('and the switch says what the road costs', input?.rate === SOURCE_RATE && input?.ringMs === ringMs(SOURCE_RATE), JSON.stringify(input))
+check(
+  'and how the chunks are landing against it',
+  Number.isInteger(input?.gapMaxMs) && Number.isInteger(input?.late) && input.late === 0,
+  JSON.stringify({ gapMaxMs: input?.gapMaxMs, late: input?.late }),
 )
 check('and the pipe it reads exists', typeof input?.file === 'string' && fs.existsSync(input.file), String(input?.file))
 check('turning it on also asks the handset to speak', input?.streaming === true, JSON.stringify(input))
@@ -246,21 +310,30 @@ check('turning it on also asks the handset to speak', input?.streaming === true,
 
 // A gain of two, chosen here rather than left at the default, so that what
 // comes out of the pipe is a number this file computed rather than a number
-// this file copied from the daemon's own constant.
-const louder = await mic({ op: 'gain', value: 2 })
-check('the desktop can be told how loud the phone is', louder.body?.audio?.gain === 2, JSON.stringify(louder.body?.audio))
+// this file copied from the daemon's own constant. It goes on the samples
+// before they are interpolated, which is the order the daemon uses: the gain
+// is the phone's level, the interpolation is the pipe's rate.
+const GAIN = 2
+const louder = await mic({ op: 'gain', value: GAIN })
+check('the desktop can be told how loud the phone is', louder.body?.audio?.gain === GAIN, JSON.stringify(louder.body?.audio))
 
-const spoken = phone.speak(20) // two seconds
+/** What the far end must hold for `n` chunks: the gain, then the pipe's rate. */
+const willHear = (n) => expect.process(amplify(phone.speak(n), GAIN))
+
+let expect = upsampled()
+const spoken = willHear(20)
 await wait(600)
 const heard = fs.readFileSync(capture)
 check(
-  'every sample the phone spoke came out of the pipe, sample for sample, with the desktop gain on it',
-  heard.length >= spoken.length && heard.subarray(0, spoken.length).equals(amplify(spoken, 2)),
+  'everything the phone spoke came out of the pipe, interpolated, with the desktop gain on it and otherwise unchanged',
+  heard.length >= spoken.length && heard.subarray(0, spoken.length).equals(spoken),
   `${heard.length} bytes out for ${spoken.length} in`,
 )
 check(
   'and the source itself is still the format it was declared as — the gain is on the samples, not on the device',
-  /format=s16le/.test(modules()[0]) && /rate=16000/.test(modules()[0]) && /channels=1/.test(modules()[0]),
+  /format=s16le/.test(modules()[0]) &&
+    new RegExp(`rate=${SOURCE_RATE}\\b`).test(modules()[0]) &&
+    /channels=1/.test(modules()[0]),
   modules()[0],
 )
 
@@ -269,6 +342,62 @@ check(
 const again = await mic({ op: 'input', value: 'on' })
 check('turning it on again is not a second device', modules().length === 1, modules().join(' | '))
 check('and says so rather than failing', again.body?.audio?.input?.enabled === true, JSON.stringify(again.body))
+
+/* ── the pipe is a delay, not a reserve ────────────────────────────────── */
+
+// The order a person actually does this in: flip the switch, let the handset
+// talk into a source nobody has selected yet, and only then open the program
+// and press record. What that program hears first decides whether the phone is
+// a microphone or a two-second echo of one.
+await mic({ op: 'input', value: 'off' })
+fs.rmSync(gate, { force: true })
+const relit = await mic({ op: 'input', value: 'on' })
+check('the switch comes back on with nothing yet reading the pipe', relit.body?.audio?.input?.enabled === true, JSON.stringify(relit.body?.audio?.input))
+
+expect = upsampled()
+const chunkBytes = (SOURCE_RATE * 2 * CHUNK_MS) / 1000
+const from = fs.statSync(capture).size
+// Forty chunks: well over twice what the pipe holds at the module's rate.
+const said = willHear(40)
+await wait(500)
+
+const waiting = (await mic({ op: 'input', value: 'status' })).body?.audio?.input
+check(
+  'sound spoken into a source nobody selected is counted rather than kept',
+  waiting?.dropped > 0 && waiting?.stalled === true,
+  JSON.stringify({ dropped: waiting?.dropped, flushed: waiting?.flushed, stalled: waiting?.stalled }),
+)
+check(
+  'and most of it was taken back out of the pipe rather than left standing in it',
+  waiting?.flushed >= said.length - 4 * chunkBytes,
+  `${waiting?.flushed} flushed of ${said.length} spoken`,
+)
+
+fs.writeFileSync(gate, '')
+await wait(600)
+const late = fs.readFileSync(capture).subarray(from)
+check(
+  'a program that presses record late hears the last thing said',
+  late.length >= chunkBytes && late.subarray(0, chunkBytes).equals(said.subarray(said.length - chunkBytes)),
+  `${late.length} bytes waiting for it`,
+)
+check(
+  'and not four seconds of what it missed',
+  late.length <= 2 * chunkBytes && !late.subarray(0, chunkBytes).equals(said.subarray(0, chunkBytes)),
+  `${late.length} bytes, ${Math.round((late.length / chunkBytes) * CHUNK_MS)}ms in front of it`,
+)
+
+// A reader that is keeping up gets everything: the emptying stops the moment
+// the far end proves it is collecting.
+const running = fs.statSync(capture).size
+const more = willHear(5)
+await wait(500)
+const heardLive = fs.readFileSync(capture).subarray(running)
+check(
+  'and once it is reading, nothing is thrown away in front of it any more',
+  heardLive.length >= more.length && heardLive.subarray(0, more.length).equals(more),
+  `${heardLive.length} bytes out for ${more.length} in`,
+)
 
 /* ── nothing is taken over ─────────────────────────────────────────────── */
 

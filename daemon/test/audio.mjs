@@ -212,7 +212,7 @@ check('the desktop can ask the phone for its microphone', started.body?.ok === t
 const asked = phone.heard.find((e) => e.action === 'start')
 check('and the instruction names the format so the two ends cannot drift', asked?.rate === 16000 && asked?.chunkMs === CHUNK_MS, JSON.stringify(asked))
 
-const spoken = phone.speak(30) // three seconds
+const spoken = phone.speak(3000 / CHUNK_MS) // three seconds
 await wait(300)
 const midway = await mic('status')
 check('the desktop knows it is listening while it is', midway.body?.audio?.streaming === true, JSON.stringify(midway.body?.audio))
