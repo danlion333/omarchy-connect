@@ -35,7 +35,7 @@ check('both ends agree on the sample rate', RATE === DAEMON_RATE, `${RATE} vs ${
 check('and on mono', CHANNELS === DAEMON_CHANNELS, `${CHANNELS} vs ${DAEMON_CHANNELS}`)
 check('and on how much sound is in one frame', CHUNK_MS === DAEMON_CHUNK_MS, `${CHUNK_MS} vs ${DAEMON_CHUNK_MS}`)
 check('and on the size of the header', HEADER_BYTES === DAEMON_HEADER, `${HEADER_BYTES} vs ${DAEMON_HEADER}`)
-check('a chunk of the agreed length is 3200 bytes', chunkBytes() === 3200, String(chunkBytes()))
+check('a chunk of the agreed length is 640 bytes', chunkBytes() === 640, String(chunkBytes()))
 check('which the desktop will accept', chunkBytes() <= MAX_CHUNK_BYTES)
 
 /* ── one chunk, written by the phone and read by the desktop ───────────── */

@@ -26,7 +26,16 @@ export const HEADER_BYTES = MAGIC.length + 8
 export const RATE = 16000
 export const CHANNELS = 1
 export const BYTES_PER_SAMPLE = 2
-export const CHUNK_MS = 100
+/**
+ * Twenty milliseconds, which is what the desktop asks for.
+ *
+ * Only a fallback: `mic.ts` uses the `chunkMs` the start instruction carries,
+ * and the desktop has always sent one. It was left at a hundred when #42 took
+ * the desktop down to twenty for the sake of the PipeWire ring, which made the
+ * two ends' constants disagree for no reason anybody would have chosen — the
+ * suite next door has been saying so ever since.
+ */
+export const CHUNK_MS = 20
 
 /** How many bytes of PCM one chunk carries at the format above. */
 export const chunkBytes = (ms: number = CHUNK_MS) => Math.round((RATE * CHANNELS * BYTES_PER_SAMPLE * ms) / 1000)
