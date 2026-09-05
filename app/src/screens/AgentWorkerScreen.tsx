@@ -1,26 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import {
-  ActivityIndicator,
-  KeyboardAvoidingView,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native'
-import { Feather } from '@expo/vector-icons'
+import { ActivityIndicator, KeyboardAvoidingView, RefreshControl, ScrollView, StyleSheet, View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentBlock, AgentSession, AgentWorker } from '../api/client'
-import { Body, Caps, Notice } from '../ui/kit'
+import { Card, Empty, Hint, IconButton, Label, Notice, Pill, Section, Title } from '../ui/kit'
 import { errorLine } from '../lib/errors'
 import { Row, ToolRun, useKeyboardOpen } from './AgentChatScreen'
-import { groupBlocks } from '../lib/transcript'
+import { PromptBox, SheetBar } from './AgentLaunchScreen'
+import { groupBlocks, type Group } from '../lib/transcript'
 import { ago } from '../lib/format'
-import { font, radius, size, space } from '../theme'
+import { space, touch } from '../theme'
 
 /**
  * One worker of a session, and the conversation it had.
@@ -130,63 +120,74 @@ export function AgentWorkerScreen({
   )
 
   const groups = useMemo(() => groupBlocks(blocks), [blocks])
-  const tone = status.running ? palette.green : palette.muted
   const keyboard = useKeyboardOpen()
+
+  // A finished worker's last word is its result — the thing the reader came
+  // for — and gets a card of its own so the eye lands on it before the ledger
+  // of tools above it. While it is still running the last text is just the
+  // most recent thing it said, and is drawn in the flow like the rest.
+  const last = groups[groups.length - 1]
+  const result =
+    !status.running && last && last.kind === 'row' && last.row.block.kind === 'text' && last.row.block.role === 'assistant'
+      ? last
+      : null
+  const flow = result ? groups.slice(0, -1) : groups
 
   return (
     <KeyboardAvoidingView behavior="padding" style={{ flex: 1, backgroundColor: palette.background }}>
-      <WorkerHeader session={session} worker={status} tone={tone} onBack={onBack} />
+      <WorkerHeader session={session} worker={status} refreshing={refreshing} onRefresh={refresh} onBack={onBack} />
 
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
         keyboardShouldPersistTaps="handled"
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={refresh} tintColor={palette.muted} />}
+        showsVerticalScrollIndicator={false}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void refresh()} tintColor={palette.muted} />}
       >
-        {loading ? <ActivityIndicator color={palette.accent} style={{ marginTop: space.xl }} /> : null}
-        <Notice error={error} onDismiss={() => setError(null)} />
-        {!loading && !error && !groups.length ? (
-          <Body tone={palette.muted} style={{ textAlign: 'center', marginTop: space.xl }}>
-            Nothing in this worker's transcript yet
-          </Body>
+        {loading ? (
+          <Card style={{ marginBottom: 0, alignItems: 'center', gap: space.md, paddingVertical: space.xl }}>
+            <ActivityIndicator color={palette.accent} />
+            <Hint>Reading the transcript</Hint>
+          </Card>
         ) : null}
 
-        {groups.map((group, i) =>
-          group.kind === 'tools' ? (
-            <ToolRun
-              key={group.seq}
-              rows={group.rows}
-              live={i === groups.length - 1}
-              expanded={expanded}
-              onExpand={expand}
-            />
+        <Notice
+          error={error}
+          action={{ label: 'Try again', icon: 'refresh-cw', onPress: () => void refresh() }}
+          onDismiss={() => setError(null)}
+          style={{ marginBottom: 0 }}
+        />
+
+        {!loading && !error && !groups.length ? (
+          status.running ? (
+            <Card style={{ marginBottom: 0, alignItems: 'center', gap: space.md, paddingVertical: space.xl }}>
+              <ActivityIndicator color={palette.accent} />
+              <Hint>Starting…</Hint>
+            </Card>
           ) : (
-            <Row
-              key={group.seq}
-              block={group.row.block}
-              result={group.row.result}
-              expanded={expanded[group.row.block.seq]}
-              onExpand={expand}
-            />
-          ),
-        )}
+            <Card style={{ marginBottom: 0 }}>
+              <Empty icon="inbox" text="Nothing in this transcript" />
+            </Card>
+          )
+        ) : null}
+
+        {flow.map((group, i) => (
+          <TranscriptGroup key={group.seq} group={group} live={i === flow.length - 1 && !result} expanded={expanded} onExpand={expand} />
+        ))}
+
+        {result ? (
+          <Card style={{ marginBottom: 0 }}>
+            <Section title="Result" />
+            <TranscriptGroup group={result} live={false} expanded={expanded} onExpand={expand} />
+          </Card>
+        ) : null}
 
         {/* Said rather than implied: nothing here is subscribed to the
             worker, so what is on screen is as new as the last pull. */}
-        {!loading ? (
-          <Text
-            style={{
-              color: palette.muted,
-              fontFamily: font.regular,
-              fontSize: size.micro,
-              textAlign: 'center',
-              marginTop: space.md,
-            }}
-          >
-            {status.running
-              ? 'Still working — pull down for what it has said since'
-              : 'This worker has finished — a message still reaches it, through the session that spawned it'}
-          </Text>
+        {!loading && status.running ? (
+          <Hint icon="refresh-cw" style={{ marginTop: space.sm }}>
+            Still working · pull down for what it has said since
+          </Hint>
         ) : null}
       </ScrollView>
 
@@ -195,9 +196,29 @@ export function AgentWorkerScreen({
   )
 }
 
+/** One item of the transcript, whichever of the two shapes it takes. */
+function TranscriptGroup({
+  group,
+  live,
+  expanded,
+  onExpand,
+}: {
+  group: Group
+  live: boolean
+  expanded: Record<number, string>
+  onExpand: (block: AgentBlock) => void
+}) {
+  if (group.kind === 'tools') {
+    return <ToolRun rows={group.rows} live={live} expanded={expanded} onExpand={onExpand} />
+  }
+  return (
+    <Row block={group.row.block} result={group.row.result} expanded={expanded[group.row.block.seq]} onExpand={onExpand} />
+  )
+}
+
 /**
- * The field that answers a worker, and the one sentence under it that says
- * what actually happened to what you typed.
+ * The field that answers a worker, and the one line under it that says what
+ * actually happened to what you typed.
  *
  * Everything about this is second-hand and it does not hide it. The message
  * goes to the parent session's composer with the worker's `agentId` in front of
@@ -242,13 +263,12 @@ function WorkerComposer({
 
   if (!canRelay || !session.writable) {
     return (
-      <View style={{ ...frame, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <Feather name="eye" size={14} color={palette.muted} />
-        <Text style={{ flex: 1, color: palette.muted, fontFamily: font.regular, fontSize: size.label }}>
+      <View style={frame}>
+        <Hint icon="eye">
           {!canRelay
-            ? 'Reading only — that desktop is too old to pass a message to a worker'
-            : 'Reading only — a worker is answered through its session, and nothing can type into that one'}
-        </Text>
+            ? 'Reading only · this desktop cannot pass a message to a worker'
+            : 'Reading only · nothing can type into the session that spawned it'}
+        </Hint>
       </View>
     )
   }
@@ -277,47 +297,24 @@ function WorkerComposer({
     <View style={{ ...frame, gap: space.sm }}>
       <Notice error={error} onDismiss={() => setError(null)} style={{ marginBottom: 0 }} />
       <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: space.sm }}>
-        <TextInput
+        <PromptBox
           value={text}
-          onChangeText={setText}
-          placeholder={`message this worker via ${session.title}…`}
-          placeholderTextColor={palette.muted}
-          autoCapitalize="sentences"
-          autoCorrect
-          multiline
-          submitBehavior="newline"
-          style={{
-            flex: 1,
-            maxHeight: 120,
-            color: palette.light_foreground,
-            fontFamily: font.regular,
-            fontSize: size.body,
-            backgroundColor: palette.darker_background,
-            borderColor: palette.lighter_background,
-            borderWidth: 1,
-            borderRadius: radius.sm,
-            paddingHorizontal: space.md,
-            paddingVertical: space.md,
-          }}
+          onChange={setText}
+          placeholder="Message this worker"
+          label="Message this worker"
+          minLines={1}
+          maxLines={5}
+          style={{ flex: 1, minHeight: touch }}
         />
-        <Pressable
+        <IconButton
+          icon="corner-down-left"
+          label="Send"
+          size={touch}
+          tone={palette.bright_foreground}
           onPress={send}
-          disabled={busy || !text.trim()}
-          style={({ pressed }) => ({
-            paddingHorizontal: space.lg,
-            paddingVertical: space.md,
-            justifyContent: 'center',
-            backgroundColor: pressed ? palette.selection : palette.lighter_background,
-            borderRadius: radius.sm,
-            opacity: busy || !text.trim() ? 0.4 : 1,
-          })}
-        >
-          {busy ? (
-            <ActivityIndicator size="small" color={palette.accent} />
-          ) : (
-            <Feather name="corner-down-left" size={16} color={palette.bright_foreground} />
-          )}
-        </Pressable>
+          disabled={!text.trim()}
+          loading={busy}
+        />
       </View>
       {/* The receipt stays up with the keyboard; only the standing hint gets
           out of its way. The moment the queued line is worth reading is the
@@ -325,13 +322,11 @@ function WorkerComposer({
           hiding it there left the phone showing a field that had emptied
           itself and nothing at all about where the message went. */}
       {queued ? (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          {`Queued with ${session.title} — it has to pick this up and continue the worker`}
-        </Text>
+        <Hint icon="check" tone={palette.green}>
+          {`Queued with ${session.title} · it passes it on`}
+        </Hint>
       ) : keyboard ? null : (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          Goes to the session that spawned this worker, for it to pass on
-        </Text>
+        <Hint icon="corner-up-right">Goes through the session that spawned this worker</Hint>
       )}
     </View>
   )
@@ -341,53 +336,47 @@ function WorkerComposer({
  * Whose worker this is, and what it was sent to do.
  *
  * The description is the title because it is the only name a worker has — the
- * caller wrote it, and "Protocol + docs for agents" says more than any id. The
- * session underneath it is what stops a screenful of workers from being
+ * caller wrote it, and "Protocol + docs for agents" says more than any id. It
+ * gets a line of its own under the bar rather than a slot in it: a sentence
+ * like that beside a back button, a state and a refresh is fifteen characters
+ * wide, and a description cut to fifteen characters names nothing. The session
+ * underneath it is what stops a screenful of workers from being
  * indistinguishable once there are several conversations running.
  */
 function WorkerHeader({
   session,
   worker,
-  tone,
+  refreshing,
+  onRefresh,
   onBack,
 }: {
   session: AgentSession
   worker: AgentWorker
-  tone: string
+  refreshing: boolean
+  onRefresh: () => Promise<void>
   onBack: () => void
 }) {
   const palette = usePalette()
-  const insets = useSafeAreaInsets()
-
   return (
-    <View
-      style={{
-        paddingTop: insets.top + space.sm,
-        paddingBottom: space.sm,
-        paddingHorizontal: space.lg,
-        backgroundColor: palette.dark_background,
-        borderBottomWidth: StyleSheet.hairlineWidth * 2,
-        borderBottomColor: palette.lighter_background,
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: space.md,
-      }}
-    >
-      <Pressable onPress={onBack} hitSlop={12}>
-        <Feather name="chevron-left" size={22} color={palette.foreground} />
-      </Pressable>
-      <View style={{ flex: 1 }}>
-        <Text
-          style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.value }}
-          numberOfLines={1}
-        >
-          {worker.description || worker.type || worker.id}
-        </Text>
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
-          {[worker.type, session.title, ago(worker.updatedAt)].filter(Boolean).join(' · ')}
-        </Text>
-      </View>
-      <Caps tone={tone}>{worker.running ? 'working' : 'done'}</Caps>
-    </View>
+    <SheetBar
+      onBack={onBack}
+      caps="Worker"
+      right={
+        <>
+          <Pill
+            label={worker.running ? 'working' : 'done'}
+            tone={worker.running ? palette.green : palette.light_foreground}
+            icon={worker.running ? 'loader' : 'check'}
+          />
+          <IconButton icon="refresh-cw" label="Refresh" loading={refreshing} onPress={() => void onRefresh()} />
+        </>
+      }
+      below={
+        <View style={{ gap: 2 }}>
+          <Title numberOfLines={2}>{worker.description || worker.type || worker.id}</Title>
+          <Label numberOfLines={2}>{[worker.type, session.title, ago(worker.updatedAt)].filter(Boolean).join(' · ')}</Label>
+        </View>
+      }
+    />
   )
 }
