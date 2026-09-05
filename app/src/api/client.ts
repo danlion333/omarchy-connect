@@ -1235,9 +1235,13 @@ export class ConnectClient {
         return
       case 'ev':
         // The desktop's addresses changed under a live socket — a tunnel came
-        // up, the lease moved, remote access was switched. Taken here as well
-        // as persisted by `api/link`, so the next dial uses it even if the app
-        // never gets as far as writing it down.
+        // up, the lease moved, remote access was switched. Taken here so the
+        // next dial in *this* process uses it; `api/link` listens for the same
+        // event and is what writes the merged list to the keychain, so it
+        // survives the process too. Both, because this list is only ever as
+        // good as the last one that reached storage: for a long time nothing
+        // persisted it, and a phone restarted after a LAN-only hello came back
+        // with no tunnel address to dial at all.
         if (msg.event === 'endpoints' && Array.isArray(msg.data?.endpoints)) {
           this.setEndpoints(msg.data.endpoints.map((entry: Candidate) => ({ ...entry, source: 'hello' as const })))
         }

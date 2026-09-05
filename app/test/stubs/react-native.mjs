@@ -11,3 +11,14 @@ export const AppState = {
   currentState: 'background',
   addEventListener: () => ({ remove() {} }),
 }
+
+/**
+ * Which phone this is. `api/link` reads it to decide what it may ask of the
+ * platform; on Node the honest answer is "android", the one the native module
+ * is written for, and `select` picks accordingly.
+ */
+export const Platform = {
+  OS: 'android',
+  Version: 34,
+  select: (choices) => (Object.hasOwn(choices, 'android') ? choices.android : choices.default),
+}

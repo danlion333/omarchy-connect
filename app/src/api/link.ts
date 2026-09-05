@@ -419,6 +419,19 @@ class Link {
         // the service. This is the first moment any of it can be done.
         void this.flushOutbox()
       }),
+      /**
+       * The desktop's address list changing under a live socket is worth
+       * exactly as much as the one in `hello`, and until now it was worth
+       * less: the client took it into memory and nothing wrote it down. A
+       * desktop that greeted the phone before its own tunnel was detected —
+       * which is every restart the phone redials into — corrected itself
+       * seconds later with this event, and the correction died with the
+       * process. Written through the same merge as `hello`, so a typed-in
+       * address still survives it.
+       */
+      client.on('ev:endpoints', (data: { endpoints?: Hello['endpoints'] }) => {
+        void this.rememberEndpoints(data?.endpoints ?? null)
+      }),
       client.on('ev:stats', (data: Stats) => this.patch({ stats: data })),
       client.on('ev:theme', (data: Palette) => this.patch({ palette: { ...FALLBACK_PALETTE, ...data } })),
       /**

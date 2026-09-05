@@ -1477,11 +1477,23 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // from a handset that was never told anything.
       trackConnections(() => [...clients].filter((c) => c.device && c.via !== 'remote').length)
       startPlugins(bus)
+      // Before the socket is open, not after. `endpoints()` reads whatever
+      // `overlayState` holds at the moment a `hello` is answered, and in a
+      // fresh process that is `overlay.known()` — an empty snapshot. A phone
+      // that dials into the gap between `listen` and the first environment
+      // read is greeted with the LAN address and nothing else, and writes
+      // that list over the one in its keychain, losing the tunnel address it
+      // needs the next time it is away from home. The gap used to be
+      // theoretical; since the phone redials on the start-up announcement it
+      // is the same second, and this read walks `nmcli`, the tailscaled
+      // socket and sysfs before it comes back. Nothing can reach the server
+      // until it is listening, so doing this first costs a slower start and
+      // closes the window entirely.
+      await refreshEnvironment()
       await new Promise((resolve, reject) => {
         httpServer.once('error', reject)
         httpServer.listen(listenPort, '0.0.0.0', resolve)
       })
-      await refreshEnvironment()
       publishState()
       // Last, and only after `refreshEnvironment`: the packet carries the
       // address this desktop is on, and that address is what was just read.
