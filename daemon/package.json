@@ -30,6 +30,7 @@
     "test:dictation": "node test/dictation.mjs",
     "test:audio": "node test/audio.mjs",
     "test:audio-input": "node test/audio-input.mjs",
+    "test:resample": "node test/resample.mjs",
     "test:audio-panel": "node test/audio-panel.mjs",
     "test:upload-names": "node test/upload-names.mjs",
     "test:local-auth": "node test/local-auth.mjs",

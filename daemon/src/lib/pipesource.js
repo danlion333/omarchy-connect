@@ -5,6 +5,8 @@ import path from 'node:path'
 
 import { has } from './exec.js'
 import { log } from './log.js'
+import { RATE as PHONE_RATE } from './mic.js'
+import { Upsampler } from './resample.js'
 
 /**
  * The phone's microphone, as a device the rest of the system can see.
@@ -33,6 +35,44 @@ import { log } from './log.js'
  * is loaded, which is why opening for writing does not block the daemon even
  * when no program has selected the source yet.
  *
+ * ## Why the module is told a rate the phone does not speak
+ *
+ * `module-pipe-source` is `module-pipe-tunnel` underneath, and that module
+ * keeps a ring of **8192 frames** between the pipe and whoever is listening,
+ * and steers its own clock to keep it exactly that full — `target_buffer =
+ * 8192 * frame_size` in its source, with no property that changes it, and a
+ * DLL that pulls the level back to it whenever it drifts. That is a delay
+ * counted in frames, so how long it is depends only on how many frames a
+ * second the module believes it is reading:
+ *
+ * | module rate | ring     | measured here, pipe to `parec` |
+ * |-------------|----------|--------------------------------|
+ * | 16 kHz      | 512 ms   | 449 ms                         |
+ * | 48 kHz      | 171 ms   | 89 ms                          |
+ * | 96 kHz      | 85 ms    | 77 ms                          |
+ * | 192 kHz     | 43 ms    | 36 ms                          |
+ *
+ * So the module is loaded at a multiple of the phone's 16 kHz and
+ * `lib/resample.js` makes the missing samples on the way in. Ninety-six is the
+ * default, and the reason it is not more is that the ring is also the only
+ * slack there is against a chunk that arrives late off Wi-Fi: a ring shorter
+ * than one late chunk empties, which the module answers with silence and a
+ * resync a full ring behind. Measured in this class with the phone beside the
+ * desk — 20 ms chunks land 20 ms apart, with a tail that reached 190 ms a few
+ * times a minute until the app started holding a Wi-Fi low-latency lock while
+ * it records (`Mic.kt`), and 71–110 ms after; at 96 kHz that is no late chunk
+ * in a minute, at 192 it would be several. Half a second became eighty-five
+ * milliseconds, and nothing about the sound changed except its sample count.
+ * `OMARCHY_CONNECT_INPUT_RATE` picks another multiple for anyone whose
+ * network wants more slack, or who can afford less; `gapMaxMs` and `late` in
+ * the summary say which.
+ *
+ * The chunk the phone is asked for matters for the same reason. The ring has
+ * to hold a whole chunk on top of what it is already keeping, so a chunk
+ * longer than the ring is an underrun ten times a second; and a chunk is also
+ * how long a sample waits on the phone before it is sent at all. `lib/mic.js`
+ * asks for 20 ms.
+ *
  * ## Nothing may block, and nothing may be believed
  *
  * A pipe with nobody draining it fills — 64 KB on Linux, twenty chunks, two
@@ -42,6 +82,52 @@ import { log } from './log.js'
  * around. The write end is opened `O_NONBLOCK`, a full pipe comes back as
  * `EAGAIN`, and `EAGAIN` means the chunk is dropped and counted. Live sound
  * that nothing is listening to is worth nothing; the daemon is worth a lot.
+ *
+ * ## What is in the pipe is a delay, not a reserve
+ *
+ * `EAGAIN` keeps the daemon alive and it keeps the *wrong two seconds*. A
+ * module that is left to suspend does not read the pipe while no program has
+ * the source selected, so the first chunks after the switch is flipped sit
+ * there, and the ones after that are refused. When somebody finally presses
+ * record, PipeWire drains that backlog and hands out what it finds: sound from
+ * before they were listening, in front of everything said since. Measured here
+ * against pipewire-pulse 1.6.8 — switch on, wait ten seconds, `parec` — half a
+ * second of ten-second-old audio came out before the first live syllable, and
+ * it never caught up, because a pipe read at real time never gives back the
+ * head start.
+ *
+ * Two things keep that from happening. The source is loaded with
+ * `node.always-process=true`, so the session manager leaves it running rather
+ * than suspending it when nothing is linked to it: the module keeps reading
+ * the pipe, the pipe never fills, and a program that presses record meets a
+ * ring at its steady level, not a backlog. Verified here — with the property
+ * the node reads IDLE rather than SUSPENDED while nothing listens, no write is
+ * ever refused, and the first thing out of the source after ten seconds of
+ * nobody listening is the chunk being written now.
+ *
+ * The second is for a desktop whose session manager does not honour that.
+ * Once a write is refused, this
+ * class knows there is no reader keeping up, and from then on it takes back
+ * whatever nobody has collected — a second read end on the FIFO, opened for the
+ * length of one `read` loop and closed again — immediately before writing the
+ * chunk it has. The pipe then holds one chunk, a tenth of a second, and that is
+ * the whole of what stands in front of the next program to press record.
+ * `lib/mic.js` reaches the same conclusion for the recording buffer in the same
+ * words: what nobody has heard yet is worth more than what was said eight
+ * seconds ago.
+ *
+ * It stops taking bytes back the moment a reader appears: a flush that comes up
+ * with less than a chunk means the far end collected what was written a tenth
+ * of a second ago, which nothing but a running reader does. The read end is
+ * opened only for the flush and never held, so a module somebody unloaded by
+ * hand still shows up as `EPIPE` on the next write rather than being masked by
+ * this class reading its own bytes forever.
+ *
+ * What is left after that is not ours. PipeWire keeps roughly half a second of
+ * its own on the source node and replays it when a reader starts — verified on
+ * this machine with the FIFO empty and no writer running at all, and unmoved by
+ * `pactl suspend-source`. Getting rid of that means not being a `pipe-source`,
+ * which is a different road than this one.
  *
  * The same reasoning runs the other way when the phone goes quiet. A source
  * whose pipe has no new bytes reads as **silence**, not as an error and not as
@@ -74,10 +160,36 @@ export const SOURCE_NAME = 'omarchy_connect_phone'
  */
 export const SOURCE_DESCRIPTION = 'Omarchy Connect (phone)'
 
-/** The format the phone already sends. Nothing here resamples anything. */
+/** The phone's format — but see `RATE`: the module is told more than that. */
 export const FORMAT = 's16le'
-export const RATE = 16000
 export const CHANNELS = 1
+
+/**
+ * How many frames the module keeps in front of every reader, whatever the
+ * rate. Not ours to change: `target_buffer` in PipeWire's module-pipe-tunnel.
+ */
+export const RING_FRAMES = 8192
+
+/** How long that ring lasts at a given rate. The latency this road adds. */
+export const ringMs = (rate) => Math.round((RING_FRAMES / rate) * 1000)
+
+/** The multiple of the phone's rate the module is loaded at by default. */
+export const DEFAULT_RATE = 96000
+
+/**
+ * The rate the module is told, from the environment or the default. Must be a
+ * whole multiple of what the phone sends, because the interpolator only makes
+ * whole samples; anything else falls back to the default with a warning.
+ */
+export function moduleRate(asked = process.env.OMARCHY_CONNECT_INPUT_RATE) {
+  if (asked === undefined || asked === '') return DEFAULT_RATE
+  const rate = Number(asked)
+  if (Number.isInteger(rate) && rate >= PHONE_RATE && rate % PHONE_RATE === 0 && rate <= 768000) return rate
+  log.warn(`OMARCHY_CONNECT_INPUT_RATE=${asked} is not a multiple of ${PHONE_RATE}; using ${DEFAULT_RATE}`)
+  return DEFAULT_RATE
+}
+
+export const RATE = moduleRate()
 
 /**
  * Sleep without an `await`.
@@ -164,15 +276,28 @@ export function reap() {
  * without a running daemon.
  */
 export class PipeSource {
-  constructor({ file = fifoPath(), name = SOURCE_NAME, description = SOURCE_DESCRIPTION } = {}) {
+  constructor({ file = fifoPath(), name = SOURCE_NAME, description = SOURCE_DESCRIPTION, rate = RATE } = {}) {
+    if (!Number.isInteger(rate) || rate < PHONE_RATE || rate % PHONE_RATE !== 0) {
+      throw new Error(`the source rate must be a whole multiple of ${PHONE_RATE}, not ${rate}`)
+    }
     this.file = file
     this.name = name
     this.description = description
+    this.rate = rate
+    this.upsampler = null
     this.module = null
     this.fd = null
     this.bytes = 0
     this.dropped = 0
+    this.flushed = 0
+    this.stalled = false
     this.startedAt = null
+    // How the chunks actually arrive. The ring is the only slack there is
+    // against a late one, so a gap longer than the ring is an underrun the
+    // reader heard as a dropout, and `late` counts those.
+    this.lastAt = null
+    this.gapMaxMs = 0
+    this.late = 0
   }
 
   get running() {
@@ -203,6 +328,8 @@ export class PipeSource {
     // The description is quoted twice because it is parsed twice: once out of
     // the module's argument string, and again out of `source_properties` as a
     // property list. One layer of quoting gets a source called "Omarchy".
+    // `node.always-process` rides in the same list: it is what keeps the
+    // module reading the pipe while no program is listening.
     let index
     try {
       index = execFileSync(
@@ -213,9 +340,9 @@ export class PipeSource {
           `source_name=${this.name}`,
           `file=${this.file}`,
           `format=${FORMAT}`,
-          `rate=${RATE}`,
+          `rate=${this.rate}`,
           `channels=${CHANNELS}`,
-          `source_properties="node.description='${this.description}'"`,
+          `source_properties="node.description='${this.description}' node.always-process=true"`,
         ],
         { encoding: 'utf8', timeout: 10000 },
       ).trim()
@@ -231,8 +358,14 @@ export class PipeSource {
       this.stop()
       throw err
     }
+    this.upsampler = new Upsampler({ factor: this.rate / PHONE_RATE })
     this.bytes = 0
     this.dropped = 0
+    this.flushed = 0
+    this.stalled = false
+    this.lastAt = null
+    this.gapMaxMs = 0
+    this.late = 0
     this.startedAt = Date.now()
     log.ok(`the phone is now an input on this desktop — "${this.description}" in any picker`)
     return this.summary()
@@ -259,26 +392,61 @@ export class PipeSource {
   }
 
   /**
-   * One chunk of PCM towards the source. Never throws, never blocks.
+   * One chunk of the phone's PCM towards the source. Never throws, never
+   * blocks. What goes down the pipe is the chunk at the module's rate, so the
+   * byte counts reported are counted there too.
    *
-   * A short write is treated as a full pipe rather than retried in a loop: the
-   * only reason the kernel takes less than a chunk is that there is no room
-   * for the rest, and looping there is the blocking write this file exists to
-   * avoid, spelled differently.
+   * The first write is the ordinary case and costs one syscall. A refusal is
+   * the interesting one: it says that whatever is in the pipe is not on its way
+   * to anybody, so the pipe is emptied and the chunk in hand goes in on its
+   * own. From then on every chunk is preceded by that same emptying, until a
+   * flush comes up nearly dry — which only a reader that is keeping up can
+   * cause — and the ordinary case resumes.
    */
-  write(pcm) {
+  write(phonePcm) {
     if (this.fd === null) return false
+    const now = Date.now()
+    if (this.lastAt !== null) {
+      const gap = now - this.lastAt
+      if (gap > this.gapMaxMs) this.gapMaxMs = gap
+      if (gap > ringMs(this.rate)) this.late += 1
+    }
+    this.lastAt = now
+    const pcm = this.upsampler.process(phonePcm)
+
+    // Stalled: what is in there is older than what is in hand, and a reader
+    // that arrives in the next tenth of a second should hear the new thing.
+    if (this.stalled && this.flush() < pcm.length) this.stalled = false
+
+    let outcome = this.push(pcm)
+    if (outcome === 'full') {
+      if (!this.stalled) log.debug('nothing is reading the phone microphone source; the pipe is being kept short')
+      this.stalled = true
+      this.flush()
+      outcome = this.push(pcm)
+    }
+    return outcome === true
+  }
+
+  /**
+   * One `write(2)` at the pipe. `'full'` means there was no room for the whole
+   * chunk — either `EAGAIN` or a short write, which are the same fact told two
+   * ways, and neither is retried in a loop here: looping is the blocking write
+   * this file exists to avoid, spelled differently.
+   */
+  push(pcm) {
     try {
       const wrote = fs.writeSync(this.fd, pcm)
       this.bytes += wrote
-      if (wrote < pcm.length) this.dropped += pcm.length - wrote
-      return wrote === pcm.length
+      if (wrote === pcm.length) return true
+      this.dropped += pcm.length - wrote
+      return 'full'
     } catch (err) {
       if (err.code === 'EAGAIN') {
         // Nobody is reading, or whoever is has fallen behind. Sound with no
         // listener; say nothing, keep the count.
         this.dropped += pcm.length
-        return false
+        return 'full'
       }
       if (err.code === 'EPIPE') {
         // The module went away underneath us — somebody unloaded it by hand.
@@ -290,6 +458,53 @@ export class PipeSource {
       this.dropped += pcm.length
       return false
     }
+  }
+
+  /**
+   * Take back everything nobody has collected, and say how many bytes that was.
+   *
+   * A second read end on the same FIFO, opened for this loop and closed before
+   * the caller writes anything: held open it would make this class a reader in
+   * its own right, and a module that had been unloaded would never be noticed,
+   * because the write that should have raised `EPIPE` would land in our own
+   * hands instead.
+   *
+   * Every byte taken back is counted as dropped, because that is what it is —
+   * sound that reached this desktop and no program on it. Nothing here throws:
+   * a pipe that has gone (the module unloaded a moment ago) is the next write's
+   * problem to report, not this one's.
+   */
+  flush() {
+    let gone = 0
+    let rfd = null
+    try {
+      rfd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+      const bin = Buffer.allocUnsafe(65536)
+      for (;;) {
+        let read = 0
+        try {
+          read = fs.readSync(rfd, bin, 0, bin.length, null)
+        } catch (err) {
+          if (err.code === 'EAGAIN') break
+          throw err
+        }
+        if (read <= 0) break
+        gone += read
+      }
+    } catch (err) {
+      log.debug('could not empty the microphone pipe:', err.message)
+    } finally {
+      if (rfd !== null) {
+        try {
+          fs.closeSync(rfd)
+        } catch {
+          /* nothing left to close */
+        }
+      }
+    }
+    this.dropped += gone
+    this.flushed += gone
+    return gone
   }
 
   /**
@@ -323,6 +538,7 @@ export class PipeSource {
       /* gone already */
     }
     this.startedAt = null
+    this.stalled = false
     return { ...was, enabled: false }
   }
 
@@ -337,10 +553,16 @@ export class PipeSource {
             file: this.file,
             since: this.startedAt,
             encoding: FORMAT,
-            rate: RATE,
+            rate: this.rate,
+            phoneRate: PHONE_RATE,
+            ringMs: ringMs(this.rate),
             channels: CHANNELS,
             bytes: this.bytes,
             dropped: this.dropped,
+            flushed: this.flushed,
+            stalled: this.stalled,
+            gapMaxMs: this.gapMaxMs,
+            late: this.late,
           }
         : {}),
     }

@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.net.wifi.WifiManager
 import android.os.Process
 import android.util.Base64
 import java.util.concurrent.atomic.AtomicBoolean
@@ -69,6 +70,23 @@ internal object Mic {
   private val running = AtomicBoolean(false)
   private var recorder: AudioRecord? = null
   private var thread: Thread? = null
+
+  /**
+   * Wi-Fi held out of power save while the microphone streams.
+   *
+   * Measured from the desktop with this phone on Wi-Fi: chunks leave every
+   * 20 ms and mostly land 20 ms apart, but a few times a minute one lands
+   * 100–190 ms late, and on the desktop that gap is exactly the dropout a
+   * program hears — the PipeWire source keeps a ring of a fixed few dozen
+   * milliseconds and a chunk that misses it is silence
+   * (`daemon/src/lib/pipesource.js`). Power save is the usual reason a
+   * station sits on its frames. `WIFI_MODE_FULL_LOW_LATENCY` is the mode
+   * Android names for exactly this, and when the app is not in front it falls
+   * back to keeping the radio fully awake, which is the case a phone in a
+   * pocket is in. Held only while recording, because that is the only time it
+   * earns its battery.
+   */
+  private var wifi: WifiManager.WifiLock? = null
 
   val isRunning: Boolean
     get() = running.get()
@@ -148,7 +166,21 @@ internal object Mic {
       return false
     }
 
-    Trace.evt("mic.start", "chunkMs" to window, "buffer" to bufferBytes)
+    wifi = try {
+      (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
+        ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "omarchy:mic")
+        ?.also {
+          it.setReferenceCounted(false)
+          it.acquire()
+        }
+    } catch (error: Exception) {
+      // A phone without Wi-Fi, or one that refuses: the stream still runs,
+      // it just keeps whatever latency the radio gives it.
+      Trace.warn("mic.wifi.lock.failed", "error" to error.javaClass.simpleName)
+      null
+    }
+
+    Trace.evt("mic.start", "chunkMs" to window, "buffer" to bufferBytes, "wifiLock" to (wifi != null))
     thread = Thread({ pump(input, chunkBytes) }, "omarchy-mic").also {
       it.priority = Thread.MAX_PRIORITY
       it.start()
@@ -178,6 +210,12 @@ internal object Mic {
       /* the same */
     }
     thread = null
+    try {
+      wifi?.takeIf { it.isHeld }?.release()
+    } catch (error: Exception) {
+      /* the radio is not ours to argue with */
+    }
+    wifi = null
     LinkService.holdMicrophone(false)
     Trace.evt("mic.stop")
   }

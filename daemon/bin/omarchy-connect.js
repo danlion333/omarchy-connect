@@ -666,6 +666,29 @@ async function cmdMicInput(rest) {
     )
   }
   log.ok(`"${input.description}" is an input on this desktop — pick it in any app's microphone list`)
+  if (input.rate && input.ringMs) {
+    log.info(`loaded at ${input.rate} Hz, so PipeWire keeps ${input.ringMs} ms of it in front of whoever listens`)
+  }
+  // What never reached a program, and why. `flushed` is the part this desktop
+  // took back out of the pipe to keep the sound in front of a reader fresh, so
+  // a big number beside a stalled source is the switch doing its job, not a
+  // fault.
+  if (input.dropped) {
+    log.info(
+      `${input.dropped} bytes never reached a program` +
+        (input.flushed ? `, ${input.flushed} of them cleared out of the pipe to keep it short` : '') +
+        (input.stalled ? '\n  nothing is reading it right now' : ''),
+    )
+  }
+  // A chunk that lands later than the ring can wait is a dropout whoever is
+  // listening already heard. Worth a line, because from the program's side it
+  // is indistinguishable from the phone going quiet for a moment.
+  if (input.late) {
+    log.warn(
+      `${input.late} chunk${input.late === 1 ? '' : 's'} arrived later than the ${input.ringMs} ms ring could wait` +
+        ` (longest gap ${input.gapMaxMs} ms) — each one was a dropout; a longer ring is OMARCHY_CONNECT_INPUT_RATE=48000`,
+    )
+  }
   if (input.phone) log.warn(`the handset is not speaking yet: ${input.phone}\n  wake it and run \`omarchy-connect mic start\``)
   else if (input.streaming === false && value === 'status') log.info('nothing is streaming into it — `omarchy-connect mic start`')
 }
