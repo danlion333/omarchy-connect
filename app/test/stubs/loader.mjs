@@ -13,8 +13,23 @@ export async function resolve(specifier, context, next) {
   if (specifier === 'react-native') {
     return { url: new URL('./react-native.mjs', import.meta.url).href, shortCircuit: true }
   }
+  // The keychain: a phone-only module behind `api/storage`, which anything
+  // testing what the app writes down has to go through.
+  if (specifier === 'expo-secure-store') {
+    return { url: new URL('./expo-secure-store.mjs', import.meta.url).href, shortCircuit: true }
+  }
+  // Everything else Expo: the battery, the network, the file system, the
+  // photo library. `api/link` reaches none of them on the roads a test walks,
+  // but it imports things that import them, and on Node they end at a native
+  // module that does not exist.
+  if (specifier.startsWith('expo-')) {
+    return { url: new URL('./expo.mjs', import.meta.url).href, shortCircuit: true }
+  }
   if (specifier.endsWith('modules/omarchy-link')) {
     return { url: new URL('./omarchy-link.mjs', import.meta.url).href, shortCircuit: true }
+  }
+  if (specifier.endsWith('modules/omarchy-telephony')) {
+    return { url: new URL('./omarchy-telephony.mjs', import.meta.url).href, shortCircuit: true }
   }
   try {
     return await next(specifier, context)

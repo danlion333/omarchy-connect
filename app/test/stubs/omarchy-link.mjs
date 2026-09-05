@@ -82,3 +82,80 @@ export function linkService() {
     },
   }
 }
+
+/* ── the foreground service ─────────────────────────────────────────── */
+
+/**
+ * The half of the native module that keeps the socket alive when the app is
+ * not on screen. `api/link` imports all of it at module scope, so it has to
+ * exist for the module to load at all; none of it does anything a test can
+ * see, and `globalThis.__background` is there for one that wants to look.
+ */
+const background = (globalThis.__background = {
+  chosen: false,
+  enabled: false,
+  started: 0,
+  stopped: 0,
+  status: null,
+  outbox: [],
+})
+
+export function backgroundLinkChosen() {
+  return background.chosen
+}
+
+export function backgroundLinkEnabled() {
+  return background.enabled
+}
+
+export async function startBackgroundLink() {
+  background.started += 1
+}
+
+export async function stopBackgroundLink() {
+  background.stopped += 1
+}
+
+export function setBackgroundLinkStatus(status) {
+  background.status = status
+}
+
+export async function drainOutbox() {
+  const queued = background.outbox
+  background.outbox = []
+  return queued
+}
+
+export async function networkFacts() {
+  return { ssid: null, wifi: true, metered: false }
+}
+
+export const noteAgentAlert = record('noteAgentAlert')
+export const noteFileAlert = record('noteFileAlert')
+
+/* ── UDP, for the magic packet and the discovery listener ───────────── */
+
+/**
+ * React Native has no datagram socket, so the native module lends one. Here it
+ * only has to exist: nothing in a test wakes a desktop or listens for one.
+ */
+export function datagramsSupported() {
+  return false
+}
+
+export const sendDatagram = record('sendDatagram')
+
+/* ── the rest of the native surface ─────────────────────────────────── */
+
+/**
+ * Finding the phone, and putting a picture on its clipboard. Both are native
+ * on a device and neither is reachable from a test; they are here so that
+ * every module that imports the native side can be loaded on Node.
+ */
+export function locateSupported() {
+  return false
+}
+
+export const startLocating = record('startLocating')
+export const stopLocating = record('stopLocating')
+export const copyPictureToClipboard = record('copyPictureToClipboard')
