@@ -1037,7 +1037,7 @@ The phone has to be able to verify it, and that is where the platforms differ:
 
 | | |
 | --- | --- |
-| **Android, real build** | `omarchy-connect tls trust` copies the certificate into `app/assets/desktop-ca.pem`; the bundled config plugin adds it as a build-time trust anchor next to the system ones. Rebuild and https works everywhere in the app, streaming included. |
+| **Android, real build** | `omarchy-connect tls trust` copies the certificate into `app/assets/desktop-ca.pem`; the bundled config plugin makes it a build-time trust anchor for hosts dialled by bare IPv4 address (and for the certificate's own names), next to the system ones. Rebuild and https works everywhere in the app, streaming included. A new desktop address — another Wi-Fi, a tunnel — needs no rebuild; only a rotated key does. |
 | **Expo Go, iOS** | No way to add a trust anchor, so the app stays on http and file bodies stay in the clear on your LAN. Everything else — commands, clipboard, notification text — is still end-to-end encrypted. |
 
 TLS is off by default, because switching it on without doing the phone half

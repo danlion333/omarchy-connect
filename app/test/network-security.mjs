@@ -10,10 +10,18 @@
  * all, so a release build of a fresh clone inherited the platform default —
  * no cleartext — and could not reach a plain-HTTP daemon to pair with.
  *
- * A gradle build is perfectly happy in both cases, which is why this is a
+ * A third went wrong once the scoping was in: the names it scoped to were read
+ * out of the certificate *copy* in `assets/`, a snapshot, while the daemon
+ * re-mints its certificate over the same key every time the machine gains an
+ * address. The desktop's tailnet address was not in the snapshot, so it fell
+ * through to the base config, where the desktop's key is not an anchor, and the
+ * phone lost the handshake before `hello` with nothing in either log.
+ *
+ * A gradle build is perfectly happy in all three cases, which is why this is a
  * suite rather than something to notice later. It reads both branches of the
  * plugin: the one that has been told which desktop it belongs to, and the one
- * that has not.
+ * that has not — and asks each of them the question Android asks, host by
+ * host, rather than matching XML by eye.
  */
 import { execFileSync } from 'node:child_process'
 import fs from 'node:fs'
@@ -23,7 +31,7 @@ import path from 'node:path'
 import { check, done } from '../../tools/test-harness.mjs'
 import plugin from '../plugins/withDesktopCa.js'
 
-const { networkSecurityConfig, writeSecurityConfig, subjectNamesOf } = plugin
+const { networkSecurityConfig, writeSecurityConfig, subjectNamesOf, configFor } = plugin
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-nsc-'))
 
@@ -57,7 +65,30 @@ const domain = scoped.slice(scoped.indexOf('<domain-config'), scoped.indexOf('</
 check('the desktop key is an anchor for the desktop', domain.includes('@raw/desktop_ca'))
 check('cleartext is permitted to the desktop', /<domain-config cleartextTrafficPermitted="true">/.test(scoped))
 check('the system anchors are kept', domain.includes('src="system"'))
-for (const name of names) check(`${name} is in the domain-config`, domain.includes(`>${name}<`))
+for (const name of names) check(`${name} is trusted`, configFor(scoped, name).trustsDesktop, name)
+
+/* ── an address the copy never heard of is trusted all the same ────── */
+
+/*
+ * The certificate in `assets/` is a snapshot; the daemon re-mints its own over
+ * the same key every time the machine gains an address, and a Tailscale one is
+ * the everyday case. A build whose config only knew the snapshot's addresses
+ * dropped the handshake before `hello`, silently, from anywhere but home.
+ */
+for (const address of ['100.81.6.104', '10.0.0.7', '172.20.30.40', '192.168.4.2', '100.64.0.0']) {
+  const seen = configFor(scoped, address)
+  check(`${address} is trusted though the certificate copy never named it`, seen.trustsDesktop, JSON.stringify(seen))
+  check(`and cleartext still reaches ${address}`, seen.cleartext)
+}
+check('none of those addresses are in the certificate', !names.some((n) => n.startsWith('100.')), names.join(' '))
+
+/* ── and the desktop's key still cannot vouch for a named host ─────── */
+
+for (const host of ['example.com', 'api.expo.dev', 'localhost.evil.com', 'update.googleapis.com']) {
+  const seen = configFor(scoped, host)
+  check(`${host} falls through to the base config`, !seen.scoped && !seen.trustsDesktop, JSON.stringify(seen))
+  check(`and gets no cleartext`, !seen.cleartext)
+}
 
 /* ── without a certificate: wide, but present ──────────────────────── */
 
