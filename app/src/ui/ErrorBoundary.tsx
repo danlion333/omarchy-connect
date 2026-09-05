@@ -3,7 +3,7 @@ import { View } from 'react-native'
 
 import { problem, type Problem } from '../lib/errors'
 import { usePalette } from '../state/ConnectionContext'
-import { Body, Button, Notice, Title } from './kit'
+import { Button, Hint, IconBox, Notice, Title } from './kit'
 import { space } from '../theme'
 
 /**
@@ -55,10 +55,11 @@ function Crashed({ failure, onRetry }: { failure: Problem; onRetry: () => void }
   const p = usePalette()
   return (
     <View style={{ flex: 1, backgroundColor: p.background, justifyContent: 'center', padding: space.lg }}>
-      <Title style={{ marginBottom: space.sm }}>This screen stopped</Title>
-      <Body tone={p.muted} style={{ marginBottom: space.lg }}>
-        The link to your desktop is untouched — only the picture broke. Try again, or move to another tab.
-      </Body>
+      <View style={{ marginBottom: space.lg }}>
+        <IconBox name="alert-triangle" tone={p.orange} size={40} />
+      </View>
+      <Title style={{ marginBottom: space.xs }}>This screen stopped</Title>
+      <Hint style={{ marginBottom: space.lg }}>Your desktop link is fine · Switch tabs or try again</Hint>
       <Notice error={failure.detail ? `${failure.message}\n${failure.detail}` : failure.message} />
       <Button label="Try again" icon="refresh-cw" onPress={onRetry} />
     </View>

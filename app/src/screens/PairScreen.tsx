@@ -1,14 +1,34 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
-import { ActivityIndicator, View } from 'react-native'
+import { ActivityIndicator, Linking, View } from 'react-native'
 import { CameraView, useCameraPermissions } from 'expo-camera'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Empty, Field, ListRow, Notice, Screen, Segmented, Title } from '../ui/kit'
+import {
+  Body,
+  Button,
+  Card,
+  CardHeader,
+  Empty,
+  Field,
+  Hint,
+  IconButton,
+  ListRow,
+  Notice,
+  Pill,
+  Row,
+  Screen,
+  ScreenHeader,
+  Segmented,
+  Title,
+} from '../ui/kit'
 import { DEFAULT_PORT, parsePairingUrl, probeHost, scanSubnet, type Discovered, type PairingTarget } from '../api/discovery'
 import { acceptsFrame, nextPhase, type ScanEvent, type ScanPhase } from '../lib/pair-scan'
-import { alpha, font, radius, size, space } from '../theme'
+import { alpha, radius, space, touch } from '../theme'
 
 type Mode = 'scan' | 'find' | 'manual'
+
+/** The one line under a code box that is not six digits yet. */
+const codeError = (code: string) => (code.length && !/^\d{6}$/.test(code) ? 'Six digits' : null)
 
 /**
  * `notice` is the one thing this screen says that is not about pairing: a
@@ -83,18 +103,21 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
 
   return (
     <Screen>
+      <ScreenHeader title="Pair" />
+
       <View style={{ marginBottom: space.xl }}>
-        <Title style={{ fontSize: 26 }}>Omarchy Connect</Title>
-        <Caps style={{ marginTop: space.xs }}>pair with your desktop</Caps>
-        <Notice error={notice} tone="warning" style={{ marginTop: space.md }} />
+        <Title>Omarchy Connect</Title>
+        <Hint style={{ marginTop: space.xs }}>Scan the QR your desktop printed</Hint>
       </View>
 
-      <View style={{ marginBottom: space.lg }}>
+      <Notice error={notice} tone="info" />
+
+      <View style={{ marginBottom: space.md }}>
         <Segmented<Mode>
           options={[
             { value: 'scan', label: 'Scan' },
-            { value: 'find', label: 'Find' },
-            { value: 'manual', label: 'Manual' },
+            { value: 'find', label: 'Nearby' },
+            { value: 'manual', label: 'Type' },
           ]}
           value={mode}
           onChange={setMode}
@@ -108,53 +131,28 @@ export function PairScreen({ notice }: { notice?: string | null } = {}) {
         action={mode === 'scan' && scanPhase === 'stopped' ? { label: 'Scan again', icon: 'refresh-cw', onPress: scanAgain } : null}
       />
 
-      {busy ? (
+      {/*
+        In scan mode the pane stays mounted through an attempt and says
+        "Pairing…" over its own preview. Swapping it out was what reset the
+        camera's "already handled this" latch on every failure, and it also
+        cost a camera restart and a flash of "Checking camera access…" between
+        attempts. The other two panes have no such latch, so while an attempt
+        runs they give way to one card with the spinner in it.
+      */}
+      {mode === 'scan' ? (
+        <ScanPane phase={scanPhase} invalid={invalid} onFrame={onFrame} onScanAgain={scanAgain} />
+      ) : busy ? (
         <Card>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, minHeight: touch }}>
             <ActivityIndicator color={palette.accent} />
             <Body>Pairing…</Body>
           </View>
         </Card>
-      ) : null}
-
-      {/*
-        In scan mode the pane stays mounted through an attempt, under the
-        "Pairing…" card rather than instead of it. Swapping it out was what
-        reset the camera's "already handled this" latch on every failure, and
-        it also cost a camera restart and a flash of "Checking camera access…"
-        between attempts.
-      */}
-      {mode === 'scan' ? (
-        <ScanPane phase={scanPhase} invalid={invalid} onFrame={onFrame} onScanAgain={scanAgain} />
-      ) : busy ? null : mode === 'find' ? (
+      ) : mode === 'find' ? (
         <FindPane onPaired={attempt} />
       ) : (
         <ManualPane onPaired={attempt} />
       )}
-
-      <Card>
-        <CardHeader icon="terminal" title="On the desktop" subtitle="one command" />
-        <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.sm }}>
-          Start the daemon and show a pairing code:
-        </Body>
-        <View
-          style={{
-            backgroundColor: palette.darker_background,
-            borderRadius: radius.sm,
-            padding: space.md,
-            borderWidth: 1,
-            borderColor: palette.lighter_background,
-          }}
-        >
-          <Body tone={palette.accent} style={{ fontFamily: font.medium, fontSize: size.label }}>
-            omarchy-connect start
-          </Body>
-        </View>
-        <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.md }}>
-          A desktop pairs with one phone at a time. If it already has one, run `omarchy-connect unpair` there to free
-          it before pairing this phone.
-        </Body>
-      </Card>
     </Screen>
   )
 }
@@ -182,23 +180,48 @@ function ScanPane({
   const palette = usePalette()
   const [permission, requestPermission] = useCameraPermissions()
 
+  // The viewfinder is a square whatever the sensor's aspect: a QR is square,
+  // and a box that keeps its shape from "checking" through "denied" to "live"
+  // is a card that does not jump while the permission dialog is up.
+  const frame = {
+    aspectRatio: 1,
+    borderRadius: radius.sm,
+    overflow: 'hidden' as const,
+    borderWidth: 1,
+    borderColor: palette.lighter_background,
+    backgroundColor: palette.darker_background,
+  }
+
   if (!permission) {
     return (
       <Card>
-        <Empty icon="camera" text="Checking camera access…" />
+        <CardHeader icon="maximize" title="Scan" subtitle="camera" />
+        <View style={[frame, { alignItems: 'center', justifyContent: 'center' }]}>
+          <ActivityIndicator color={palette.accent} />
+        </View>
       </Card>
     )
   }
 
   if (!permission.granted) {
+    // Once Android has heard "no" twice the dialog never comes back, and
+    // asking a third time does nothing at all — the only way in is the app's
+    // own settings page, so that is where the button goes.
+    const blocked = !permission.canAskAgain
     return (
       <Card>
-        <CardHeader icon="camera-off" title="Camera" subtitle="needed to read the QR code" />
-        <Body tone={palette.muted} style={{ marginBottom: space.md, fontSize: size.label }}>
-          The pairing code is shown as a QR block in your terminal. Grant camera access to scan it, or pair
-          manually instead.
-        </Body>
-        <Button icon="camera" label="Allow camera" onPress={requestPermission} variant="solid" />
+        <CardHeader icon="camera-off" title="Scan" subtitle="no camera access" tone={palette.muted} />
+        <View style={[frame, { justifyContent: 'center' }]}>
+          <Empty
+            icon="camera-off"
+            text={blocked ? 'Camera blocked · Allow it in Android settings' : 'Needs the camera to read the QR'}
+            action={
+              blocked
+                ? { label: 'Open settings', icon: 'settings', onPress: () => void Linking.openSettings() }
+                : { label: 'Allow camera', icon: 'camera', onPress: () => void requestPermission() }
+            }
+          />
+        </View>
       </Card>
     )
   }
@@ -208,17 +231,9 @@ function ScanPane({
       <CardHeader
         icon="maximize"
         title="Scan"
-        subtitle={phase === 'pairing' ? 'pairing…' : phase === 'stopped' ? 'stopped' : 'point at the terminal'}
+        subtitle={phase === 'pairing' ? 'pairing' : phase === 'stopped' ? 'stopped' : 'point at the terminal'}
       />
-      <View
-        style={{
-          height: 300,
-          borderRadius: radius.sm,
-          overflow: 'hidden',
-          borderWidth: 1,
-          borderColor: palette.lighter_background,
-        }}
-      >
+      <View style={frame}>
         <CameraView
           style={{ flex: 1 }}
           facing="back"
@@ -229,9 +244,10 @@ function ScanPane({
           A stopped scanner still shows the preview — the camera is exactly
           where the user left it — but says so over the top, so that a code
           sitting in frame and doing nothing reads as a decision rather than
-          as a broken app.
+          as a broken app. An attempt in flight is drawn the same way, for the
+          same reason: the code is in frame and nothing visible is happening.
         */}
-        {phase === 'stopped' ? (
+        {phase !== 'armed' ? (
           <View
             style={{
               position: 'absolute',
@@ -242,21 +258,33 @@ function ScanPane({
               alignItems: 'center',
               justifyContent: 'center',
               padding: space.lg,
+              gap: space.lg,
               backgroundColor: alpha(palette.background, 0.82),
             }}
           >
-            <Body tone={palette.muted} style={{ fontSize: size.label, textAlign: 'center', marginBottom: space.md }}>
-              Scanning stopped after that attempt. The same code will not be tried again on its own.
-            </Body>
-            <Button icon="refresh-cw" label="Scan again" variant="solid" onPress={onScanAgain} />
+            {phase === 'pairing' ? (
+              <>
+                <ActivityIndicator color={palette.accent} />
+                <Body>Pairing…</Body>
+              </>
+            ) : (
+              <>
+                <Body style={{ textAlign: 'center' }}>Stopped after that attempt</Body>
+                <Button icon="refresh-cw" label="Scan again" variant="solid" onPress={onScanAgain} />
+              </>
+            )}
           </View>
         ) : null}
       </View>
       {invalid && phase !== 'stopped' ? (
-        <Body tone={palette.orange} style={{ marginTop: space.md, fontSize: size.label }}>
-          That is not an Omarchy Connect code.
-        </Body>
-      ) : null}
+        <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.md }}>
+          Not an Omarchy Connect code
+        </Hint>
+      ) : (
+        <Hint icon="terminal" style={{ marginTop: space.md }}>
+          No QR yet · Run omarchy-connect pair on the desktop
+        </Hint>
+      )}
     </Card>
   )
 }
@@ -315,23 +343,21 @@ function FindPane({ onPaired }: { onPaired: PairFn }) {
     <Card>
       <CardHeader
         icon="search"
-        title="Desktops nearby"
+        title="Nearby desktops"
         subtitle={scanning ? `scanning ${Math.round(progress * 100)}%` : `${found.length} found`}
-        right={<Button icon="refresh-cw" variant="ghost" onPress={start} disabled={scanning} />}
+        right={<IconButton icon="refresh-cw" label="Scan the network again" onPress={start} loading={scanning} />}
       />
       {found.length ? (
-        found.map((desktop) => (
+        found.map((desktop, i) => (
           <ListRow
             key={desktop.host}
             title={desktop.name}
-            subtitle={`${desktop.host}:${desktop.port} · v${desktop.version}${
-              desktop.paired ? ' · another phone is paired' : desktop.pairing ? ' · pairing open' : ''
-            }${desktop.fingerprint ? `\n${desktop.fingerprint}` : ''}`}
+            subtitle={`${desktop.host}:${desktop.port} · v${desktop.version}`}
             onPress={desktop.paired ? undefined : () => setSelected(desktop)}
-            tone={desktop.paired ? palette.muted : desktop.pairing ? palette.green : undefined}
-            right={
-              <Caps tone={desktop.paired ? palette.orange : palette.muted}>{desktop.paired ? 'taken' : 'pair'}</Caps>
-            }
+            tone={desktop.paired ? palette.muted : undefined}
+            right={desktop.paired ? <Pill label="taken" tone={palette.orange} /> : desktop.pairing ? <Pill label="open" tone={palette.green} /> : null}
+            chevron={!desktop.paired}
+            last={i === found.length - 1}
           />
         ))
       ) : scanning ? (
@@ -339,10 +365,21 @@ function FindPane({ onPaired }: { onPaired: PairFn }) {
           <ActivityIndicator color={palette.accent} />
         </View>
       ) : (
-        <Empty icon="wifi-off" text="No desktop answered on this network. Is the daemon running?" />
+        <Empty
+          icon="wifi-off"
+          text="No desktop answered · Check Wi-Fi and the daemon"
+          action={{ label: 'Scan again', icon: 'refresh-cw', onPress: start }}
+        />
       )}
     </Card>
   )
+}
+
+/** A port a socket can be opened on, or nothing typed yet. */
+const portError = (port: string) => {
+  if (!port.trim()) return null
+  const n = Number(port)
+  return Number.isInteger(n) && n >= 1 && n <= 65535 ? null : '1–65535'
 }
 
 function ManualPane({ onPaired }: { onPaired: PairFn }) {
@@ -351,45 +388,67 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [code, setCode] = useState('')
   const [checking, setChecking] = useState(false)
-  const [reachable, setReachable] = useState<string | null>(null)
-  const [taken, setTaken] = useState(false)
+  // `null` until the address has been checked; then what the check found,
+  // with `info: null` meaning nothing answered there.
+  const [probe, setProbe] = useState<{ info: Discovered | null } | null>(null)
+  const taken = probe?.info?.paired === true
 
   const check = useCallback(async () => {
     setChecking(true)
-    setReachable(null)
-    setTaken(false)
+    setProbe(null)
     const info = await probeHost(host.trim(), Number(port) || DEFAULT_PORT)
-    setTaken(info?.paired === true)
-    setReachable(
-      info
-        ? info.paired
-          ? `${info.name} already has a phone paired — unpair it on the desktop first`
-          : `${info.name} · v${info.version}${info.tls ? ' · tls' : ''}${info.fingerprint ? ` · ${info.fingerprint}` : ''}`
-        : 'no answer from that address',
-    )
+    setProbe({ info })
     setChecking(false)
   }, [host, port])
 
+  const desktop = probe?.info ?? null
+
   return (
     <Card>
-      <CardHeader icon="edit-3" title="Manual" subtitle="address and code" />
-      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-        any address the desktop answers on will do — including the one its tunnel gave it, if you are
-        pairing from somewhere else entirely. `omarchy-connect pair` prints that one beside the QR.
-      </Body>
-      <Field label="Host" value={host} onChange={setHost} placeholder="192.168.1.100" keyboardType="numbers-and-punctuation" />
-      <Field label="Port" value={port} onChange={setPort} placeholder={String(DEFAULT_PORT)} keyboardType="number-pad" />
-      <Field label="Code" value={code} onChange={setCode} placeholder="123456" keyboardType="number-pad" maxLength={6} />
-      {reachable ? (
-        <Body
-          tone={reachable.startsWith('no answer') ? palette.red : taken ? palette.orange : palette.green}
-          style={{ fontSize: size.label, marginBottom: space.md }}
-        >
-          {reachable}
-        </Body>
+      <CardHeader icon="edit-3" title="Address and code" subtitle="beside the QR on the desktop" />
+      <Field
+        label="Address"
+        value={host}
+        onChange={(v) => {
+          setHost(v)
+          setProbe(null)
+        }}
+        placeholder="192.168.1.100"
+        keyboardType="numbers-and-punctuation"
+        error={probe && !desktop ? 'No desktop answered here' : null}
+      />
+      <View style={{ flexDirection: 'row', gap: space.md }}>
+        <View style={{ flex: 1 }}>
+          <Field
+            label="Port"
+            value={port}
+            onChange={(v) => {
+              setPort(v)
+              setProbe(null)
+            }}
+            placeholder={String(DEFAULT_PORT)}
+            keyboardType="number-pad"
+            error={portError(port)}
+          />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Field label="Code" value={code} onChange={setCode} placeholder="123456" keyboardType="number-pad" maxLength={6} error={codeError(code)} />
+        </View>
+      </View>
+      {desktop ? (
+        <View style={{ marginBottom: space.md }}>
+          <Row label="Desktop" value={desktop.name} tone={taken ? palette.orange : palette.green} />
+          <Row label="Version" value={`v${desktop.version}${desktop.tls ? ' · TLS' : ''}`} />
+          {desktop.fingerprint ? <Row label="Fingerprint" value={desktop.fingerprint} /> : null}
+          {taken ? (
+            <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+              Already holds another phone · Unpair it on the desktop first
+            </Hint>
+          ) : null}
+        </View>
       ) : null}
       <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Button icon="activity" label="Test" onPress={check} loading={checking} disabled={!host.trim()} style={{ flex: 1 }} />
+        <Button icon="activity" label="Check" onPress={check} loading={checking} disabled={!host.trim()} style={{ flex: 1 }} />
         <Button
           icon="link"
           label="Pair"
@@ -415,6 +474,12 @@ function ManualPane({ onPaired }: { onPaired: PairFn }) {
   )
 }
 
+/**
+ * The last step of the Nearby path: the desktop's fingerprint to check
+ * against the one it printed, and the six digits that prove the reader is
+ * looking at that terminal. "Pair" is the confirmation — there is no separate
+ * "looks right" because the code cannot be typed from anywhere else.
+ */
 function CodeEntry({
   title,
   subtitle,
@@ -432,27 +497,28 @@ function CodeEntry({
   onSubmit: () => void
   fingerprint?: string | null
 }) {
-  const palette = usePalette()
   return (
     <Card>
       <CardHeader icon="key" title={title} subtitle={subtitle} />
       {fingerprint ? (
         <View style={{ marginBottom: space.md }}>
-          <Caps style={{ marginBottom: space.xs }}>desktop fingerprint</Caps>
-          <Body tone={palette.accent} style={{ fontFamily: font.medium, fontSize: size.label }}>
-            {fingerprint}
-          </Body>
-          <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.xs }}>
-            it should match what `omarchy-connect pair` prints
-          </Body>
+          <Row label="Fingerprint" value={fingerprint} />
+          <Hint style={{ marginTop: space.xs }}>Must match what the desktop printed</Hint>
         </View>
       ) : null}
-      <Field label="Pairing code" value={code} onChange={setCode} placeholder="123456" keyboardType="number-pad" maxLength={6} />
+      <Field
+        label="Pairing code"
+        value={code}
+        onChange={setCode}
+        placeholder="123456"
+        keyboardType="number-pad"
+        maxLength={6}
+        error={codeError(code)}
+      />
       <View style={{ flexDirection: 'row', gap: space.sm }}>
-        <Button label="Back" icon="arrow-left" onPress={onCancel} style={{ flex: 1 }} />
+        <Button label="Cancel" icon="x" onPress={onCancel} style={{ flex: 1 }} />
         <Button label="Pair" icon="link" variant="solid" onPress={onSubmit} disabled={code.length !== 6} style={{ flex: 1 }} />
       </View>
     </Card>
   )
 }
-
