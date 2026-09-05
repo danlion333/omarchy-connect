@@ -53,6 +53,7 @@ import {
   feed as feedAudio,
   hangUp as hangUpAudio,
   summary as audioSummary,
+  setGain as setAudioGain,
 } from './plugins/audio.js'
 import { isAudioFrame } from './lib/mic.js'
 import * as agentDrops from './agents/drops.js'
@@ -706,6 +707,8 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      *
      * `op: "input"` is the other half — not a recording at all, but whether
      * this desktop offers the phone as a microphone the whole system can see.
+     * `op: "gain"` is neither: it is how loud any of it is, saved and applied
+     * to whatever is already running.
      */
     if (req.method === 'POST' && url.pathname === '/api/mic') {
       if (!localOnly(req, res)) return undefined
@@ -724,6 +727,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           if (op === 'input') {
             const input = await requestAudioInput(value ?? 'status')
             return json(res, 200, { ok: true, audio: { ...audioSummary(), input } })
+          }
+          if (op === 'gain') {
+            setAudioGain(value)
+            publishState()
+            return json(res, 200, { ok: true, audio: audioSummary() })
           }
           const { outcome } = requestMic({ op })
           const result = await outcome

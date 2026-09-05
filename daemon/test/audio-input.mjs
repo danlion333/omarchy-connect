@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url'
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
-import { buildFrame, RATE, CHUNK_MS } from '../src/lib/mic.js'
+import { amplify, buildFrame, RATE, CHUNK_MS } from '../src/lib/mic.js'
 import { SOURCE_NAME, SOURCE_DESCRIPTION, RATE as SOURCE_RATE, ringMs } from '../src/lib/pipesource.js'
 import { Upsampler } from '../src/lib/resample.js'
 
@@ -308,14 +308,33 @@ check('turning it on also asks the handset to speak', input?.streaming === true,
 
 /* ── the sound comes out of the other end ──────────────────────────────── */
 
+// A gain of two, chosen here rather than left at the default, so that what
+// comes out of the pipe is a number this file computed rather than a number
+// this file copied from the daemon's own constant. It goes on the samples
+// before they are interpolated, which is the order the daemon uses: the gain
+// is the phone's level, the interpolation is the pipe's rate.
+const GAIN = 2
+const louder = await mic({ op: 'gain', value: GAIN })
+check('the desktop can be told how loud the phone is', louder.body?.audio?.gain === GAIN, JSON.stringify(louder.body?.audio))
+
+/** What the far end must hold for `n` chunks: the gain, then the pipe's rate. */
+const willHear = (n) => expect.process(amplify(phone.speak(n), GAIN))
+
 let expect = upsampled()
-const spoken = expect.process(phone.speak(20))
+const spoken = willHear(20)
 await wait(600)
 const heard = fs.readFileSync(capture)
 check(
-  'everything the phone spoke came out of the pipe, interpolated and otherwise unchanged',
+  'everything the phone spoke came out of the pipe, interpolated, with the desktop gain on it and otherwise unchanged',
   heard.length >= spoken.length && heard.subarray(0, spoken.length).equals(spoken),
   `${heard.length} bytes out for ${spoken.length} in`,
+)
+check(
+  'and the source itself is still the format it was declared as — the gain is on the samples, not on the device',
+  /format=s16le/.test(modules()[0]) &&
+    new RegExp(`rate=${SOURCE_RATE}\\b`).test(modules()[0]) &&
+    /channels=1/.test(modules()[0]),
+  modules()[0],
 )
 
 /* ── on top of itself ──────────────────────────────────────────────────── */
@@ -339,7 +358,7 @@ expect = upsampled()
 const chunkBytes = (SOURCE_RATE * 2 * CHUNK_MS) / 1000
 const from = fs.statSync(capture).size
 // Forty chunks: well over twice what the pipe holds at the module's rate.
-const said = expect.process(phone.speak(40))
+const said = willHear(40)
 await wait(500)
 
 const waiting = (await mic({ op: 'input', value: 'status' })).body?.audio?.input
@@ -371,7 +390,7 @@ check(
 // A reader that is keeping up gets everything: the emptying stops the moment
 // the far end proves it is collecting.
 const running = fs.statSync(capture).size
-const more = expect.process(phone.speak(5))
+const more = willHear(5)
 await wait(500)
 const heardLive = fs.readFileSync(capture).subarray(running)
 check(

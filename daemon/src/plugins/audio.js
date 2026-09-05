@@ -1,7 +1,8 @@
 import crypto from 'node:crypto'
 
+import { loadConfig, updateConfig } from '../lib/config.js'
 import { log } from '../lib/log.js'
-import { CHUNK_MS, CHANNELS, MAX_SECONDS, RATE, Recorder, parseFrame, pathFor } from '../lib/mic.js'
+import { CHUNK_MS, CHANNELS, MAX_GAIN, MAX_SECONDS, RATE, Recorder, amplify, parseFrame, pathFor, readGain } from '../lib/mic.js'
 import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable } from '../lib/pipesource.js'
 
 /**
@@ -105,11 +106,12 @@ const changed = () => bus?.emit('audio.state')
 
 export function summary() {
   const desktop = { input: inputSummary() }
-  if (!live) return { streaming: false, ...desktop }
+  if (!live) return { streaming: false, gain: currentGain(), ...desktop }
   return {
     streaming: true,
     stream: live.stream,
     since: live.startedAt,
+    gain: live.gain,
     ...live.recorder.summary(),
     ...desktop,
   }
@@ -152,6 +154,34 @@ export function setInput(on) {
   if (was.enabled !== undefined) log.info('the phone is no longer an input on this desktop')
   changed()
   return { available: pipeAvailable(), name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false }
+}
+
+/**
+ * How loud the phone is on this desktop, and how to change it.
+ *
+ * The number lives in the config because it is a property of a handset and a
+ * room rather than of a session: the same phone in the same place needs the
+ * same multiply tomorrow. It is applied to a stream that is already running
+ * as well as saved, because nobody can choose a gain from a number — they
+ * choose it by listening to the input in the program that was too quiet, and
+ * a value that only took effect on the next `mic start` would make that a
+ * game of stop and start.
+ */
+export function currentGain() {
+  return live ? live.gain : readGain(loadConfig().audio?.gain)
+}
+
+export function setGain(value) {
+  const asked = Number(value)
+  if (!Number.isFinite(asked) || asked <= 0) throw new Error('the microphone gain is a number greater than zero')
+  if (asked > MAX_GAIN) throw new Error(`the microphone gain tops out at ${MAX_GAIN}`)
+  updateConfig((cfg) => {
+    cfg.audio = { ...(cfg.audio || {}), gain: asked }
+  })
+  if (live) live.gain = asked
+  log.info(`the phone's microphone is now ${asked}x on this desktop`)
+  changed()
+  return currentGain()
 }
 
 /** Is the phone currently offered as an input here? */
@@ -293,10 +323,15 @@ export function feed(session, frame) {
     return false
   }
   if (chunk.stream !== live.stream) return false
-  live.recorder.push(chunk.pcm, chunk.seq)
+  // Loud once, for everybody. The WAV and the PipeWire source are two readers
+  // of the same bytes, and a desktop where the recording and the input in
+  // Zoom's list disagreed about the level would be a bug nobody could hear
+  // their way out of.
+  const pcm = amplify(chunk.pcm, live.gain)
+  live.recorder.push(pcm, chunk.seq)
   for (const listener of listeners) {
     try {
-      listener(chunk.pcm, live.stream)
+      listener(pcm, live.stream)
     } catch (err) {
       log.debug('an audio listener threw:', err.message)
     }
@@ -396,6 +431,10 @@ export default {
         stream: pending.stream,
         session: ctx.session,
         startedAt: Date.now(),
+        // Read once, here, rather than out of the config on every chunk ten
+        // times a second. `setGain` moves it under a running stream on
+        // purpose, because the only way to pick this number is to hear it.
+        gain: readGain(loadConfig().audio?.gain),
         recorder: new Recorder({ file }),
         // The half hour is a backstop rather than a feature: something that
         // asked for a microphone and then crashed must not leave a handset

@@ -144,6 +144,59 @@ export function parseFrame(frame) {
 }
 
 /**
+ * How much louder the desktop makes what the phone sends, by default.
+ *
+ * The phone opens `VOICE_RECOGNITION` and deliberately leaves Android's
+ * automatic gain off, because a gain that rides over pauses is exactly what
+ * ruins a transcription. The price of that honesty is the level: on the
+ * handset this was measured on, ordinary speech at arm's length peaks around
+ * -15 dBFS and sits near -33 dBFS, which is a recording you have to lean into
+ * and a Zoom call where somebody asks you to speak up.
+ *
+ * So the desktop multiplies. Four is +12 dB: it puts the same speech near
+ * -3 dBFS at the peaks with the loudest measured sample still short of the
+ * rail, and — because it is a constant and not a compressor — it moves the
+ * noise floor by exactly as much as it moves the voice. That is the whole
+ * reason a plain multiply was chosen over `AutomaticGainControl` on the phone:
+ * the ratio between speech and silence is left exactly where the microphone
+ * put it, and nothing swells during a pause.
+ */
+export const DEFAULT_GAIN = 4
+
+/** The most a person can ask for. Past this every room is a wall of hiss. */
+export const MAX_GAIN = 16
+
+/** A configured gain, or the default when it is missing or not a number. */
+export function readGain(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_GAIN
+  return Math.min(n, MAX_GAIN)
+}
+
+/**
+ * `pcm` again, `gain` times louder, saturating at the rail.
+ *
+ * A new buffer rather than a multiply in place: what comes out of `parseFrame`
+ * is a window onto the frame the socket decrypted, and two consumers read it.
+ * A gain of one is the identity and is handed straight back, so a desktop that
+ * has turned this off pays nothing for the feature existing.
+ *
+ * Clipping is a clamp and not a wrap. A sample that overflows is a sample that
+ * was going to be ugly whatever we did; ±32767 is the quietest ugly available,
+ * whereas letting an int16 wrap turns one loud syllable into a click that is
+ * louder than the syllable.
+ */
+export function amplify(pcm, gain = DEFAULT_GAIN) {
+  if (!(gain > 0) || gain === 1) return pcm
+  const out = Buffer.allocUnsafe(pcm.length - (pcm.length % BYTES_PER_SAMPLE))
+  for (let i = 0; i + BYTES_PER_SAMPLE <= out.length; i += BYTES_PER_SAMPLE) {
+    const scaled = Math.round(pcm.readInt16LE(i) * gain)
+    out.writeInt16LE(scaled > 32767 ? 32767 : scaled < -32768 ? -32768 : scaled, i)
+  }
+  return out
+}
+
+/**
  * A 44-byte canonical WAV header for `bytes` of PCM.
  *
  * Raw samples would be the honest thing to write and a nuisance to listen to —

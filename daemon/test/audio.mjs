@@ -26,7 +26,7 @@ import { Writable } from 'node:stream'
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
-import { Recorder, buildFrame, parseFrame, isAudioFrame, wavHeader, RATE, CHUNK_MS } from '../src/lib/mic.js'
+import { Recorder, amplify, buildFrame, parseFrame, isAudioFrame, readGain, wavHeader, DEFAULT_GAIN, MAX_GAIN, RATE, CHUNK_MS } from '../src/lib/mic.js'
 
 const PORT = Number(process.env.PORT || 8817)
 const base = `http://127.0.0.1:${PORT}`
@@ -70,8 +70,8 @@ async function waitForDaemon() {
 }
 
 /** `omarchy-connect mic <op>`, as the CLI issues it. */
-const mic = (op) =>
-  fetch(`${base}/api/mic`, { method: 'POST', headers: local(), body: JSON.stringify({ op }) }).then(async (r) => ({
+const mic = (op, value) =>
+  fetch(`${base}/api/mic`, { method: 'POST', headers: local(), body: JSON.stringify({ op, value }) }).then(async (r) => ({
     status: r.status,
     body: await r.json(),
   }))
@@ -176,6 +176,26 @@ check(
   })(),
 )
 
+/* ── the gain, as arithmetic ───────────────────────────────────────────── */
+
+// The lever this desktop has over a handset that sends what its hardware heard
+// and nothing more. It is a plain multiply on purpose: a compressor would move
+// the noise floor and the voice by different amounts, and the ratio between
+// them is the one thing worth not touching.
+const quiet = Buffer.alloc(8)
+for (const [at, value] of [[0, 1000], [2, -1000], [4, 16000], [6, -20000]]) quiet.writeInt16LE(value, at)
+const loud = amplify(quiet, 2)
+check(
+  'the desktop gain multiplies every sample',
+  loud.readInt16LE(0) === 2000 && loud.readInt16LE(2) === -2000 && loud.readInt16LE(4) === 32000,
+  [0, 2, 4].map((i) => loud.readInt16LE(i)).join(','),
+)
+check('a sample that would overflow saturates rather than wrapping round into a click', loud.readInt16LE(6) === -32768, String(loud.readInt16LE(6)))
+check('and the frame the socket handed over is left alone, because two consumers read it', quiet.readInt16LE(0) === 1000)
+check('a gain of one is the samples themselves, not a copy of them', amplify(quiet, 1) === quiet)
+check('a missing or nonsense gain is the default rather than silence', readGain(undefined) === DEFAULT_GAIN && readGain('loud') === DEFAULT_GAIN && readGain(0) === DEFAULT_GAIN)
+check('and an absurd one is capped where a room becomes hiss', readGain(1000) === MAX_GAIN)
+
 /* ── what the phone is told it can do ──────────────────────────────────── */
 
 const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
@@ -225,6 +245,36 @@ check('a chunk from a stream that has ended is dropped, not appended', after.len
 
 const idle = await mic('stop')
 check('stopping when nothing is streaming is refused rather than pretended', idle.status === 400, JSON.stringify(idle.body))
+
+/* ── the gain, all the way onto the disk ───────────────────────────────── */
+
+// The arithmetic above is a unit; this is the road. What matters is that the
+// number reaches the bytes on the way in — before the WAV and before anything
+// listening live — so that a recording and a program's input picker cannot
+// end up at two different volumes.
+const turnedUp = await mic('gain', 3)
+check('the desktop takes a new gain and answers with it', turnedUp.body?.audio?.gain === 3, JSON.stringify(turnedUp.body?.audio))
+check('a gain of zero is refused rather than muting the phone', (await mic('gain', 0)).status === 400)
+const tooLoud = await mic('gain', 999)
+check('and one past the ceiling is refused with a sentence', /tops out/.test(tooLoud.body?.error || ''), JSON.stringify(tooLoud.body))
+
+const loudRun = await mic('start')
+check('a stream started after the change reports the gain it is running at', loudRun.body?.audio?.gain === 3, JSON.stringify(loudRun.body?.audio))
+const said = Buffer.alloc(8)
+for (const [at, value] of [[0, 100], [2, -100], [4, 12000], [6, -12000]]) said.writeInt16LE(value, at)
+phone.phone.sendBytes(buildFrame(phone.streamOf(), 0, said))
+await wait(200)
+const loudStop = await mic('stop')
+const onDisk = fs.readFileSync(loudStop.body?.audio?.path).subarray(44)
+check(
+  'and every sample in the file is what the phone sent, three times louder, saturating rather than wrapping',
+  onDisk.equals(amplify(said, 3)),
+  [0, 2, 4, 6].map((i) => onDisk.readInt16LE(i)).join(','),
+)
+
+// Back to untouched samples for the rest of the suite, which counts bytes
+// rather than reads them and should not have to care.
+await mic('gain', 1)
 
 /* ── the phone offering, rather than being asked ───────────────────────── */
 
