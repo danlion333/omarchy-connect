@@ -1,10 +1,10 @@
 import React from 'react'
-import { StyleSheet, Text, View } from 'react-native'
+import { View, type StyleProp, type TextStyle } from 'react-native'
 
 import { usePalette } from '../state/ConnectionContext'
 import type { AgentLimit, AgentLimits, AgentSession, AgentVitals } from '../api/client'
-import { Meter } from './kit'
-import { alpha, font, radius, size, space } from '../theme'
+import { Caps, Hint, Label, Meter, Mono, Pill, Row, Value } from './kit'
+import { font, line, size, space } from '../theme'
 
 /**
  * The desktop's status line, drawn on a phone.
@@ -108,12 +108,43 @@ const MODES: Record<string, { label: string; tone: 'warn' | 'note' }> = {
   bypassPermissions: { label: 'no permissions', tone: 'warn' },
 }
 
+/** The width of the context meter. Fixed, so six status lines in a list read as one column. */
+const METER_WIDTH = 60
+
+/**
+ * The small type this line is set in: `size.micro`, one line, never wrapping.
+ * Values on it are `light_foreground` rather than `muted` — a percentage is a
+ * reading, and the rules say `muted` never carries one.
+ */
+function Micro({ children, tone, weight, style }: { children: React.ReactNode; tone?: string; weight?: 'regular' | 'medium'; style?: StyleProp<TextStyle> }) {
+  const palette = usePalette()
+  return (
+    <Mono
+      numberOfLines={1}
+      style={[
+        {
+          color: tone ?? palette.light_foreground,
+          fontFamily: weight === 'medium' ? font.medium : font.regular,
+          fontSize: size.micro,
+          lineHeight: line.micro,
+        },
+        style,
+      ]}
+    >
+      {children}
+    </Mono>
+  )
+}
+
 /**
  * One line: what it is running as, and how full it is.
  *
- * Laid out so the meter is the widest thing on it. The model and the mode are
- * chips of fixed width either side; the bar takes what is left, because it is
- * the only part whose value is in its length.
+ * Budgeted for the 300dp inside a card: the model ("Fable 5.1", ~54dp), a
+ * fixed 60dp meter, the reading beside it, the mode as a pill, and the branch
+ * last with whatever is left — it is the only part that may truncate, because
+ * a branch name is recognisable from its head and nothing else here is. In
+ * `dense` (the list) the reading is the percentage and the effort is dropped;
+ * in full (the chat) it is "149k/200k" and the effort is shown.
  */
 export function StatusLine({ vitals, dense }: { vitals: AgentVitals | null | undefined; dense?: boolean }) {
   const palette = usePalette()
@@ -128,63 +159,44 @@ export function StatusLine({ vitals, dense }: { vitals: AgentVitals | null | und
   const tone = fillTone(palette, percent)
 
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-      {model ? (
-        <Text style={{ color: palette.light_foreground, fontFamily: font.medium, fontSize: size.micro }}>{model}</Text>
-      ) : null}
-      {vitals.effort && vitals.effort !== 'medium' && !dense ? (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>{vitals.effort}</Text>
-      ) : null}
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: 22 }}>
+      {model ? <Micro weight="medium">{model}</Micro> : null}
+      {vitals.effort && vitals.effort !== 'medium' && !dense ? <Micro tone={palette.muted}>{vitals.effort}</Micro> : null}
 
       {context ? (
-        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.sm, minWidth: 70 }}>
-          <View style={{ flex: 1 }}>
-            <Meter fraction={percent / 100} tone={tone} height={3} />
-          </View>
-          <Text style={{ color: percent >= 75 ? tone : palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
+        <>
+          <Meter fraction={percent / 100} tone={tone} height={3} style={{ width: METER_WIDTH }} />
+          <Micro tone={percent >= 75 ? tone : undefined}>
             {dense ? `${percent}%` : `${tokens(context.tokens)}/${tokens(context.window)}`}
-          </Text>
-        </View>
-      ) : (
-        <View style={{ flex: 1 }} />
-      )}
-
-      {mode ? <Badge label={mode.label} tone={mode.tone === 'warn' ? palette.red : palette.muted} /> : null}
-      {vitals.branch && !dense ? (
-        <Text
-          style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, maxWidth: 90 }}
-          numberOfLines={1}
-        >
-          {vitals.branch}
-        </Text>
+          </Micro>
+        </>
       ) : null}
-    </View>
-  )
-}
 
-/** A small tinted word. Used where a chip would be too much furniture. */
-export function Badge({ label, tone }: { label: string; tone: string }) {
-  return (
-    <View
-      style={{
-        paddingHorizontal: 6,
-        paddingVertical: 1,
-        borderRadius: radius.sm,
-        backgroundColor: alpha(tone, 0.15),
-        borderWidth: StyleSheet.hairlineWidth * 2,
-        borderColor: alpha(tone, 0.4),
-      }}
-    >
-      <Text style={{ color: tone, fontFamily: font.medium, fontSize: size.micro }}>{label}</Text>
+      {mode ? <Badge label={mode.label} tone={mode.tone === 'warn' ? palette.red : palette.light_foreground} /> : null}
+
+      {vitals.branch ? (
+        <Micro tone={palette.muted} style={{ flexShrink: 1, marginLeft: 'auto' }}>
+          {vitals.branch}
+        </Micro>
+      ) : null}
     </View>
   )
 }
 
 /**
- * One usage window, as a bar with its reset time on the end.
+ * A small tinted word. Kept as a name for the screens that already use it;
+ * it is the kit's `Pill`, so the two are one shape.
+ */
+export function Badge({ label, tone }: { label: string; tone: string }) {
+  return <Pill label={label} tone={tone} />
+}
+
+/**
+ * One usage window: its name, when it turns over, and how much is used, on
+ * one line over a meter.
  *
- * The active one is marked, because an account usually has two and only one of
- * them is the one that will actually stop you.
+ * The active window — the one that will actually stop you — is the bright
+ * one; the others are labels.
  */
 export function LimitRow({ limit }: { limit: AgentLimit }) {
   const palette = usePalette()
@@ -194,35 +206,13 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
   const age = limit.stale ? since(limit.asOf) : null
   const gap = age ? null : until(limit.resetsAt)
   return (
-    <View style={{ gap: 4 }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <Text
-          style={{
-            flex: 1,
-            color: limit.active ? palette.light_foreground : palette.muted,
-            fontFamily: limit.active ? font.medium : font.regular,
-            fontSize: size.label,
-          }}
-          numberOfLines={1}
-        >
-          {limit.label}
-        </Text>
-        {gap || age ? (
-          <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-            {age ?? `resets in ${gap}`}
-          </Text>
-        ) : null}
-        <Text
-          style={{
-            color: age ? palette.muted : tone,
-            fontFamily: font.medium,
-            fontSize: size.label,
-            minWidth: 34,
-            textAlign: 'right',
-          }}
-        >
+    <View style={{ gap: space.xs + 2 }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+        <Label style={{ flex: 1, color: limit.active ? palette.bright_foreground : palette.light_foreground }}>{limit.label}</Label>
+        {age ? <Caps>{age}</Caps> : gap ? <Caps>{`resets in ${gap}`}</Caps> : null}
+        <Value tone={age ? palette.light_foreground : tone} style={{ minWidth: 34, textAlign: 'right' }}>
           {limit.percent}%
-        </Text>
+        </Value>
       </View>
       <Meter fraction={limit.percent / 100} tone={age ? palette.muted : tone} height={4} />
     </View>
@@ -237,7 +227,6 @@ export function LimitRow({ limit }: { limit: AgentLimit }) {
  * screen that is true whether or not anything is running.
  */
 export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
-  const palette = usePalette()
   if (!limits?.limits?.length) return null
   // Normally every row here was measured seconds ago: the desktop asks the
   // account service outright, and it answers each window at once. A row only
@@ -246,20 +235,19 @@ export function Limits({ limits }: { limits: AgentLimits | null | undefined }) {
   // what went wrong instead of describing a cache as if it were the design.
   const stale = limits.limits.filter((limit) => limit.stale).map((limit) => limit.label)
   const because = limits.probeStatus ? `the desktop is ${limits.probeStatus}` : 'the desktop has nothing newer'
+  const spend = limits.spend
   return (
     <View style={{ gap: space.md }}>
       {limits.limits.map((limit) => (
         <LimitRow key={`${limit.kind}:${limit.label}`} limit={limit} />
       ))}
-      {limits.spend?.limit ? (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          extra usage: {limits.spend.used?.toFixed(2)} of {limits.spend.limit.toFixed(2)} {limits.spend.currency}
-        </Text>
+      {spend?.limit ? (
+        <Row label="Extra usage" value={`${spend.used?.toFixed(2) ?? '0.00'} / ${spend.limit.toFixed(2)} ${spend.currency}`} />
       ) : null}
       {stale.length ? (
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-          {stale.length === limits.limits.length ? 'these are' : `${stale.join(', ')} — `}last measured earlier: {because}
-        </Text>
+        <Hint icon="clock">
+          {stale.length === limits.limits.length ? `Measured earlier · ${because}` : `${stale.join(', ')} measured earlier · ${because}`}
+        </Hint>
       ) : null}
     </View>
   )

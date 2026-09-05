@@ -1,16 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { Pressable, RefreshControl, Text, View } from 'react-native'
+import { ActivityIndicator, Pressable, RefreshControl, StyleSheet, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 
 import { useAgents, useConnection, usePalette } from '../state/ConnectionContext'
-import type { AgentCapabilities, AgentJob, AgentSession, AgentWorker } from '../api/client'
-import { Body, Caps, Card, CardHeader, Divider, Empty, ListRow, Notice, Screen, StatusDot } from '../ui/kit'
-import { Limits, StatusLine, inPane, tokens } from '../ui/agentkit'
+import type { AgentCapabilities, AgentJob, AgentSession, AgentState, AgentWorker } from '../api/client'
+import { Card, CardHeader, Empty, Hint, IconButton, Label, ListRow, Notice, Pill, Screen, ScreenHeader } from '../ui/kit'
+import { Limits, StatusLine, inPane, tokens, until } from '../ui/agentkit'
 import { AgentChatScreen } from './AgentChatScreen'
 import { AgentLaunchScreen } from './AgentLaunchScreen'
 import { AgentWorkerScreen } from './AgentWorkerScreen'
 import { ago } from '../lib/format'
-import { font, size, space } from '../theme'
+import { space, touch } from '../theme'
 
 /**
  * The coding agents running on the desktop, and what they are stuck on.
@@ -117,20 +117,15 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
     )
   }
 
+  /* Switched off on the desktop: the card is still drawn, dimmed, with the
+     one command that fills it. Nothing is asked for while it is off. */
   if (caps && caps.enabled === false) {
     return (
       <Screen>
-        <Caps style={{ marginBottom: space.md }}>Agents</Caps>
+        <ScreenHeader title="Agents" />
         <Card>
-          <CardHeader icon="terminal" title="Turned off on the desktop" subtitle="reading an agent is reading everything it saw" />
-          <Body tone={palette.muted}>
-            Source, tool output, whatever crossed a command's result — all of it would cross to this phone, and this
-            phone could type back into an agent that will run what it is told. Enable it deliberately on the desktop:
-          </Body>
-          <Body style={{ marginTop: space.md }}>omarchy-connect agent enable</Body>
-          <Body tone={palette.muted} style={{ marginTop: space.md }}>
-            Or flip the switch under Coding agents on the desktop panel — this screen fills the moment it does.
-          </Body>
+          <CardHeader icon="terminal" title="Sessions" subtitle="off on the desktop" tone={palette.muted} />
+          <Hint icon="power">Switch on with omarchy-connect agent enable</Hint>
         </Card>
       </Screen>
     )
@@ -138,32 +133,27 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
 
   /* Background agents already open as a session are that session's row. */
   const detached = agentJobs.filter((job) => !jobOpen[job.id])
+  const waiting = sorted.filter((s) => s.state === 'waiting').length
+  const liveJobs = detached.filter((job) => job.live !== false).length
 
   return (
     <Screen refreshControl={<RefreshControl refreshing={refreshing} onRefresh={load} tintColor={palette.muted} />}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: space.md }}>
-        <Caps style={{ flex: 1 }}>Agents</Caps>
-        {caps?.history ? (
-          <Pressable onPress={() => setLaunching(true)} hitSlop={12} style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}>
-            <Feather name="plus-circle" size={18} color={palette.accent} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      {/* Asking the desktop for its sessions failed. Without this the screen
-          showed an empty list, which is what a quiet desktop looks like too. */}
-      <Notice error={agentsError} tone="warning" />
+      <ScreenHeader
+        title="Agents"
+        right={
+          <>
+            <IconButton icon="refresh-cw" label="Refresh" onPress={() => void load()} loading={refreshing} />
+            {caps?.history ? <IconButton icon="plus" label="New agent" tone={palette.accent} onPress={() => setLaunching(true)} /> : null}
+          </>
+        }
+      />
 
       {/* What the plan has left. First, because it is the number that decides
           whether starting something long is a good idea, and that decision is
           made before anything on this screen is opened. */}
       {agentLimits?.limits?.length ? (
         <Card>
-          <CardHeader
-            icon="activity"
-            title="Usage"
-            subtitle={agentLimits.limits.find((l) => l.active)?.label ?? 'what the plan has left'}
-          />
+          <CardHeader icon="activity" title="Usage" subtitle={nearestReset(agentLimits.limits)} />
           <Limits limits={agentLimits} />
         </Card>
       ) : null}
@@ -172,26 +162,40 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
         <CardHeader
           icon="terminal"
           title="Sessions"
-          subtitle={
-            sorted.length
-              ? `${sorted.length} running · ${sorted.filter((s) => s.state === 'waiting').length} waiting`
-              : 'nothing running'
-          }
+          subtitle={sorted.length ? `${sorted.length} running · ${waiting} waiting` : null}
         />
+        {/* Asking the desktop for its sessions failed. Without this the screen
+            showed an empty list, which is what a quiet desktop looks like too. */}
+        <Notice error={agentsError} tone="warning" action={{ label: 'Try again', icon: 'refresh-cw', onPress: () => void load() }} />
         {sorted.length ? (
           sorted.map((session, i) => (
-            <View key={session.id}>
-              {i > 0 ? <Divider style={{ marginVertical: space.xs }} /> : null}
-              <SessionRow
-                session={session}
-                onPress={() => setOpenId(session.id)}
-                onWorker={(worker) => setOpenWorker({ id: session.id, worker })}
-              />
-            </View>
+            <SessionRow
+              key={session.id}
+              session={session}
+              last={i === sorted.length - 1}
+              onPress={() => setOpenId(session.id)}
+              onWorker={(worker) => setOpenWorker({ id: session.id, worker })}
+            />
           ))
-        ) : (
-          <Empty icon="terminal" text="No coding agent is running on the desktop" />
+        ) : refreshing && !agentsError ? (
+          <ActivityIndicator color={palette.muted} style={{ paddingVertical: space.xl }} />
+        ) : agentsError ? null : (
+          <Empty icon="terminal" text={caps?.history ? 'No sessions · Start one on the desktop or tap +' : 'No sessions · Start one on the desktop'} />
         )}
+        {caps?.enabled && !caps.write ? (
+          <Hint icon="eye" style={{ marginTop: space.md }}>
+            Read only · no multiplexer or wtype on the desktop
+          </Hint>
+        ) : null}
+        {/* Background agents are read-only by their nature rather than for want
+            of a multiplexer, so the line that sends people to `agent run` is
+            only worth showing when some session it would actually help is on
+            screen. */}
+        {caps?.write && sorted.some((s) => !s.writable && !s.job) ? (
+          <Hint icon="eye" style={{ marginTop: space.md }}>
+            Read only · Start sessions with omarchy-connect agent run
+          </Hint>
+        ) : null}
       </Card>
 
       {/* An agent with no terminal. Nothing on the desktop is drawing these —
@@ -202,52 +206,66 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
           <CardHeader
             icon="moon"
             title="In the background"
-            subtitle={
-              detached.some((job) => job.live !== false)
-                ? `${detached.filter((job) => job.live !== false).length} running · no terminal`
-                : 'nothing running — recent results'
-            }
+            subtitle={liveJobs ? `${liveJobs} running · no terminal` : 'recent results'}
           />
           {detached.map((job, i) => (
-            <View key={job.id}>
-              {i > 0 ? <Divider style={{ marginVertical: space.xs }} /> : null}
-              <JobRow job={job} />
-            </View>
+            <JobRow key={job.id} job={job} last={i === detached.length - 1} />
           ))}
         </Card>
-      ) : null}
-
-      {caps?.enabled && !caps.write ? (
-        <Body tone={palette.muted} style={{ textAlign: 'center' }}>
-          Reading only — that desktop has no multiplexer and no wtype, so nothing there can type into a terminal
-        </Body>
-      ) : null}
-      {/* Background agents are read-only by their nature rather than for want
-          of a multiplexer, so the line that sends people to `agent run` is
-          only worth showing when some session it would actually help is on
-          screen. */}
-      {caps?.write && sorted.some((s) => !s.writable && !s.job) ? (
-        <Body tone={palette.muted} style={{ textAlign: 'center' }}>
-          A session with no dot beside it is not in a terminal this desktop can reach — start those with{' '}
-          omarchy-connect agent run
-        </Body>
       ) : null}
     </Screen>
   )
 }
 
+/**
+ * The card's subtitle: which window turns over next, and when. The one thing
+ * about the plan worth saying before the rows say the rest.
+ */
+function nearestReset(limits: { label: string; resetsAt: number | null; stale?: boolean }[]): string | null {
+  const soonest = limits
+    .filter((limit) => !limit.stale && limit.resetsAt)
+    .sort((a, b) => (a.resetsAt ?? 0) - (b.resetsAt ?? 0))[0]
+  if (!soonest) return limits.some((limit) => limit.stale) ? 'measured earlier' : null
+  const gap = until(soonest.resetsAt)
+  return gap ? `${soonest.label} resets in ${gap}` : null
+}
+
+/** The last path segment, for a session the CLI has not named yet. */
+function basename(path: string | null | undefined): string | null {
+  if (!path) return null
+  const parts = path.replace(/\/+$/, '').split('/')
+  return parts[parts.length - 1] || path
+}
+
+/** One state, one word, one colour: what the pill on a row says. */
+function stateOf(state: AgentState, palette: ReturnType<typeof usePalette>): { label: string; tone: string } {
+  switch (state) {
+    case 'working':
+      return { label: 'working', tone: palette.green }
+    case 'waiting':
+      return { label: 'waiting', tone: palette.orange }
+    case 'starting':
+      return { label: 'starting', tone: palette.cyan }
+    case 'gone':
+      return { label: 'done', tone: palette.muted }
+    default:
+      return { label: 'idle', tone: palette.light_foreground }
+  }
+}
+
 function SessionRow({
   session,
+  last,
   onPress,
   onWorker,
 }: {
   session: AgentSession
+  last: boolean
   onPress: () => void
   onWorker: (worker: AgentWorker) => void
 }) {
   const palette = usePalette()
-  const tone =
-    session.state === 'waiting' ? palette.orange : session.state === 'working' ? palette.green : palette.muted
+  const state = stateOf(session.state, palette)
   /**
    * Whether the workers are showing.
    *
@@ -259,59 +277,42 @@ function SessionRow({
    */
   const [unfolded, setUnfolded] = useState(false)
   const workers = session.workers ?? []
+  const working = workers.filter((w) => w.running).length
+  const readOnly = !session.job && !inPane(session) && session.writable !== 'wtype'
+
+  // What it is working on, in the agent's own words, beats what it last did:
+  // a row that says "Pushing background-agent state live" is one you can act
+  // on, and "Bash grep -rn router src" is not. So the transcript's last line
+  // is never shown here — when the agent has said nothing about itself, the
+  // row says how long ago it moved instead.
+  const doing =
+    session.state === 'waiting'
+      ? session.prompt || 'Waiting for an answer'
+      : session.state === 'starting'
+        ? 'Starting'
+        : (session.state === 'working' && session.tasks?.active) || session.job?.detail || ago(session.lastActivity)
 
   return (
-    <View>
+    <View
+      style={{
+        borderBottomWidth: last ? 0 : StyleSheet.hairlineWidth * 2,
+        borderBottomColor: palette.lighter_background,
+      }}
+    >
       <ListRow
-        title={session.title}
-        tone={session.state === 'waiting' ? palette.bright_foreground : undefined}
-        subtitle={[
-          // What it is working on, in the agent's own words, beats what it
-          // last did: a row that says "Pushing background-agent state live" is
-          // one you can act on, and "Bash grep -rn router src" is not.
-          session.state === 'waiting'
-            ? session.prompt || 'waiting for an answer'
-            : session.state === 'starting'
-              ? session.preview || 'just started — nothing on disk yet'
-              : (session.state === 'working' && session.tasks?.active) || session.job?.detail || session.preview,
-          [
-            // Once the title is the conversation's own name, the project it is
-            // in stops being obvious — so it is said here instead.
-            session.project,
-            session.tasks?.total ? `${session.tasks.done}/${session.tasks.total} done` : null,
-            // A fan-out is invisible in the transcript, so this row is the
-            // only place the phone can say the session is more than one agent.
-            // The count still stands for a desktop whose CLI keeps no
-            // per-worker files; where it does, the rows below say who they are.
-            session.subagents ? `${session.subagents} subagent${session.subagents > 1 ? 's' : ''}` : null,
-            ago(session.lastActivity),
-            session.job ? 'background' : session.via === 'scan' ? 'found by scan' : null,
-            // Which road in, because it decides whether the composer is a text
-            // field or an apology — and `wtype` is worth knowing before you open it.
-            inPane(session)
-              ? 'answerable'
-              : session.writable === 'wtype'
-                ? 'answerable · steals focus'
-                : 'read only',
-          ]
-            .filter(Boolean)
-            .join(' · '),
-        ]
-          .filter(Boolean)
-          .join('\n')}
-        right={
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-            <StatusDot tone={tone} pulse={session.state === 'working'} />
-            <Caps tone={tone}>{session.state}</Caps>
-          </View>
-        }
+        title={session.title || basename(session.cwd) || session.agent}
+        // Which road in decides whether the composer is a text field or an
+        // apology, so a row that cannot be typed into says so before it is opened.
+        subtitle={readOnly ? `${doing} · read only` : doing}
+        right={<Pill label={state.label} tone={state.tone} />}
         onPress={onPress}
+        last
       />
       {/* The desktop's own status line, under the row it belongs to. On a list
           of six sessions this is what tells them apart: which model, and which
           of them is about to run out of context. */}
       {session.vitals ? (
-        <View style={{ marginTop: -space.xs, marginBottom: space.xs, paddingRight: space.xs }}>
+        <View style={{ marginTop: -space.xs, marginBottom: space.sm }}>
           <StatusLine vitals={session.vitals} dense />
         </View>
       ) : null}
@@ -322,29 +323,15 @@ function SessionRow({
           drew it as a peer would be showing four rows for one conversation. */}
       {workers.length ? (
         <View style={{ marginBottom: space.xs }}>
-          <Pressable
+          <Fold
+            open={unfolded}
             onPress={() => setUnfolded((was) => !was)}
-            hitSlop={8}
-            style={({ pressed }) => ({
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: space.xs,
-              paddingVertical: 2,
-              opacity: pressed ? 0.6 : 1,
-            })}
-          >
-            <Feather name={unfolded ? 'chevron-down' : 'chevron-right'} size={12} color={palette.muted} />
-            <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>
-              {workers.filter((w) => w.running).length
-                ? `${workers.filter((w) => w.running).length} working of ${workers.length}`
-                : `${workers.length} worker${workers.length > 1 ? 's' : ''} · all done`}
-            </Text>
-          </Pressable>
-
+            label={working ? `${working} working of ${workers.length}` : `${workers.length} worker${workers.length > 1 ? 's' : ''} · all done`}
+          />
           {unfolded ? (
-            <View style={{ marginTop: 2, gap: 1 }}>
-              {workers.map((worker) => (
-                <WorkerRow key={worker.id} worker={worker} onPress={() => onWorker(worker)} />
+            <View style={{ paddingLeft: space.md }}>
+              {workers.map((worker, i) => (
+                <WorkerRow key={worker.id} worker={worker} last={i === workers.length - 1} onPress={() => onWorker(worker)} />
               ))}
             </View>
           ) : null}
@@ -367,35 +354,17 @@ function SessionRow({
  * it stops: what it went and found out is the point, and that is worth more
  * once it is done than while it is working.
  */
-function WorkerRow({ worker, onPress }: { worker: AgentWorker; onPress: () => void }) {
+function WorkerRow({ worker, last, onPress }: { worker: AgentWorker; last: boolean; onPress: () => void }) {
   const palette = usePalette()
-  const tone = worker.running ? palette.green : palette.muted
-
   return (
-    <Pressable
+    <ListRow
+      title={worker.description || worker.type || worker.id}
+      subtitle={worker.preview || (worker.running ? 'Just started' : `Finished ${ago(worker.updatedAt)}`)}
+      right={<Pill label={worker.running ? 'working' : 'done'} tone={worker.running ? palette.green : palette.light_foreground} />}
+      chevron
       onPress={onPress}
-      style={({ pressed }) => ({
-        flexDirection: 'row',
-        alignItems: 'center',
-        gap: space.sm,
-        paddingVertical: space.xs,
-        paddingLeft: space.md,
-        opacity: pressed ? 0.6 : 1,
-      })}
-    >
-      <StatusDot tone={tone} pulse={worker.running} />
-      <View style={{ flex: 1 }}>
-        <Text style={{ color: palette.light_foreground, fontFamily: font.regular, fontSize: size.label }} numberOfLines={1}>
-          {worker.description || worker.type || worker.id}
-        </Text>
-        <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }} numberOfLines={1}>
-          {[worker.type, worker.preview || (worker.running ? 'just started' : 'finished'), ago(worker.updatedAt)]
-            .filter(Boolean)
-            .join(' · ')}
-        </Text>
-      </View>
-      <Feather name="chevron-right" size={14} color={palette.muted} />
-    </Pressable>
+      last={last}
+    />
   )
 }
 
@@ -406,31 +375,52 @@ function WorkerRow({ worker, onPress }: { worker: AgentWorker; onPress: () => vo
  * now, and it is the whole point of the row: a detached agent has no screen
  * anywhere, so this line is the only running commentary it has.
  */
-function JobRow({ job }: { job: AgentJob }) {
+function JobRow({ job, last }: { job: AgentJob; last: boolean }) {
   const palette = usePalette()
   // The state file outlives the process, so `working` on a dead job is
   // history, not status — a daemon that knows says so, and the row goes grey
   // rather than keep a pulse going for an agent that is not there.
   const live = job.live !== false
   const tone = !live
-    ? palette.muted
+    ? palette.light_foreground
     : job.state === 'working'
       ? palette.green
       : job.state === 'waiting' || job.state === 'blocked'
         ? palette.orange
-        : palette.muted
+        : palette.light_foreground
   return (
     <ListRow
       title={job.name}
-      subtitle={[job.detail, [`${tokens(job.tokens)} tokens`, ago(job.updatedAt)].filter(Boolean).join(' · ')]
-        .filter(Boolean)
-        .join('\n')}
-      right={
-        <View style={{ alignItems: 'flex-end', gap: 2 }}>
-          <StatusDot tone={tone} pulse={live && job.state === 'working'} />
-          <Caps tone={tone}>{live ? job.state : 'ended'}</Caps>
-        </View>
-      }
+      subtitle={job.detail || `${tokens(job.tokens)} tokens · ${ago(job.updatedAt)}`}
+      right={<Pill label={live ? job.state : 'ended'} tone={tone} />}
+      last={last}
     />
+  )
+}
+
+/**
+ * A disclosure line: a chevron and a count, tappable across its whole width.
+ * Belongs in the kit once a second screen folds something.
+ */
+function Fold({ open, label, onPress }: { open: boolean; label: string; onPress: () => void }) {
+  const palette = usePalette()
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ expanded: open }}
+      hitSlop={4}
+      style={({ pressed }) => ({
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: space.xs,
+        minHeight: touch - 8,
+        opacity: pressed ? 0.6 : 1,
+      })}
+    >
+      <Feather name={open ? 'chevron-down' : 'chevron-right'} size={14} color={palette.light_foreground} />
+      <Label>{label}</Label>
+    </Pressable>
   )
 }

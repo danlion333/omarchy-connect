@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native'
+import { ActivityIndicator, ScrollView, StyleSheet, TextInput, View } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import type { AgentSession, AgentSkill } from '../api/client'
-import { Body, Caps, Notice } from '../ui/kit'
-import { Badge } from '../ui/agentkit'
-import { alpha, font, radius, size, space } from '../theme'
+import { Card, Empty, IconButton, ListRow, Notice, Pill, Title } from '../ui/kit'
+import { MAX_FONT_SCALE, alpha, font, radius, size, space, touch } from '../theme'
 
 /**
  * Everything the desktop's agent answers to by name.
@@ -77,15 +76,6 @@ export function AgentSkillsSheet({
     )
   }, [entries, query])
 
-  const groups = useMemo(
-    () => [
-      { title: 'Skills', rows: shown.filter((e) => e.kind === 'skill') },
-      { title: 'Commands', rows: shown.filter((e) => e.kind === 'command') },
-      { title: 'Built in', rows: shown.filter((e) => e.kind === 'builtin') },
-    ],
-    [shown],
-  )
-
   const pick = useCallback(
     async (entry: AgentSkill) => {
       // Something to fill in: the composer is where that happens, and the
@@ -116,138 +106,131 @@ export function AgentSkillsSheet({
         { backgroundColor: alpha(palette.background, 0.97), paddingTop: insets.top + space.sm },
       ]}
     >
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: space.md,
-          paddingHorizontal: space.lg,
-          paddingBottom: space.md,
-        }}
-      >
-        <Feather name="command" size={16} color={palette.accent} />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="skills and commands…"
-          placeholderTextColor={palette.muted}
-          autoCapitalize="none"
-          autoCorrect={false}
-          autoFocus
-          style={{
-            flex: 1,
-            color: palette.light_foreground,
-            fontFamily: font.regular,
-            fontSize: size.body,
-            backgroundColor: palette.darker_background,
-            borderColor: palette.lighter_background,
-            borderWidth: 1,
-            borderRadius: radius.sm,
-            paddingHorizontal: space.md,
-            paddingVertical: space.sm,
-          }}
-        />
-        <Pressable onPress={onClose} hitSlop={12}>
-          <Feather name="x" size={20} color={palette.muted} />
-        </Pressable>
+      <View style={{ paddingHorizontal: space.lg }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', minHeight: touch, marginBottom: space.sm }}>
+          <Title style={{ flex: 1 }}>Skills</Title>
+          <IconButton icon="x" label="Close" onPress={onClose} />
+        </View>
+        <SearchField value={query} onChange={setQuery} placeholder="Search" />
+        <Notice error={error} onDismiss={() => setError(null)} />
       </View>
 
-      <Notice error={error} style={{ marginHorizontal: space.lg }} onDismiss={() => setError(null)} />
-
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: insets.bottom + space.xl, gap: space.lg }}
+        contentContainerStyle={{ paddingHorizontal: space.lg, paddingBottom: insets.bottom + space.xl }}
         keyboardShouldPersistTaps="handled"
       >
-        {entries === null && !error ? <ActivityIndicator color={palette.accent} style={{ marginTop: space.xl }} /> : null}
+        <Card>
+          {entries === null && !error ? <ActivityIndicator color={palette.muted} style={{ paddingVertical: space.xl }} /> : null}
 
-        {groups.map((group) =>
-          group.rows.length ? (
-            <View key={group.title} style={{ gap: space.xs }}>
-              <Caps>{group.title}</Caps>
-              {group.rows.map((entry) => (
-                <SkillRow
-                  key={`${entry.kind}:${entry.name}`}
-                  entry={entry}
-                  busy={running === entry.name}
-                  disabled={running !== null}
-                  onPress={() => void pick(entry)}
-                />
-              ))}
-            </View>
-          ) : null,
-        )}
+          {shown.map((entry, i) => (
+            <SkillRow
+              key={`${entry.kind}:${entry.name}`}
+              entry={entry}
+              busy={running === entry.name}
+              disabled={running !== null}
+              last={i === shown.length - 1}
+              onPress={() => void pick(entry)}
+            />
+          ))}
 
-        {entries !== null && !shown.length ? (
-          <Body tone={palette.muted} style={{ textAlign: 'center', marginTop: space.xl }}>
-            {entries.length ? 'Nothing by that name' : 'This desktop has no skills or commands installed'}
-          </Body>
-        ) : null}
+          {entries !== null && !shown.length ? (
+            <Empty icon="search" text={entries.length ? 'Nothing matches' : 'No skills or commands on this desktop'} />
+          ) : null}
+        </Card>
       </ScrollView>
     </View>
   )
 }
 
 /**
- * One name, what it does, and — where it matters — where it came from.
+ * One name, what it does, and what kind of thing it is.
  *
- * The scope badge is only on the rows where it changes the meaning: a skill
- * this project ships is a different promise from one the whole machine has,
- * and the built-in list is already under its own heading.
+ * The pill says skill, command or built in; a project's own skill is the
+ * accent colour, because a skill this project ships is a different promise
+ * from one the whole machine has. The argument hint rides on the title the way
+ * the CLI prints it, so "/issue <number>" says before the tap that there is
+ * something to fill in.
  */
 function SkillRow({
   entry,
   busy,
   disabled,
+  last,
   onPress,
 }: {
   entry: AgentSkill
   busy: boolean
   disabled: boolean
+  last: boolean
   onPress: () => void
 }) {
   const palette = usePalette()
+  const kind = entry.kind === 'builtin' ? 'built in' : entry.kind
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={disabled}
-      style={({ pressed }) => ({
+    <View style={{ opacity: disabled && !busy ? 0.5 : 1 }}>
+      <ListRow
+        title={entry.args ? `/${entry.name} ${entry.args}` : `/${entry.name}`}
+        subtitle={entry.description || null}
+        right={
+          busy ? (
+            <ActivityIndicator size="small" color={palette.accent} />
+          ) : (
+            <Pill label={kind} tone={entry.scope === 'project' ? palette.accent : palette.light_foreground} />
+          )
+        }
+        onPress={disabled ? undefined : onPress}
+        last={last}
+      />
+    </View>
+  )
+}
+
+/**
+ * A text box with a magnifier in it and no label over it — the kit's `Field`
+ * insists on a caps label, and a search box's label is its icon. Belongs in
+ * the kit as `Field` with an optional label, or as `SearchField`.
+ */
+function SearchField({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+  const palette = usePalette()
+  const [focused, setFocused] = React.useState(false)
+  return (
+    <View
+      style={{
         flexDirection: 'row',
-        alignItems: 'flex-start',
+        alignItems: 'center',
         gap: space.sm,
-        paddingVertical: space.sm,
-        paddingHorizontal: space.sm,
-        marginHorizontal: -space.sm,
+        minHeight: touch,
+        marginBottom: space.md,
+        paddingHorizontal: space.md,
+        backgroundColor: palette.darker_background,
+        borderColor: focused ? palette.foreground : palette.lighter_background,
+        borderWidth: StyleSheet.hairlineWidth * 2,
         borderRadius: radius.sm,
-        backgroundColor: pressed ? palette.selection : 'transparent',
-        opacity: disabled && !busy ? 0.5 : 1,
-      })}
+      }}
     >
-      <View style={{ flex: 1 }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: size.label }}>
-            /{entry.name}
-          </Text>
-          {entry.args ? (
-            <Text style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro }}>{entry.args}</Text>
-          ) : null}
-          {entry.scope === 'project' ? <Badge label="project" tone={palette.accent} /> : null}
-          {entry.scope === 'plugin' ? <Badge label="plugin" tone={palette.muted} /> : null}
-        </View>
-        {entry.description ? (
-          <Text
-            style={{ color: palette.muted, fontFamily: font.regular, fontSize: size.micro, lineHeight: 15, marginTop: 2 }}
-            numberOfLines={2}
-          >
-            {entry.description}
-          </Text>
-        ) : null}
-      </View>
-      {busy ? (
-        <ActivityIndicator size="small" color={palette.accent} />
-      ) : (
-        // Which of the two things a tap will do, said before it is taken.
-        <Feather name={entry.args ? 'edit-2' : 'corner-down-left'} size={13} color={palette.muted} style={{ marginTop: 3 }} />
-      )}
-    </Pressable>
+      <Feather name="search" size={14} color={palette.light_foreground} />
+      <TextInput
+        value={value}
+        onChangeText={onChange}
+        placeholder={placeholder}
+        placeholderTextColor={palette.muted}
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoFocus
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        maxFontSizeMultiplier={MAX_FONT_SCALE}
+        accessibilityLabel={placeholder}
+        style={{
+          flex: 1,
+          minHeight: touch - 4,
+          color: palette.bright_foreground,
+          fontFamily: font.regular,
+          fontSize: size.value,
+          paddingVertical: space.sm,
+        }}
+      />
+      {value ? <IconButton icon="x" label="Clear search" size={28} onPress={() => onChange('')} /> : null}
+    </View>
   )
 }
