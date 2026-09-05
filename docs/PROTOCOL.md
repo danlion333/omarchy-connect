@@ -1644,7 +1644,7 @@ handset answers, exactly as `locate` does:
 ```jsonc
 // desktop → phone, on the audio channel
 { "t": "ev", "event": "audio", "data": { "action": "start", "id": "<uuid>", "stream": 1,
-  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 100, "maxSeconds": 1800 } }
+  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 20, "maxSeconds": 1800 } }
 
 // phone → desktop, once its recorder is actually open
 { "t": "req", "id": 4, "method": "audio.started", "params": { "id": "<uuid>", "ok": true } }
@@ -1690,9 +1690,12 @@ handshake, no second key:
 ```
 
 `pcm` is signed 16-bit little-endian, mono, 16 kHz: the format `dictation`
-already resamples to for whisper. One frame is 100 ms — 3200 bytes, ten a
+already resamples to for whisper. One frame is 20 ms — 640 bytes, fifty a
 second — far under the 1 MB `maxPayload`, and the rate rather than the size is
-what is new for this channel.
+what is new for this channel. Twenty rather than a hundred because a chunk is
+how long a sample waits on the phone before it is sent at all, and because of
+the ring described under **The phone as a desktop input**; the phone clamps
+whatever it is asked for to 20–1000 ms.
 
 The two numbers are not there for ordering, which the counter nonce already
 gives for free. `stream` is the number the desktop handed out with the
@@ -1741,13 +1744,58 @@ omarchy-connect mic input on      # and `off`, and `status`
 ```
 
 Under the hood that is a FIFO in `$XDG_RUNTIME_DIR/omarchy-connect/mic.pipe`
-and pipewire-pulse's own `module-pipe-source` pointed at it, loaded at
-`s16le`/16000/1 — the format the phone already sends, so nothing anywhere
-resamples. `pactl` ships with pipewire-pulse, which is the same install that
-makes `paplay` work for the ringtone, so this needs nothing new on the machine.
-A desktop where `pactl info` cannot reach a server publishes
-`capabilities.audio.input.available: false` and is not offered the switch at
-all.
+and pipewire-pulse's own `module-pipe-source` pointed at it, loaded as
+`s16le`, mono, at **96 kHz** — six times what the phone sends, for the reason
+under **The ring** below — with the daemon interpolating on the way in
+(`daemon/src/lib/resample.js`, a polyphase windowed sinc: flat to 6.5 kHz,
+60 dB down at 7.9 kHz, 1.5 ms long). `pactl` ships with pipewire-pulse, which
+is the same install that makes `paplay` work for the ringtone, so this needs
+nothing new on the machine. A desktop where `pactl info` cannot reach a server
+publishes `capabilities.audio.input.available: false` and is not offered the
+switch at all.
+
+**The ring.** `module-pipe-source` is `module-pipe-tunnel` underneath, and that
+module keeps a ring of 8192 frames between the pipe and every reader and
+steers its own clock to keep it exactly that full — `target_buffer = 8192 *
+frame_size` in PipeWire's source, with no property that changes it; `node.latency`
+and `tunnel.may-pause` were both tried and change nothing. A delay counted in
+frames is as long as the frames are, so the module's rate is the one lever:
+
+| module rate | ring   | pipe → `parec`, measured on 1.6.8 |
+|-------------|--------|-----------------------------------|
+| 16 kHz      | 512 ms | 449 ms                            |
+| 48 kHz      | 171 ms | 89 ms                             |
+| 96 kHz      | 85 ms  | 77 ms                             |
+| 192 kHz     | 43 ms  | 36 ms                             |
+
+Ninety-six is the default because the ring is also the only slack there is
+against a chunk that arrives late off Wi-Fi: a ring shorter than one late chunk
+runs dry, and the module answers that with silence and a full-length resync.
+That is also why the chunk asked of the phone is 20 ms rather than 100 — a
+100 ms burst does not fit in an 85 ms ring at all. `OMARCHY_CONNECT_INPUT_RATE`
+sets another multiple of 16000 for anyone who wants to trade slack for delay
+or the other way; `omarchy-connect mic input status` prints the rate and the
+ring it implies as `rate` and `ringMs`.
+
+The ring is also the only slack against a chunk that lands late, so the
+switch counts how the chunks are landing: `gapMaxMs` is the longest pause
+between two of them since the switch was flipped, and `late` is how many
+arrived more than a ring after the one before — each of those was a dropout
+whoever was listening already heard, because the module fills a ring that ran
+dry with silence and then starts over a full ring behind. Measured here over
+Wi-Fi with the phone idle beside the desk: chunks land 20 ms apart, with a
+tail that reached 150–190 ms a few times a minute — eighteen late chunks in
+45 s against the 85 ms ring — until the app began holding a
+`WIFI_MODE_FULL_LOW_LATENCY` lock for as long as it records (`Mic.kt`), after
+which the tail sits at 70–110 ms and a minute at 96 kHz passes with none late.
+That lock, and the ring it leaves room for, are what set the default.
+
+End to end, with the phone ringing itself through `locate` and the ring heard
+back on `omarchy_connect_phone`: 710–781 ms after the handset confirmed on the
+old road (of which 525–577 ms stood in the pipe and PipeWire), 295–370 ms on
+this one (116–204 ms on the desktop), measured on the same machine and phone
+ten seconds after the switch with nothing yet reading, and again after the
+reader had stopped for ten seconds — the two scenarios the issue names.
 
 **A switch, not a consequence of streaming.** A program picks its input before
 anybody speaks, so the source exists for as long as the switch is on, whether
@@ -1767,30 +1815,32 @@ default input is never changed: appearing in the list is the feature, and
 becoming a machine's microphone without being asked is not — the same rule the
 hands-free gateway follows.
 
-**And nothing waits in the pipe.** `module-pipe-source` does not read while no
-program has the source selected, so what is written meanwhile would simply sit
+**And nothing waits in the pipe.** A source left to suspend does not read
+while no program has it selected, so what is written meanwhile would simply sit
 there — and a pipe is read at real time, which makes anything standing in it a
 delay for the whole of the session that follows, not a reserve of sound
 somebody wanted. Measured against pipewire-pulse 1.6.8: switch on, wait ten
 seconds, then `parec`, and half a second of ten-second-old audio came out
-before the first live syllable. So the first refused write is taken as proof
-that nobody is collecting, and from then on the daemon takes back whatever is
-still in the pipe immediately before writing the chunk it has — a second read
-end on the FIFO, opened for that read and closed again, so an unloaded module
-still shows up as `EPIPE`. The pipe holds one chunk, and a program that presses
-record ten minutes after the switch was flipped starts on what is being said
-now. It stops taking bytes back as soon as a flush comes up with less than a
-chunk, which only a reader that is keeping up can cause. Everything taken back
-is counted in `dropped`, with the flushed part reported separately as `flushed`
-beside a `stalled` flag, so `omarchy-connect mic input status` says both how
-much sound reached no program and whether anything is listening at all.
+before the first live syllable. So the source is loaded with
+`node.always-process=true`, which keeps the session manager from suspending it:
+the module goes on reading the pipe and running its ring whether or not anybody
+is linked to it, the pipe never fills, and a program that presses record ten
+minutes after the switch was flipped starts on what is being said now.
+Verified here — the node reads `IDLE` rather than `SUSPENDED` while nothing
+listens, no write is ever refused, and the first chunk out after ten seconds of
+nobody listening is the one being written.
 
-What is left after that belongs to PipeWire: the source node keeps roughly half
-a second of its own and replays it when a reader starts — verified with the
-FIFO empty and no writer running, and unmoved by `pactl suspend-source`. It is
-a fixed cost rather than a growing one: it does not get worse the longer the
-switch is on, and a reader that stops for ten seconds and starts again meets
-the same half second it met the first time.
+For a desktop whose session manager does not honour that, the daemon also
+watches its writes: the first refused one is taken as proof that nobody is
+collecting, and from then on it takes back whatever is still in the pipe
+immediately before writing the chunk it has — a second read end on the FIFO,
+opened for that read and closed again, so an unloaded module still shows up as
+`EPIPE`. The pipe then holds one chunk. It stops taking bytes back as soon as a
+flush comes up with less than a chunk, which only a reader that is keeping up
+can cause. Everything taken back is counted in `dropped`, with the flushed part
+reported separately as `flushed` beside a `stalled` flag, so `omarchy-connect
+mic input status` says both how much sound reached no program and whether
+anything is listening at all. On this machine those stay at zero.
 
 **The module never outlives the daemon.** It is global state in someone else's
 process, so it is unloaded synchronously on `SIGTERM`, and any

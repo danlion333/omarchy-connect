@@ -34,8 +34,8 @@ import { log } from './log.js'
  *
  * `pcm` is signed 16-bit little-endian, 16 kHz, mono — the format
  * `dictation.js` already resamples to before whisper reads it, and the one
- * `#38` will want to hand to PipeWire. At 100 ms a chunk that is 3200 bytes
- * ten times a second, which is a rate the channel does not notice and a
+ * `#38` will want to hand to PipeWire. At 20 ms a chunk that is 640 bytes
+ * fifty times a second, which is a rate the channel does not notice and a
  * latency a person does not either.
  *
  * `stream` is the number the desktop handed out when it asked for the
@@ -77,8 +77,17 @@ export const HEADER_BYTES = MAGIC.length + 8
 export const RATE = 16000
 export const CHANNELS = 1
 export const BYTES_PER_SAMPLE = 2
-/** How much sound is in one frame. Ten a second, 3200 bytes each. */
-export const CHUNK_MS = 100
+/**
+ * How much sound is in one frame: 20 ms, 640 bytes, fifty a second.
+ *
+ * A chunk is how long a sample waits on the phone before it is sent at all,
+ * and it is the burst PipeWire's ring has to swallow on top of what it already
+ * holds (`lib/pipesource.js` explains the ring). Ten a second was a round
+ * number for a WAV in the cache; fifty is what a microphone somebody is
+ * talking through wants, and the channel notices neither. The phone clamps at
+ * 20 either way.
+ */
+export const CHUNK_MS = 20
 
 /** A frame far larger than a chunk is not one this speaks; refuse it whole. */
 export const MAX_CHUNK_BYTES = 64 * 1024
