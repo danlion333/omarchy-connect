@@ -1,10 +1,31 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { Alert, AppState, Platform, View } from 'react-native'
-import { Feather } from '@expo/vector-icons'
+import { ActivityIndicator, Alert, AppState, Platform, View } from 'react-native'
 import * as Clipboard from 'expo-clipboard'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
-import { Body, Button, Caps, Card, CardHeader, Chip, DataGrid, Divider, Empty, Field, ListRow, Notice, Screen } from '../ui/kit'
+import {
+  Body,
+  Button,
+  Card,
+  CardHeader,
+  Chip,
+  DataGrid,
+  Divider,
+  Empty,
+  Field,
+  Hint,
+  IconButton,
+  Label,
+  ListRow,
+  Notice,
+  Pill,
+  Row,
+  Screen,
+  ScreenHeader,
+  Section,
+  Toggle,
+  Value,
+} from '../ui/kit'
 import { clock, duration } from '../lib/format'
 import {
   canAnswerCalls,
@@ -33,25 +54,30 @@ import {
 import { datagramsSupported } from '../../modules/omarchy-link'
 import { alertPrefs, setAlertPrefs, type AlertCategory, type AlertPrefs } from '../api/alerts'
 import { saveAlertPrefs } from '../api/storage'
-import { font, size, space } from '../theme'
+import { font, radius, size, space, type Palette } from '../theme'
 
 export function SettingsScreen() {
   const { desktop, hello, palette, status, call, can, forget, reconnect, error, fingerprint } = useConnection()
   const [themes, setThemes] = useState<string[]>([])
   const [currentTheme, setCurrentTheme] = useState<string | null>(null)
   const [switching, setSwitching] = useState<string | null>(null)
+  const [loadingThemes, setLoadingThemes] = useState(false)
   const [themeError, setThemeError] = useState<unknown>(null)
 
   const connected = status === 'connected'
+  const dialling = status === 'connecting' || status === 'reconnecting' || status === 'pairing'
 
   const loadThemes = useCallback(async () => {
     if (!connected || !can('desktop', 'themes')) return
+    setLoadingThemes(true)
     try {
       const res = await call<{ themes: string[]; current: string | null }>('theme.list')
       setThemes(res.themes)
       setCurrentTheme(res.current)
     } catch (err) {
       setThemeError(err)
+    } finally {
+      setLoadingThemes(false)
     }
   }, [call, can, connected])
 
@@ -84,21 +110,30 @@ export function SettingsScreen() {
 
   const capabilities = hello?.capabilities ?? {}
 
+  // The address is the one fact worth the header's second line, and only
+  // when it fits there whole; a long one goes into the grid instead, where
+  // it gets a row of its own rather than an ellipsis.
+  const address = desktop ? `${desktop.host}:${desktop.port}` : null
+  const addressInHeader = address !== null && address.length <= 28
+
   return (
     <Screen>
-      <Caps style={{ marginBottom: space.md }}>Setup</Caps>
+      <ScreenHeader
+        title="Setup"
+        status={linkStatus(status, palette)}
+        right={<IconButton icon="refresh-cw" label="Reconnect" onPress={reconnect} loading={dialling} />}
+      />
 
       <Card>
         <CardHeader
           icon="monitor"
-          title={hello?.server.name ?? desktop?.name ?? 'no desktop'}
-          subtitle={statusLabel(status)}
+          title={hello?.server.name ?? desktop?.name ?? 'No desktop'}
+          subtitle={addressInHeader ? address : null}
           tone={connected ? palette.green : status === 'error' ? palette.red : palette.orange}
-          right={<Button icon="refresh-cw" variant="ghost" onPress={reconnect} />}
         />
         <DataGrid
           pairs={[
-            { label: 'Address', value: desktop ? `${desktop.host}:${desktop.port}` : '—' },
+            ...(addressInHeader ? [] : [{ label: 'Address', value: address ?? '—' }]),
             // Which road, not which address. The address above answers "where
             // is it"; this answers "how did I get there", which is the fact
             // that explains why the telephony surfaces are missing.
@@ -106,124 +141,165 @@ export function SettingsScreen() {
             { label: 'Paired', value: desktop ? clock(desktop.pairedAt) : '—' },
             { label: 'Daemon', value: hello?.server.version ?? '—' },
             { label: 'Protocol', value: hello ? `v${hello.protocol}` : '—' },
-            { label: 'Kernel', value: hello?.host?.kernel ?? '—' },
+            { label: 'Kernel', value: kernelLabel(hello?.host?.kernel) },
             { label: 'Uptime', value: hello ? duration(hello.host?.uptime) : '—' },
           ]}
         />
+        {!hello && dialling ? <Busy label="Connecting" /> : null}
         <Divider />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <Feather name={hello?.secure ? 'lock' : 'unlock'} size={13} color={hello?.secure ? palette.green : palette.orange} />
-          <Caps tone={palette.muted}>{hello?.secure ? 'encrypted' : 'not encrypted'}</Caps>
-          <Chip label={desktop?.tls ? 'tls' : 'plain'} tone={desktop?.tls ? palette.green : palette.muted} />
-          {hello?.link?.via === 'remote' ? <Chip label="remote" tone={palette.orange} /> : null}
-          <Body tone={palette.light_foreground} style={{ fontFamily: font.medium, fontSize: size.label, marginLeft: 'auto' }}>
-            {fingerprint ?? '—'}
-          </Body>
-        </View>
-        <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.xs }}>
-          this is the desktop key your phone pinned — `omarchy-connect status` prints the same digest
-        </Body>
-        <Notice error={error} style={{ marginTop: space.md, marginBottom: 0 }} />
+        <Row
+          label="Key"
+          value={
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+              {/* TLS is the wire; "encrypted" is the channel inside it, which a
+                  desktop paired before TLS existed still has. Plain is neither. */}
+              <Pill
+                label={desktop?.tls ? 'TLS' : hello?.secure ? 'encrypted' : 'plain'}
+                icon={desktop?.tls || hello?.secure ? 'lock' : 'unlock'}
+                tone={desktop?.tls || hello?.secure ? palette.green : palette.orange}
+              />
+              <Value>{fingerprint ?? '—'}</Value>
+            </View>
+          }
+        />
+        <Hint style={{ marginTop: space.xs }}>Compare with omarchy-connect status</Hint>
+        <Notice
+          error={error}
+          action={connected ? null : { label: 'Try again', icon: 'refresh-cw', onPress: reconnect }}
+          style={{ marginTop: space.md, marginBottom: 0 }}
+        />
       </Card>
 
-      {can('desktop', 'themes') ? (
+      {hello ? (
         <Card>
           <CardHeader
             icon="droplet"
             title="Theme"
-            subtitle={`${palette.name} · the app follows the desktop`}
-            right={<Button icon="refresh-cw" variant="ghost" onPress={loadThemes} />}
+            subtitle={can('desktop', 'themes') ? (currentTheme ?? palette.name).replace(/-/g, ' ') : 'not available'}
+            tone={can('desktop', 'themes') ? undefined : palette.muted}
+            right={
+              can('desktop', 'themes') ? (
+                <IconButton icon="refresh-cw" label="Reload themes" onPress={loadThemes} loading={loadingThemes || switching !== null} />
+              ) : null
+            }
           />
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-            {themes.map((name) => (
-              <Chip
-                key={name}
-                label={switching === name ? `${name}…` : name}
-                active={name === currentTheme}
-                onPress={() => applyTheme(name)}
-              />
-            ))}
-          </View>
-          <Notice error={themeError} style={{ marginTop: space.md, marginBottom: 0 }} />
+          {!can('desktop', 'themes') ? (
+            <Hint>Needs omarchy-theme-list on the desktop</Hint>
+          ) : themes.length ? (
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+              {themes.map((name) => (
+                <Chip
+                  key={name}
+                  label={name}
+                  active={name === currentTheme}
+                  disabled={switching === name}
+                  onPress={() => applyTheme(name)}
+                />
+              ))}
+            </View>
+          ) : loadingThemes ? (
+            <Busy label="Loading themes" />
+          ) : themeError ? null : (
+            <Empty icon="droplet" text="No themes on the desktop" />
+          )}
+          <Notice
+            error={themeError}
+            action={{ label: 'Try again', icon: 'refresh-cw', onPress: loadThemes }}
+            style={{ marginTop: space.md, marginBottom: 0 }}
+          />
         </Card>
       ) : null}
 
-      <Card>
-        <CardHeader icon="check-circle" title="Capabilities" subtitle="what this desktop can do" />
-        {Object.keys(capabilities).length ? (
-          Object.entries(capabilities).map(([plugin, features], i) => (
-            <View key={plugin}>
-              {i > 0 ? <Divider style={{ marginVertical: space.sm }} /> : null}
-              <Caps style={{ marginBottom: space.sm }}>{plugin}</Caps>
-              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                {Object.entries(features).map(([feature, enabled]) => (
-                  <Body
-                    key={feature}
-                    tone={enabled ? palette.green : palette.muted}
-                    style={{ fontSize: size.label }}
-                  >
-                    {`${enabled ? '+' : '−'} ${feature}`}
-                  </Body>
-                ))}
-              </View>
-            </View>
-          ))
-        ) : (
-          <Empty icon="help-circle" text="Connect to see what the desktop supports" />
-        )}
-      </Card>
+      <Capabilities capabilities={capabilities} />
 
       <RemoteAccess />
 
       <WakeOnLan />
 
-      <BackgroundLink />
+      <ThisPhone />
 
-      <Notifications />
-
-      <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} />
+      <PhoneMirror enabled={Boolean((capabilities.phone as any)?.mirror)} remote={hello?.link?.via === 'remote'} />
 
       <Microphone />
 
-      <Card>
-        <CardHeader icon="smartphone" title="This phone" subtitle={hello?.device.name ?? 'not paired'} />
-        <DataGrid
-          pairs={[
-            { label: 'Platform', value: hello?.device.platform ?? '—' },
-            { label: 'Device id', value: hello?.device.id?.slice(0, 14) ?? '—' },
-          ]}
-          columns={1}
-        />
-        <View style={{ height: space.md }} />
-        <Button icon="trash-2" label="Unpair this desktop" variant="danger" onPress={confirmForget} />
-      </Card>
-
-      <Body tone={palette.muted} style={{ fontSize: size.label, textAlign: 'center', marginTop: space.sm }}>
-        {hello?.link?.via === 'remote'
-          ? 'Omarchy Connect · no account, no cloud · this link is coming in over your own tunnel'
-          : 'Omarchy Connect · no account, no cloud · nothing is leaving your network'}
-      </Body>
+      <Button icon="trash-2" label="Unpair this desktop" variant="danger" onPress={confirmForget} style={{ marginTop: space.xs }} />
     </Screen>
   )
 }
 
 /**
- * What it would take to wake this desktop, and whether it would work.
+ * What the desktop said it can do, folded to a line of counts.
  *
- * This is the diagnostic half of the feature — the button itself is on Remote,
- * with the other power controls. It is here because everything it says is a
- * thing to be fixed on the desktop rather than on the phone, and because the
- * answers were all given by the desktop while it was still awake: once it is
- * asleep there is nobody to ask.
+ * The raw list is the most useful thing on the screen to somebody debugging a
+ * plugin and the least useful to everybody else, and open it filled two
+ * screens. So the card says how much there is, one pill per group, and the
+ * feature-by-feature list waits behind a button. A feature the desktop
+ * answered `false` for — the `ios` bridge on a desktop without it — is still
+ * listed, dimmed, because "not there" and "switched off" are different news.
  */
+function Capabilities({ capabilities }: { capabilities: Record<string, Record<string, unknown>> }) {
+  const palette = usePalette()
+  const [open, setOpen] = useState(false)
+  const groups = Object.entries(capabilities)
+  const on = groups.reduce((sum, [, features]) => sum + Object.values(features).filter(Boolean).length, 0)
+
+  if (!groups.length) {
+    return (
+      <Card>
+        <CardHeader icon="check-circle" title="Capabilities" subtitle="not connected" tone={palette.muted} />
+        <Empty icon="help-circle" text="Connect to see what the desktop can do" />
+      </Card>
+    )
+  }
+
+  return (
+    <Card>
+      <CardHeader icon="check-circle" title="Capabilities" subtitle={`${groups.length} groups · ${on} capabilities`} />
+      {open ? (
+        groups.map(([plugin, features], i) => {
+          const entries = Object.entries(features)
+          const lit = entries.filter(([, enabled]) => Boolean(enabled)).length
+          return (
+            <View key={plugin}>
+              {i > 0 ? <Divider style={{ marginVertical: space.sm }} /> : null}
+              <Section title={plugin} right={<Pill label={`${lit}/${entries.length}`} />} />
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs + 2 }}>
+                {entries.map(([feature, enabled]) => (
+                  <Pill key={feature} label={featureLabel(feature)} tone={enabled ? palette.green : palette.muted} />
+                ))}
+              </View>
+            </View>
+          )
+        })
+      ) : (
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.xs + 2 }}>
+          {groups.map(([plugin, features]) => (
+            <Pill key={plugin} label={`${plugin} ${Object.values(features).filter(Boolean).length}`} />
+          ))}
+        </View>
+      )}
+      <View style={{ flexDirection: 'row', marginTop: space.md }}>
+        <Button
+          compact
+          variant="ghost"
+          icon={open ? 'chevron-up' : 'chevron-down'}
+          label={open ? 'Hide details' : 'Show details'}
+          onPress={() => setOpen((was) => !was)}
+        />
+      </View>
+    </Card>
+  )
+}
+
 /**
  * The addresses this desktop can be reached at from off its own network, and
  * a way to add one the desktop could not describe.
  *
- * Shown once the desktop has offered a road that is not the local wire, or
- * once somebody has added one — a card explaining a feature that is switched
- * off on the desktop, on a screen nobody can switch it on from, is a card
- * that only makes the desktop look broken.
+ * Shown dimmed until the desktop has offered a road that is not the local
+ * wire, or until somebody has added one — a card explaining a feature that is
+ * switched off on the desktop, on a screen nobody can switch it on from, is a
+ * card that only makes the desktop look broken. It is still drawn, because
+ * the one thing a phone can do about it is type an address in.
  */
 function RemoteAccess() {
   const { desktop, hello, palette, addEndpoint, removeEndpoint } = useConnection()
@@ -236,21 +312,6 @@ function RemoteAccess() {
   const endpoints = desktop?.endpoints ?? []
   const travelling = endpoints.filter((entry) => entry.kind !== 'lan')
   const remote = hello?.link?.via === 'remote'
-
-  if (!travelling.length && !adding) {
-    return (
-      <Card>
-        <CardHeader icon="globe" title="Remote access" subtitle="reach this desktop away from home" tone={palette.muted} />
-        <Body tone={palette.muted} style={{ fontSize: size.label }}>
-          this desktop has only offered its address on your own network. Switch remote access on there —
-          `omarchy-connect remote on`, or the panel — and the address it can be reached at from anywhere
-          arrives on the next connection.
-        </Body>
-        <View style={{ height: space.md }} />
-        <Button icon="plus" variant="ghost" label="Add an address by hand" onPress={() => setAdding(true)} />
-      </Card>
-    )
-  }
 
   const submit = async () => {
     setChecking(true)
@@ -266,88 +327,107 @@ function RemoteAccess() {
     setOutcome(result.error ?? 'that address could not be used')
   }
 
+  const cancel = () => {
+    setAdding(false)
+    setOutcome(null)
+  }
+
+  // The address is checked before it is kept — anything answering with a key
+  // that is not the paired desktop's is refused — so the field's own error
+  // line is where that refusal lands, next to what was typed.
+  const form = adding ? (
+    <>
+      <Field
+        label="Address"
+        value={host}
+        onChange={(next) => {
+          setHost(next)
+          if (outcome) setOutcome(null)
+        }}
+        placeholder="100.101.102.103"
+        keyboardType="url"
+        error={outcome}
+        autoFocus
+        onSubmit={host.trim() && !checking ? submit : undefined}
+      />
+      <Field label="Port" value={port} onChange={setPort} keyboardType="number-pad" maxLength={5} />
+      <View style={{ flexDirection: 'row', gap: space.sm }}>
+        <Button icon="check" label="Add" onPress={submit} loading={checking} disabled={!host.trim()} compact style={{ flex: 1 }} />
+        <Button variant="ghost" label="Cancel" onPress={cancel} compact />
+      </View>
+    </>
+  ) : (
+    <View style={{ flexDirection: 'row' }}>
+      <Button icon="plus" variant="ghost" label="Add an address by hand" onPress={() => setAdding(true)} compact />
+    </View>
+  )
+
+  if (!travelling.length) {
+    return (
+      <Card>
+        <CardHeader icon="globe" title="Remote access" subtitle="not offered" tone={palette.muted} />
+        <Hint style={{ marginBottom: space.md }}>Switch it on with omarchy-connect remote on</Hint>
+        {form}
+      </Card>
+    )
+  }
+
+  const manual = travelling.filter((entry) => entry.source === 'manual')
+  const offered = travelling.filter((entry) => entry.source !== 'manual')
+
   return (
     <Card>
       <CardHeader
         icon="globe"
         title="Remote access"
-        subtitle={remote ? 'connected from away' : 'reach this desktop away from home'}
-        tone={remote ? palette.green : palette.muted}
+        subtitle={remote ? 'in use now' : 'ready'}
+        tone={remote ? palette.green : undefined}
       />
-      {travelling.length ? (
-        <DataGrid
-          pairs={travelling.map((entry) => ({
-            label: entry.kind,
-            value: `${entry.host}${entry.port === desktop?.port ? '' : `:${entry.port}`}`,
-            tone: entry.host === desktop?.host ? palette.green : undefined,
-          }))}
-          columns={1}
+      {offered.map((entry) => (
+        <FitRow
+          key={`${entry.host}:${entry.port}`}
+          label={entry.kind}
+          value={`${entry.host}${entry.port === desktop?.port ? '' : `:${entry.port}`}`}
+          tone={entry.host === desktop?.host ? palette.green : undefined}
         />
-      ) : null}
-      <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-        your desktop's tunnel address travels with it — pair once, and the phone finds it from anywhere the
-        tunnel reaches. Calls and messages stay at home: telephony is switched off on a remote link.
-      </Body>
-
-      {travelling.some((entry) => entry.source === 'manual') ? (
+      ))}
+      {manual.length ? (
         <>
-          <Divider />
-          <Caps style={{ marginBottom: space.xs }}>Added by hand</Caps>
-          {travelling
-            .filter((entry) => entry.source === 'manual')
-            .map((entry) => (
-              <ListRow
-                key={`${entry.host}:${entry.port}`}
-                title={entry.host}
-                subtitle={`port ${entry.port}`}
-                right={<Button icon="x" variant="ghost" onPress={() => void removeEndpoint(entry.host, entry.port)} />}
-              />
-            ))}
-        </>
-      ) : null}
-
-      <Divider />
-      {adding ? (
-        <>
-          <Field label="Address" value={host} onChange={setHost} placeholder="100.101.102.103" />
-          <Field label="Port" value={port} onChange={setPort} keyboardType="number-pad" maxLength={5} />
-          <Notice error={outcome} />
-          <View style={{ flexDirection: 'row', gap: space.sm }}>
-            <View style={{ flex: 1 }}>
-              <Button
-                icon={checking ? 'loader' : 'check'}
-                label={checking ? 'Checking…' : 'Add'}
-                onPress={submit}
-                disabled={!host.trim() || checking}
-              />
-            </View>
-            <Button
-              variant="ghost"
-              label="Cancel"
-              onPress={() => {
-                setAdding(false)
-                setOutcome(null)
-              }}
+          <Section title="Added by hand" style={{ marginTop: offered.length ? space.md : 0 }} />
+          {manual.map((entry, i) => (
+            <ListRow
+              key={`${entry.host}:${entry.port}`}
+              title={entry.host}
+              subtitle={`port ${entry.port}`}
+              tone={entry.host === desktop?.host ? palette.green : undefined}
+              right={<IconButton icon="x" label="Remove this address" onPress={() => void removeEndpoint(entry.host, entry.port)} />}
+              last={i === manual.length - 1}
             />
-          </View>
-          <Body tone={palette.muted} style={{ fontSize: size.micro, marginTop: space.sm }}>
-            the address is checked before it is kept — anything answering with a key that is not your
-            desktop's is refused
-          </Body>
+          ))}
         </>
-      ) : (
-        <Button icon="plus" variant="ghost" label="Add an address by hand" onPress={() => setAdding(true)} />
-      )}
+      ) : null}
+      <Hint style={{ marginTop: space.sm }}>Calls and messages stay on the home network</Hint>
+      <Divider />
+      {form}
     </Card>
   )
 }
 
+/**
+ * What it would take to wake this desktop, and whether it would work.
+ *
+ * This is the diagnostic half of the feature — the button itself is on Remote,
+ * with the other power controls. It is here because everything it says is a
+ * thing to be fixed on the desktop rather than on the phone, and because the
+ * answers were all given by the desktop while it was still awake: once it is
+ * asleep there is nobody to ask.
+ */
 function WakeOnLan() {
   const { desktop, palette, client } = useConnection()
   const [copied, setCopied] = useState(false)
   const wake = desktop?.wake
 
-  if (!wake?.supported) return null
+  if (!wake) return null
 
   // A magic packet is a broadcast on the local wire, and a tunnel does not
   // carry broadcasts. The button stays: sending it is a harmless datagram,
@@ -356,63 +436,58 @@ function WakeOnLan() {
   // to get its button back. But it says what it expects to happen.
   const offTheWire = client?.networkFacts ? !client.networkFacts.lan : false
 
-  const armed = wake.armed === null ? 'cannot tell' : wake.armed ? 'yes' : 'no'
   const copy = async (command: string) => {
     await Clipboard.setStringAsync(command)
     setCopied(true)
   }
+
+  if (!wake.supported) {
+    return (
+      <Card>
+        <CardHeader icon="zap" title="Wake on LAN" subtitle="not available" tone={palette.muted} />
+        <Hint>{wake.note ?? 'This desktop cannot be woken over the network'}</Hint>
+      </Card>
+    )
+  }
+
+  const ready = wake.armed === true
+  const armedTone = ready ? palette.green : palette.orange
 
   return (
     <Card>
       <CardHeader
         icon="zap"
         title="Wake on LAN"
-        subtitle={wake.armed === true ? 'this desktop can be woken from sleep' : 'not ready yet'}
-        tone={wake.armed === true ? palette.green : palette.orange}
+        subtitle={ready ? 'ready' : wake.armed === null ? 'cannot tell' : 'not armed'}
+        tone={armedTone}
       />
-      {/* One column: a MAC and a broadcast address are the two facts this card
-          exists to carry, and two columns cut both of them off. */}
       <DataGrid
+        columns={1}
         pairs={[
-          { label: 'Card', value: wake.interface ? `${wake.interface} (${wake.type})` : '—' },
-          { label: 'Armed', value: armed, tone: wake.armed === true ? palette.green : palette.orange },
+          { label: 'Interface', value: wake.interface ? `${wake.interface} (${wake.type})` : '—' },
+          { label: 'Armed', value: wake.armed === null ? 'cannot tell' : wake.armed ? 'yes' : 'no', tone: armedTone },
           { label: 'MAC', value: wake.mac ?? '—' },
           { label: 'Packet to', value: wake.broadcast ? `${wake.broadcast}:${wake.port}` : '—' },
         ]}
-        columns={1}
       />
       {!datagramsSupported() ? (
-        <Body tone={palette.orange} style={{ fontSize: size.label, marginTop: space.md }}>
-          this phone cannot send the packet — there is no UDP socket in Expo Go or on iOS, so waking needs the
-          Android build
-        </Body>
+        <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+          Android only
+        </Hint>
+      ) : offTheWire ? (
+        <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+          Not on the desktop's network · the packet has nowhere to go from here
+        </Hint>
       ) : null}
-      {offTheWire ? (
-        <Body tone={palette.orange} style={{ fontSize: size.label, marginTop: space.md }}>
-          this phone is not on the desktop's own network, and a magic packet does not travel down a tunnel —
-          the button still works, it just has nowhere to shout from here
-        </Body>
-      ) : null}
-      {wake.note ? (
-        <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-          {wake.note}
-        </Body>
-      ) : null}
+      {wake.note ? <Hint style={{ marginTop: space.sm }}>{wake.note}</Hint> : null}
       {wake.command ? (
         <>
           <Divider />
-          <Body tone={palette.muted} style={{ fontSize: size.micro }}>
-            run this on the desktop — nothing here can change a setting on it
-          </Body>
-          <Body tone={palette.light_foreground} style={{ fontFamily: font.medium, fontSize: size.label, marginTop: space.xs }}>
-            {wake.command}
-          </Body>
-          <View style={{ height: space.md }} />
-          <Button
-            icon={copied ? 'check' : 'copy'}
-            label={copied ? 'Copied' : 'Copy the command'}
-            onPress={() => copy(wake.command!)}
-          />
+          <Section title="Run on the desktop" />
+          <Command text={wake.command} />
+          <View style={{ flexDirection: 'row', marginTop: space.sm }}>
+            <Button compact icon={copied ? 'check' : 'copy'} label={copied ? 'Copied' : 'Copy command'} onPress={() => copy(wake.command!)} />
+          </View>
         </>
       ) : null}
     </Card>
@@ -420,114 +495,35 @@ function WakeOnLan() {
 }
 
 /**
- * What this phone is allowed to say, and about what.
+ * The phone's own half of the setup: what it is, whether it stays on the
+ * link with the app closed, and what it is allowed to say from the shade.
  *
- * Four separate switches rather than one, because the four are not the same
- * favour. Being told an agent is waiting is worth a sound at midnight; being
- * told the desktop copied a word is worth a line at the bottom of the shade
- * and nothing more. Bundling them would mean whoever wanted one and not the
- * other had to give up both.
+ * The background link is the switch that decides whether this phone exists
+ * when nobody is looking. Android suspends an app's timers the moment it
+ * leaves the screen and reclaims its process soon after, which took the
+ * socket, the keepalive and every event with it. A foreground service is the
+ * only sanctioned way out, and it costs a permanent notification — so it is a
+ * choice the user makes with the price in front of them, not something
+ * switched on behind their back.
  *
- * All on by default: a notification nobody sees is an agent sitting idle, a
- * file nobody knew arrived, and a clipboard that never left the desktop.
+ * The notifications are four separate switches rather than one, because the
+ * four are not the same favour. Being told an agent is waiting is worth a
+ * sound at midnight; being told the desktop copied a word is worth a line at
+ * the bottom of the shade and nothing more. Bundling them would mean whoever
+ * wanted one and not the other had to give up both. All on by default: a
+ * notification nobody sees is an agent sitting idle, a file nobody knew
+ * arrived, and a clipboard that never left the desktop.
  */
-function Notifications() {
-  const { palette, hello } = useConnection()
-  const supported = backgroundLinkSupported()
-  const [prefs, setPrefs] = useState<AlertPrefs>(alertPrefs)
-
-  const toggle = useCallback(
-    async (key: AlertCategory) => {
-      const next = { ...prefs, [key]: !prefs[key] }
-      setPrefs(next)
-      setAlertPrefs(next)
-      await saveAlertPrefs(next).catch(() => {})
-      // Asked for the moment something is switched on rather than at launch: a
-      // permission dialog nobody asked for is a dialog nobody reads.
-      if (next[key]) await requestNotificationPermission()
-    },
-    [prefs],
-  )
-
-  if (!supported) return null
-
-  const reading = Boolean((hello?.capabilities?.agents as any)?.enabled)
-
-  const rows: { key: AlertCategory; title: string; subtitle: string }[] = [
-    {
-      key: 'waiting',
-      title: 'An agent is waiting',
-      subtitle: reading
-        ? 'the question, and a reply box on the notification itself'
-        : 'reading agents is off on the desktop, so there is nothing to be told about yet',
-    },
-    {
-      key: 'done',
-      title: 'An agent finished',
-      subtitle: 'only after a long run — not for every turn it takes',
-    },
-    {
-      key: 'files',
-      title: 'A file arrived',
-      subtitle: 'with Save straight to the gallery, for a picture or a video',
-    },
-    {
-      key: 'clipboard',
-      title: 'The desktop copied something',
-      subtitle: 'silent, one line — Copy for text, Save for a picture — hidden while the app is open',
-    },
-  ]
-
-  return (
-    <Card>
-      <CardHeader
-        icon="bell"
-        title="Notifications"
-        subtitle={`${rows.filter((row) => prefs[row.key]).length} of ${rows.length} on`}
-        tone={rows.some((row) => prefs[row.key]) ? palette.green : palette.muted}
-      />
-      {rows.map((row, index) => (
-        <View key={row.key}>
-          {index ? <Divider /> : null}
-          {/* The chip is a Pressable in its own right, so it takes the same
-              handler rather than swallowing the row's. */}
-          <ListRow
-            title={row.title}
-            subtitle={row.subtitle}
-            onPress={() => toggle(row.key)}
-            right={
-              <Chip
-                label={prefs[row.key] ? 'on' : 'off'}
-                active={prefs[row.key]}
-                tone={palette.green}
-                onPress={() => toggle(row.key)}
-              />
-            }
-          />
-        </View>
-      ))}
-    </Card>
-  )
-}
-
-/**
- * The switch that decides whether this phone exists when nobody is looking.
- *
- * Android suspends an app's timers the moment it leaves the screen and
- * reclaims its process soon after, which took the socket, the keepalive and
- * every event with it. A foreground service is the only sanctioned way out,
- * and it costs a permanent notification — so it is a choice the user makes
- * with the price in front of them, not something switched on behind their
- * back.
- */
-function BackgroundLink() {
-  const palette = usePalette()
+function ThisPhone() {
+  const { palette, hello, desktop } = useConnection()
   const supported = backgroundLinkSupported()
   const [enabled, setEnabled] = useState(false)
   const [running, setRunning] = useState(false)
   const [optimized, setOptimized] = useState(false)
   const [notifications, setNotifications] = useState(true)
   const [busy, setBusy] = useState(false)
+  const [fault, setFault] = useState<unknown>(null)
+  const [prefs, setPrefs] = useState<AlertPrefs>(alertPrefs)
 
   const sync = useCallback(() => {
     if (!supported) return
@@ -549,12 +545,15 @@ function BackgroundLink() {
 
   const enable = useCallback(async () => {
     setBusy(true)
+    setFault(null)
     try {
       // Asked for first: without it the service still runs, but Android hides
       // its notification, and an invisible foreground service is the kind of
       // thing a user is right to be annoyed about discovering later.
       await requestNotificationPermission()
       startBackgroundLink()
+    } catch (err) {
+      setFault(err)
     } finally {
       setBusy(false)
       sync()
@@ -566,77 +565,100 @@ function BackgroundLink() {
     sync()
   }, [sync])
 
-  if (!supported) {
-    if (Platform.OS !== 'ios') return null
-    return (
-      <Card>
-        <CardHeader icon="moon" title="Background link" subtitle="not possible on iOS" tone={palette.muted} />
-        <Body tone={palette.muted} style={{ fontSize: size.label }}>
-          iOS takes the socket away seconds after an app leaves the screen and gives nothing back that would
-          hold it open. Pair the desktop over Bluetooth for the things that must work with the app closed.
-        </Body>
-      </Card>
-    )
-  }
+  const toggle = useCallback(
+    async (key: AlertCategory) => {
+      const next = { ...prefs, [key]: !prefs[key] }
+      setPrefs(next)
+      setAlertPrefs(next)
+      await saveAlertPrefs(next).catch(() => {})
+      // Asked for the moment something is switched on rather than at launch: a
+      // permission dialog nobody asked for is a dialog nobody reads.
+      if (next[key]) await requestNotificationPermission()
+    },
+    [prefs],
+  )
+
+  const reading = Boolean((hello?.capabilities?.agents as any)?.enabled)
+
+  const alerts: { key: AlertCategory; label: string; hint: string }[] = [
+    {
+      key: 'waiting',
+      label: 'Agent waiting',
+      hint: reading ? 'With a reply box on the notification' : 'Idle until the desktop reads agents',
+    },
+    { key: 'done', label: 'Agent finished', hint: 'Only after a run of a minute or more' },
+    { key: 'files', label: 'File arrived', hint: 'With Save for a picture or a video' },
+    { key: 'clipboard', label: 'Desktop copied something', hint: 'Silent · hidden while the app is open' },
+  ]
+
+  // Where there is no service there is nothing to post from, and the one
+  // sentence that explains both halves is the platform's.
+  const cannot = Platform.OS === 'ios' ? 'Not possible on iOS · pair over Bluetooth instead' : 'Needs the Android build'
 
   return (
     <Card>
-      <CardHeader
-        icon="moon"
-        title="Background link"
-        subtitle={enabled ? (running ? 'connected with the app closed' : 'starting') : 'off — this phone goes offline'}
-        tone={enabled ? palette.green : palette.orange}
+      <CardHeader icon="smartphone" title="This phone" subtitle={hello?.device.name ?? (desktop ? 'offline' : 'not paired')} />
+      <DataGrid
+        pairs={[
+          { label: 'Platform', value: hello?.device.platform ?? Platform.OS },
+          { label: 'Device id', value: hello?.device.id?.slice(0, 14) ?? '—' },
+        ]}
       />
-      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-        With this off, the desktop only sees this phone while the app is open on screen — no calls, no messages,
-        no battery in the bar. On, a quiet notification keeps the connection alive through sleep, a reboot, and
-        the app being swiped away.
-      </Body>
-      {enabled ? (
+      <Divider />
+      <Section title="Background link" tone={supported ? undefined : palette.muted} />
+      <Toggle
+        label="Stay connected"
+        hint={supported ? 'A standing notification keeps the link up with the app closed' : cannot}
+        value={supported && enabled}
+        onChange={(next) => (next ? void enable() : disable())}
+        disabled={!supported || busy}
+        last
+      />
+      <Notice error={fault} action={{ label: 'Try again', onPress: () => void enable() }} style={{ marginBottom: 0 }} />
+      {supported && enabled ? (
         <>
           <DataGrid
             pairs={[
-              { label: 'Service', value: running ? 'running' : 'stopped' },
-              { label: 'Notification', value: notifications ? 'shown' : 'hidden' },
+              { label: 'Service', value: running ? 'running' : 'stopped', tone: running ? undefined : palette.orange },
+              { label: 'Notification', value: notifications ? 'shown' : 'hidden', tone: notifications ? undefined : palette.orange },
             ]}
-            columns={2}
           />
           {notifications ? null : (
-            <>
-              <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-                The link is up, but Android is hiding the notification that says so. It keeps working either
-                way — this is only about whether you can see that it is.
-              </Body>
-              <Button
-                icon="bell"
-                label="Show the connection notification"
-                variant="ghost"
-                loading={busy}
-                onPress={enable}
-              />
-            </>
+            <Action hint="Android is hiding the notification · the link still works">
+              <Button compact icon="bell" label="Show notification" variant="ghost" loading={busy} onPress={() => void enable()} />
+            </Action>
           )}
-          <View style={{ height: space.md }} />
-          <Button icon="moon" label="Stop staying connected" variant="ghost" onPress={disable} />
+          {optimized ? (
+            <Action hint="Android may still put this app to sleep">
+              <Button compact icon="battery-charging" label="Exempt from battery saver" variant="ghost" onPress={() => void openBatterySettings()} />
+            </Action>
+          ) : null}
         </>
+      ) : null}
+      <Divider />
+      <Section
+        title="Notifications"
+        tone={supported ? undefined : palette.muted}
+        right={supported ? <Pill label={`${alerts.filter((row) => prefs[row.key]).length} of ${alerts.length} on`} /> : null}
+      />
+      {supported ? (
+        alerts.map((row, i) => (
+          <Toggle
+            key={row.key}
+            label={row.label}
+            hint={row.hint}
+            value={prefs[row.key]}
+            onChange={() => void toggle(row.key)}
+            last={i === alerts.length - 1}
+          />
+        ))
       ) : (
-        <Button
-          icon="moon"
-          label="Stay connected in the background"
-          variant="solid"
-          loading={busy}
-          onPress={enable}
-        />
+        <Hint>Android only</Hint>
       )}
-      {enabled && optimized ? (
-        <>
-          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-            Android is still allowed to put this app to sleep. The link survives ordinary sleep either way, but
-            several manufacturers run their own killer on top of it — exempting the app is the one lever there
-            is against that.
-          </Body>
-          <Button icon="battery-charging" label="Turn off battery optimisation" variant="ghost" onPress={openBatterySettings} />
-        </>
+      {supported && !notifications && alerts.some((row) => prefs[row.key]) ? (
+        <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+          Notifications are blocked for this app in Android settings
+        </Hint>
       ) : null}
     </Card>
   )
@@ -659,23 +681,29 @@ function BackgroundLink() {
  * than no card, because it would say "off" over a live microphone.
  */
 function Microphone() {
-  const { palette, mic, status, can, offerMic } = useConnection()
+  const { palette, mic, status, can, offerMic, hello } = useConnection()
   const supported = micSupported()
   const connected = status === 'connected'
 
-  // A desktop with no audio plugin at all is not a desktop this card can say
-  // anything true about; one that is merely too old for `audio.offer` still
-  // gets the card, and the sentence, on the first press.
-  if (!can('audio', 'receive')) return null
+  // Nothing to say about a desktop that has not said anything yet; the
+  // desktop card carries the offline story. A desktop with no audio plugin
+  // is a different case and gets the card, dimmed, so the absence is visible.
+  if (!hello) return null
+
+  if (!can('audio', 'receive')) {
+    return (
+      <Card>
+        <CardHeader icon="mic-off" title="Microphone" subtitle="not available" tone={palette.muted} />
+        <Hint>This desktop's daemon has no audio plugin</Hint>
+      </Card>
+    )
+  }
 
   if (!supported) {
     return (
       <Card>
-        <CardHeader icon="mic-off" title="Microphone" subtitle="not possible in this build" tone={palette.muted} />
-        <Body tone={palette.muted} style={{ fontSize: size.label }}>
-          Streaming the microphone needs the native link module, which Expo Go and iOS do not have. The desktop
-          will be told the same sentence if it asks.
-        </Body>
+        <CardHeader icon="mic-off" title="Microphone" subtitle="not available" tone={palette.muted} />
+        <Hint>{Platform.OS === 'ios' ? 'Not possible on iOS' : 'Needs the Android build'}</Hint>
       </Card>
     )
   }
@@ -685,28 +713,19 @@ function Microphone() {
       <CardHeader
         icon={mic.listening ? 'mic' : 'mic-off'}
         title="Microphone"
-        subtitle={mic.listening ? 'the desktop is listening now' : connected ? 'off — nothing is being recorded' : 'not connected'}
+        subtitle={mic.listening ? 'the desktop is listening' : connected ? 'off' : 'not connected'}
         tone={mic.listening ? palette.red : palette.muted}
       />
-      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-        Offer this phone as a microphone for the desktop. The sound goes up the encrypted link as it is spoken,
-        into a recording on the desktop and into every input picker there — nothing is kept on this phone. The
-        desktop can also ask for it on its own, and this card says so when it does.
-      </Body>
       {mic.listening ? (
         <DataGrid
           pairs={[
             { label: 'Started', value: mic.since ? clock(mic.since) : '—' },
             { label: 'Stream', value: mic.stream === null ? '—' : `#${mic.stream}` },
           ]}
-          columns={2}
+          style={{ marginBottom: space.sm }}
         />
       ) : null}
-      {mic.listening && mic.path ? (
-        <Body tone={palette.muted} style={{ fontSize: size.micro, marginBottom: space.md }}>
-          {mic.path}
-        </Body>
-      ) : null}
+      {mic.listening && mic.path ? <FitRow label="Recording" value={mic.path} style={{ marginBottom: space.sm }} /> : null}
       <Button
         icon={mic.listening ? 'mic-off' : 'mic'}
         label={mic.listening ? 'Stop the desktop listening' : 'Offer this microphone'}
@@ -715,6 +734,7 @@ function Microphone() {
         disabled={!connected || mic.busy}
         onPress={() => void offerMic()}
       />
+      {!connected ? <Hint style={{ marginTop: space.sm }}>Off while the link is down</Hint> : null}
       {/* Every refusal is a sentence — a revoked permission, an input another
           app is holding, a desktop too old to be offered anything. The one
           thing this card must never do is nothing at all. */}
@@ -726,11 +746,15 @@ function Microphone() {
 /**
  * Granting Android the right to read messages and call state.
  *
- * Deliberately a button rather than something asked for at startup: this is
- * the most invasive permission the app has, and the user should be the one who
- * decides to hand it over, at a moment when it is obvious what it buys them.
+ * Deliberately asked for from a row rather than at startup: this is the most
+ * invasive permission the app has, and the user should be the one who decides
+ * to hand it over, at a moment when it is obvious what it buys them. Each of
+ * the four is a separate permission because each is a separate favour —
+ * answering someone's call is not a passive act, sending an SMS is the one
+ * thing here that can cost money, and reading the dialler's notification is
+ * the only way Android still lets an app learn who is calling.
  */
-function PhoneMirror({ enabled }: { enabled: boolean }) {
+function PhoneMirror({ enabled, remote }: { enabled: boolean; remote: boolean }) {
   const palette = usePalette()
   const supported = phoneMirrorSupported()
   const [granted, setGranted] = useState(false)
@@ -797,117 +821,89 @@ function PhoneMirror({ enabled }: { enabled: boolean }) {
 
   if (!enabled) return null
 
+  if (!supported) {
+    return (
+      <Card>
+        <CardHeader
+          icon="message-square"
+          title="Messages and calls"
+          subtitle={Platform.OS === 'ios' ? 'over Bluetooth' : 'not available'}
+          tone={palette.muted}
+        />
+        {Platform.OS === 'ios' ? <IosBridge /> : <Hint>Needs the Android build</Hint>}
+      </Card>
+    )
+  }
+
+  // The first permission is the one the whole card hangs off; the rest are
+  // refinements, and none of them is worth asking about before it is granted.
+  const rows: { key: string; title: string; subtitle: string; state: PermissionState; onPress?: () => void }[] = [
+    {
+      key: 'mirror',
+      title: 'SMS and calls',
+      subtitle: 'Mirrored to the desktop',
+      state: busy ? 'asking' : granted ? 'granted' : canAskAgain ? 'ask' : 'denied',
+      onPress: !granted && canAskAgain ? () => void ask() : undefined,
+    },
+    {
+      key: 'answer',
+      title: 'Answer calls',
+      subtitle: 'The audio stays on this phone',
+      state: askingCalls ? 'asking' : answering ? 'granted' : 'ask',
+      onPress: answering ? undefined : () => void askCalls(),
+    },
+    {
+      key: 'send',
+      title: 'Reply by SMS',
+      subtitle: 'Sending can cost money',
+      state: askingSend ? 'asking' : sending ? 'granted' : 'ask',
+      onPress: sending ? undefined : () => void askSend(),
+    },
+    {
+      key: 'caller',
+      title: 'Caller ID',
+      subtitle: 'Read off the dialler',
+      state: callerId ? 'granted' : 'ask',
+      onPress: callerId ? undefined : () => void openNotificationAccess(),
+    },
+    ...(callerId
+      ? [
+          {
+            key: 'contacts',
+            title: 'Contact names',
+            subtitle: 'Saved callers, by name',
+            state: (busy ? 'asking' : contacts ? 'granted' : canAskAgain ? 'ask' : 'denied') as PermissionState,
+            onPress: !contacts && canAskAgain ? () => void ask() : undefined,
+          },
+        ]
+      : []),
+  ]
+
   return (
     <Card>
       <CardHeader
         icon="message-square"
         title="Messages and calls"
-        subtitle={
-          supported
-            ? granted
-              ? 'mirroring to the desktop'
-              : 'permission needed'
-            : Platform.OS === 'ios'
-              ? 'over Bluetooth, not the app'
-              : 'not available here'
-        }
-        tone={supported && granted ? palette.green : palette.orange}
+        subtitle={granted ? 'mirroring' : 'permission needed'}
+        tone={granted ? palette.green : palette.orange}
       />
-      {supported ? (
-        <>
-          <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-            Incoming messages and calls appear as desktop notifications. With the background link on they
-            arrive as they happen; with it off they wait in a queue on this phone until you next open the app.
-          </Body>
-          {granted ? (
-            <DataGrid pairs={[{ label: 'Status', value: 'granted' }]} columns={1} />
-          ) : (
-            <Button
-              icon="shield"
-              label={canAskAgain ? 'Allow SMS and calls' : 'Open Android settings to allow'}
-              variant="solid"
-              loading={busy}
-              disabled={!canAskAgain}
-              onPress={ask}
-            />
-          )}
-          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-            Answering from the desktop is a separate permission, because picking up someone's call is not a
-            passive act. Granted here, the call is answered but the audio stays on this phone — pair the desktop
-            over Bluetooth if you want to speak through it.
-          </Body>
-          {answering ? (
-            <DataGrid pairs={[{ label: 'Answer calls', value: 'granted' }]} columns={1} />
-          ) : (
-            <Button
-              icon="phone"
-              label="Allow answering from the desktop"
-              variant="ghost"
-              loading={askingCalls}
-              onPress={askCalls}
-            />
-          )}
-          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-            Replying to a message from the desktop is a separate permission too, because sending an SMS is the
-            one thing here that can cost money. Without it the reply field on the desktop panel accepts what you
-            type and the phone refuses to send it.
-          </Body>
-          {sending ? (
-            <DataGrid pairs={[{ label: 'Send messages', value: 'granted' }]} columns={1} />
-          ) : (
-            <Button
-              icon="send"
-              label="Allow replying from the desktop"
-              variant="ghost"
-              loading={askingSend}
-              onPress={askSend}
-            />
-          )}
-          <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-            Android no longer tells any app who is calling — without notification access the desktop shows an
-            incoming call as "unknown". Granting it lets this app read the caller's name off your dialler's own
-            notification. Call notifications are the only ones it looks at.
-          </Body>
-          {callerId ? (
-            <DataGrid
-              pairs={[
-                { label: 'Caller ID', value: 'granted' },
-                { label: 'Contact names', value: contacts ? 'granted' : 'denied' },
-              ]}
-              columns={2}
-            />
-          ) : (
-            <Button
-              icon="user"
-              label="Show who is calling"
-              variant="ghost"
-              onPress={openNotificationAccess}
-            />
-          )}
-          {callerId && !contacts ? (
-            <>
-              <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-                Your dialler is being read, but the address book is not — so a caller who is saved on this phone
-                still reaches the desktop as a bare number.
-              </Body>
-              <Button
-                icon="users"
-                label={canAskAgain ? 'Allow reading contacts' : 'Open Android settings to allow'}
-                variant="ghost"
-                loading={busy}
-                disabled={!canAskAgain}
-                onPress={ask}
-              />
-            </>
-          ) : null}
-        </>
-      ) : Platform.OS === 'ios' ? (
-        <IosBridge />
-      ) : (
-        <Body tone={palette.muted} style={{ fontSize: size.label }}>
-          This needs a real Android build — Expo Go cannot hold the SMS and call-log permissions.
-        </Body>
-      )}
+      {rows.map((row, i) => (
+        <ListRow
+          key={row.key}
+          title={row.title}
+          subtitle={row.subtitle}
+          onPress={row.onPress}
+          chevron={Boolean(row.onPress)}
+          right={<PermissionPill state={row.state} />}
+          last={i === rows.length - 1}
+        />
+      ))}
+      {!canAskAgain && (!granted || (callerId && !contacts)) ? (
+        <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+          Allow SMS, calls and contacts in Android settings
+        </Hint>
+      ) : null}
+      {remote ? <Hint style={{ marginTop: space.sm }}>Off while on a remote link</Hint> : null}
     </Card>
   )
 }
@@ -951,39 +947,27 @@ function IosBridge() {
 
   return (
     <>
-      <Body tone={palette.muted} style={{ fontSize: size.label, marginBottom: space.md }}>
-        iOS gives no app access to messages, the call log, or notifications — including this one. It gives all of
-        them to a Bluetooth accessory, so the desktop asks to be one. Pair this iPhone with it and your messages,
-        calls and app notifications appear on the desktop with no app running at all.
-      </Body>
       <DataGrid
         pairs={[
-          { label: 'Bridge', value: live ? 'mirroring' : bridge?.paired ? 'paired, idle' : 'not paired' },
+          {
+            label: 'Bridge',
+            value: live ? 'mirroring' : bridge?.paired ? 'paired, idle' : 'not paired',
+            tone: live ? palette.green : undefined,
+          },
           { label: 'Desktop sees', value: bridge?.device ?? '—' },
         ]}
-        columns={2}
       />
       {live ? null : (
-        <Body tone={palette.muted} style={{ fontSize: size.label, marginTop: space.md }}>
-          On the desktop run{' '}
-          <Body tone={palette.bright_foreground} style={{ fontSize: size.label, fontFamily: font.bold }}>
-            omarchy-connect ios pair
-          </Body>
-          , then open Settings › Bluetooth here and tap the desktop. iOS will ask whether to show notifications on
-          it — that prompt is the whole feature.
-        </Body>
+        <Hint style={{ marginTop: space.sm }}>omarchy-connect ios pair on the desktop, then Settings › Bluetooth here</Hint>
       )}
-      <Button
-        icon="refresh-cw"
-        label="Check the bridge"
-        variant="ghost"
-        loading={checking}
-        onPress={refresh}
-        style={{ marginTop: space.md }}
-      />
+      <View style={{ flexDirection: 'row', marginTop: space.md }}>
+        <Button compact icon="refresh-cw" label="Check the bridge" variant="ghost" loading={checking} onPress={refresh} />
+      </View>
     </>
   )
 }
+
+/* ── words ───────────────────────────────────────────────────────────── */
 
 /**
  * How this socket got here, in words rather than in a code.
@@ -997,19 +981,109 @@ function linkLabel(link?: { via: string; kind: string | null }) {
   return link.kind && link.kind !== 'overlay' ? `${link.kind} · remote` : 'remote'
 }
 
-function statusLabel(status: string) {
+/**
+ * The kernel as a version rather than a build string. `uname -r` on Arch is
+ * `7.1.9-arch1-2`, which fits; a kernel that appends its git hash does not,
+ * and the hash is not something anybody reads off a phone.
+ */
+function kernelLabel(kernel: string | null | undefined) {
+  if (!kernel) return '—'
+  return kernel.split('-').slice(0, 3).join('-')
+}
+
+/** `receiveFiles` → `receive files`, so a pill in caps stays readable. */
+function featureLabel(feature: string) {
+  return feature.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+}
+
+/** The small coloured word beside the screen's name. */
+function linkStatus(status: string, palette: Palette): { label: string; tone: string } {
   switch (status) {
     case 'connected':
-      return 'connected'
+      return { label: 'connected', tone: palette.green }
     case 'reconnecting':
-      return 'reconnecting…'
-    case 'parked':
-      return 'waiting for your network'
+      return { label: 'reconnecting', tone: palette.orange }
     case 'connecting':
-      return 'connecting…'
+    case 'pairing':
+      return { label: 'connecting', tone: palette.orange }
+    case 'parked':
+      return { label: 'waiting for network', tone: palette.orange }
     case 'error':
-      return 'connection problem'
+      return { label: 'connection problem', tone: palette.red }
     default:
-      return 'offline'
+      return { label: 'offline', tone: palette.muted }
   }
+}
+
+/* ── local primitives ────────────────────────────────────────────────── */
+
+/**
+ * The width sums the kit's `DataGrid` counts in characters, written out in
+ * dp for the one decision it does not make: whether a value fits beside its
+ * label at all. Content inside a card is 360 − 32 − 28 = 300dp; a 12sp
+ * monospace label is about 7.2dp a character and a 14sp value about 8.4.
+ */
+const CONTENT_DP = 300
+const LABEL_DP = 7.2
+const VALUE_DP = 8.4
+
+/**
+ * A key–value row whose value is never cut. When it fits beside its label it
+ * is a `Row`; when it does not — a Tailscale FQDN, a recording path — the
+ * label takes one line and the value the next, wrapping once if it must.
+ */
+function FitRow({ label, value, tone, style }: { label: string; value: string; tone?: string; style?: React.ComponentProps<typeof View>['style'] }) {
+  if (label.length * LABEL_DP + space.md + value.length * VALUE_DP <= CONTENT_DP) {
+    return <Row label={label} value={value} tone={tone} style={style} />
+  }
+  return (
+    <View style={[{ paddingVertical: space.xs }, style]}>
+      <Label>{label}</Label>
+      <Value tone={tone} numberOfLines={2}>
+        {value}
+      </Value>
+    </View>
+  )
+}
+
+/** A spinner with a word beside it, for a card whose content has not arrived yet. */
+function Busy({ label }: { label: string }) {
+  const p = usePalette()
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, minHeight: 32, marginTop: space.xs }}>
+      <ActivityIndicator size="small" color={p.light_foreground} />
+      <Label>{label}</Label>
+    </View>
+  )
+}
+
+/** One line of why, and under it the one button that changes it. */
+function Action({ hint, children }: { hint: string; children: React.ReactNode }) {
+  return (
+    <View style={{ marginTop: space.sm }}>
+      <Hint>{hint}</Hint>
+      <View style={{ flexDirection: 'row', marginTop: space.xs }}>{children}</View>
+    </View>
+  )
+}
+
+/** A shell command to be run elsewhere: selectable, wrapping, in a box. */
+function Command({ text }: { text: string }) {
+  const p = usePalette()
+  return (
+    <View style={{ backgroundColor: p.darker_background, borderRadius: radius.sm, paddingHorizontal: space.md, paddingVertical: space.sm }}>
+      <Body selectable tone={p.bright_foreground} style={{ fontFamily: font.medium, fontSize: size.label }}>
+        {text}
+      </Body>
+    </View>
+  )
+}
+
+type PermissionState = 'granted' | 'ask' | 'denied' | 'asking'
+
+/** The state of one Android permission, as a word in a pill. */
+function PermissionPill({ state }: { state: PermissionState }) {
+  const p = usePalette()
+  const tone = state === 'granted' ? p.green : state === 'denied' ? p.orange : p.light_foreground
+  return <Pill label={state === 'asking' ? 'asking…' : state} tone={tone} icon={state === 'granted' ? 'check' : undefined} />
 }
