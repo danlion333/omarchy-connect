@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
-import { buildFrame, RATE, CHUNK_MS } from '../src/lib/mic.js'
+import { amplify, buildFrame, RATE, CHUNK_MS } from '../src/lib/mic.js'
 import { SOURCE_NAME, SOURCE_DESCRIPTION } from '../src/lib/pipesource.js'
 
 const PORT = Number(process.env.PORT || 8823)
@@ -244,13 +244,24 @@ check('turning it on also asks the handset to speak', input?.streaming === true,
 
 /* ── the sound comes out of the other end ──────────────────────────────── */
 
+// A gain of two, chosen here rather than left at the default, so that what
+// comes out of the pipe is a number this file computed rather than a number
+// this file copied from the daemon's own constant.
+const louder = await mic({ op: 'gain', value: 2 })
+check('the desktop can be told how loud the phone is', louder.body?.audio?.gain === 2, JSON.stringify(louder.body?.audio))
+
 const spoken = phone.speak(20) // two seconds
 await wait(600)
 const heard = fs.readFileSync(capture)
 check(
-  'every sample the phone spoke came out of the pipe unchanged',
-  heard.length >= spoken.length && heard.subarray(0, spoken.length).equals(spoken),
+  'every sample the phone spoke came out of the pipe, sample for sample, with the desktop gain on it',
+  heard.length >= spoken.length && heard.subarray(0, spoken.length).equals(amplify(spoken, 2)),
   `${heard.length} bytes out for ${spoken.length} in`,
+)
+check(
+  'and the source itself is still the format it was declared as — the gain is on the samples, not on the device',
+  /format=s16le/.test(modules()[0]) && /rate=16000/.test(modules()[0]) && /channels=1/.test(modules()[0]),
+  modules()[0],
 )
 
 /* ── on top of itself ──────────────────────────────────────────────────── */

@@ -350,7 +350,7 @@ false on a desktop without `voxtype` or `ffmpeg`.
 | --- | --- | --- |
 | `audio.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its microphone. |
 | `audio.stopped` | `{ stream, error }` | `{ ok, path, bytes, seconds, dropped, gaps }` — the phone saying it has stopped. |
-| `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps, input }`. |
+| `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps, gain, input }`. |
 | `audio.offer` | `{ op }` | `start`, `stop` or `status`. The phone offering its own microphone instead of waiting to be asked. Answers with `audio.status`'s shape plus the `path` the desktop opened, once the handset is actually recording. Refused on a `remote` socket. |
 | `audio.input` | `{ op }` | `on`, `off` or `status`. Offers the phone as an input the whole desktop can see, and answers with `{ available, name, description, enabled, … }`. Refused on a `remote` socket. See **The phone as a desktop input**. |
 
@@ -1465,7 +1465,7 @@ deliberately open.
 | `POST /api/call` | `{ op, id?, number?, value? }` | `op` is `answer`, `reject`, `hangup`, `dial`, `tones` or `audio`; `connect` and `disconnect` are the link itself, `bond` is the pairing underneath it (`value: "stop"` shuts the window), and `auto`, `handset` and `ringtone` take a `value`. Answers `{ ok, via }`. |
 | `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
 | `POST /api/locate` | `{ op, seconds? }` | `op` is `start` or `stop`. Rings the paired phone until somebody finds it. Answers `{ ok, locate }`. |
-| `POST /api/mic` | `{ op, value? }` | `op` is `status`, `start`, `stop` or `input`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. `input` takes `value: "on" | "off" | "status"` and switches the PipeWire source every other app can pick. Answers `{ ok, audio }`. |
+| `POST /api/mic` | `{ op, value? }` | `op` is `status`, `start`, `stop`, `input` or `gain`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. `input` takes `value: "on" | "off" | "status"` and switches the PipeWire source every other app can pick. `gain` takes a number and is how loud the phone is here — see **How loud it is**. Answers `{ ok, audio }`. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
@@ -1527,7 +1527,7 @@ cleared when the daemon stops, because with nothing watching they are not
 stale, they are unknown.
 
 The `audio` block is the microphone, in the same two halves the CLI has:
-`{ streaming, stream, since, path, bytes, seconds, dropped, input }`, where
+`{ streaming, stream, since, path, bytes, seconds, dropped, gain, input }`, where
 `input` is `{ available, name, description, enabled, … }`. `streaming` is the
 handset speaking right now; `input.enabled` is whether this desktop is offering
 that sound as a PipeWire source every program can pick. Either can be true
@@ -1535,7 +1535,10 @@ without the other. `input.available` is `false` on a desktop with no
 pipewire-pulse **and** with the daemon stopped — it is a `pactl info` only a
 running daemon makes — and the panel draws no switch for a thing nothing could
 carry out, keeping it only while a source is loaded so it can be turned back
-off. The snapshot is republished the moment any of this moves, so a microphone
+off. `gain` is how much louder this desktop makes what the handset sends —
+see **How loud it is** — and it is in the snapshot whether or not anything is
+streaming, because it is the setting rather than the session.
+The snapshot is republished the moment any of this moves, so a microphone
 that has been left on is never a state the desktop keeps to itself. The WAV
 path is in here for the same reason the address is: this file is `0600` in the
 user's own state directory, and it already carries the daemon's local secret.
@@ -1728,6 +1731,41 @@ the daemon stopping, or the 30-minute ceiling: the file is finished and its
 header patched in every case, and the phone gives the microphone back — a
 socket that is no longer connected is a microphone with nowhere to send to.
 A reconnect starts a fresh stream with a fresh number.
+
+### How loud it is
+
+The handset opens `VOICE_RECOGNITION` and deliberately leaves Android's
+`AutomaticGainControl` off: a gain that rides over pauses is what turns a
+transcription into invented words and a listener into somebody hearing a room
+breathe. The price is the level. On the phone this was measured on, ordinary
+speech at arm's length peaks near -15 dBFS and sits near -33 dBFS — audible,
+and far too quiet for a call.
+
+So the desktop multiplies, in `plugins/audio.js`'s `feed`, **before** the WAV
+and before anything listening live, so a recording and a program's input picker
+can never be at two different volumes:
+
+```
+omarchy-connect mic gain 6        # and `mic gain` alone to read it
+```
+
+The number lives in the config as `audio.gain` and defaults to **4** (+12 dB),
+which puts that same speech near -3 dBFS at the peaks. `1` is the phone
+untouched, the behaviour before this existed; `16` is the ceiling, past which
+every room is a wall of hiss. Anything else is refused with a sentence rather
+than clamped silently.
+
+It is a **constant multiply and not a compressor**, which is the whole point:
+the ratio between speech and the noise floor comes out exactly as the
+microphone left it, and nothing swells during a pause. A sample that would
+overflow saturates at ±32767 rather than wrapping, because a wrapped int16
+turns one loud syllable into a click louder than the syllable. The source's own
+format is untouched — still `s16le`/16000/1 — since the gain is on the samples
+and not on the device.
+
+A new gain applies to a stream that is **already running**, not only to the
+next one. Nobody picks this number from a table: they pick it by listening to
+the input in the program that was too quiet.
 
 ### The phone as a desktop input
 
