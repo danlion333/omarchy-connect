@@ -56,14 +56,40 @@ export const font = {
   bold: 'JetBrainsMono_700Bold',
 }
 
+/**
+ * The type scale, in sp.
+ *
+ * JetBrains Mono is the brand and it stays, but a monospace face is wide: at
+ * 15sp a character is 9dp, so a 360dp phone with 16dp of screen padding and
+ * 14dp of card padding has room for 33 of them on a line — before a label.
+ * The old scale (20sp titles, 15sp values, 14sp body) was set for a laptop
+ * bar and produced "192.1…" on every second row. Everything here is one or
+ * two steps smaller, and every `Text` in the kit caps the OS font multiplier
+ * at 1.2 so an accessibility setting cannot push a value off its row either.
+ *
+ * `line` is the matching line height: mono needs air above and below or
+ * a paragraph reads as a code listing.
+ */
 export const size = {
   micro: 10,
   label: 12,
-  body: 14,
-  value: 15,
-  title: 20,
+  body: 13,
+  value: 14,
+  title: 16,
+  hero: 28,
+}
+
+export const line = {
+  micro: 14,
+  label: 17,
+  body: 20,
+  value: 20,
+  title: 22,
   hero: 34,
 }
+
+/** The largest OS font scale the layout is allowed to follow. */
+export const MAX_FONT_SCALE = 1.2
 
 export const space = {
   xs: 4,
@@ -74,7 +100,10 @@ export const space = {
   xxl: 32,
 }
 
-export const radius = { sm: 6, md: 10, lg: 14 }
+export const radius = { sm: 8, md: 12, lg: 16 }
+
+/** The one tap target size. Buttons, chips, icon buttons and list rows sit on it. */
+export const touch = 44
 
 /** Blends a colour toward black — used for pressed states and meter tracks. */
 export function shade(hex: string, amount: number): string {

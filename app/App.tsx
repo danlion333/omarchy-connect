@@ -193,14 +193,20 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
         // that is costing someone time right now.
         const count = entry.key === 'agents' ? agentsWaiting : 0
         const badge = count > 0
+        // Inactive tabs read in `light_foreground`, not `muted`: the muted grey
+        // on the bar's own background is under 3:1 and the labels vanished.
+        const idle = palette.light_foreground
         return (
           <Pressable
             key={entry.key}
             onPress={() => onChange(entry.key)}
-            style={{ flex: 1, alignItems: 'center', paddingVertical: space.xs, gap: 3 }}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={entry.label}
+            style={{ flex: 1, alignItems: 'center', paddingVertical: space.xs, gap: 3, minHeight: 48 }}
           >
             <View>
-              <Feather name={entry.icon} size={19} color={active ? palette.bright_foreground : palette.muted} />
+              <Feather name={entry.icon} size={20} color={active ? palette.bright_foreground : idle} />
               {badge ? (
                 <View
                   style={{
@@ -223,8 +229,10 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
               ) : null}
             </View>
             <Text
+              maxFontSizeMultiplier={1.2}
+              numberOfLines={1}
               style={{
-                color: active ? palette.foreground : palette.muted,
+                color: active ? palette.bright_foreground : idle,
                 fontFamily: active ? font.medium : font.regular,
                 fontSize: size.micro,
                 letterSpacing: 0.6,
