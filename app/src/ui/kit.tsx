@@ -438,7 +438,7 @@ export function StatusDot({ tone, pulse, size: dot = 7 }: { tone: string; pulse?
 }
 
 /** A small filled word: a state ("waiting"), a kind ("apk"), a count. */
-export function Pill({ label, tone, icon }: { label: string; tone?: string; icon?: IconName }) {
+export function Pill({ label, tone, icon, caps = true }: { label: string; tone?: string; icon?: IconName; /** `false` for a value with a unit — "22 ms" should not read "22 MS". */ caps?: boolean }) {
   const p = usePalette()
   const colour = tone ?? p.light_foreground
   return (
@@ -454,7 +454,17 @@ export function Pill({ label, tone, icon }: { label: string; tone?: string; icon
       }}
     >
       {icon ? <Feather name={icon} size={11} color={colour} /> : null}
-      <Mono numberOfLines={1} style={{ color: colour, fontFamily: font.medium, fontSize: size.micro, lineHeight: line.micro, letterSpacing: 0.8, textTransform: 'uppercase' }}>
+      <Mono
+        numberOfLines={1}
+        style={{
+          color: colour,
+          fontFamily: font.medium,
+          fontSize: caps ? size.micro : size.label,
+          lineHeight: caps ? line.micro : line.label,
+          letterSpacing: caps ? 0.8 : 0,
+          textTransform: caps ? 'uppercase' : 'none',
+        }}
+      >
         {label}
       </Mono>
     </View>
@@ -548,6 +558,7 @@ export function IconButton({
   disabled,
   loading,
   label,
+  active,
   size: box = 36,
   style,
 }: {
@@ -559,6 +570,8 @@ export function IconButton({
   loading?: boolean
   /** What a screen reader says. */
   label: string
+  /** A toggled-on state — mute while muted — drawn in `tone` with a tinted fill. */
+  active?: boolean
   size?: number
   style?: StyleProp<ViewStyle>
 }) {
@@ -572,14 +585,15 @@ export function IconButton({
       hitSlop={6}
       accessibilityRole="button"
       accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled || !!loading, selected: !!active }}
       style={({ pressed }) => [
         {
           width: box,
           height: box,
           borderRadius: radius.sm,
           borderWidth: StyleSheet.hairlineWidth * 2,
-          borderColor: p.lighter_background,
-          backgroundColor: pressed ? p.selection : p.darker_background,
+          borderColor: active ? alpha(colour, 0.6) : p.lighter_background,
+          backgroundColor: active ? alpha(colour, pressed ? 0.3 : 0.18) : pressed ? p.selection : p.darker_background,
           alignItems: 'center',
           justifyContent: 'center',
           opacity: disabled ? 0.4 : 1,
@@ -996,6 +1010,7 @@ export function ListRow({
   tone,
   chevron,
   last,
+  lines = 1,
 }: {
   title: string
   subtitle?: string | null
@@ -1008,6 +1023,8 @@ export function ListRow({
   chevron?: boolean
   /** The last row of a list draws no rule under it. */
   last?: boolean
+  /** How many lines the title may take — 2 for titles somebody else wrote (window titles, session names). */
+  lines?: 1 | 2
 }) {
   const p = usePalette()
   return (
@@ -1028,7 +1045,7 @@ export function ListRow({
     >
       {left ? <View style={{ marginRight: space.md }}>{left}</View> : null}
       <View style={{ flex: 1, marginRight: space.md, minWidth: 0 }}>
-        <Mono style={{ color: tone ?? p.bright_foreground, fontFamily: font.regular, fontSize: size.value, lineHeight: line.value }} numberOfLines={1}>
+        <Mono style={{ color: tone ?? p.bright_foreground, fontFamily: font.regular, fontSize: size.value, lineHeight: line.value }} numberOfLines={lines}>
           {title}
         </Mono>
         {subtitle ? (
