@@ -43,6 +43,41 @@ import { log } from './log.js'
  * `EAGAIN`, and `EAGAIN` means the chunk is dropped and counted. Live sound
  * that nothing is listening to is worth nothing; the daemon is worth a lot.
  *
+ * ## What is in the pipe is a delay, not a reserve
+ *
+ * `EAGAIN` keeps the daemon alive and it keeps the *wrong two seconds*. The
+ * module does not read the pipe while no program has the source selected, so
+ * the first twenty chunks after the switch is flipped sit there, and the ones
+ * after that are refused. When somebody finally presses record, PipeWire drains
+ * that backlog and hands out what it finds: sound from before they were
+ * listening, in front of everything said since. Measured here against
+ * pipewire-pulse 1.6.8 — switch on, wait ten seconds, `parec` — half a second
+ * of ten-second-old audio came out before the first live syllable, and it never
+ * caught up, because a pipe read at real time never gives back the head start.
+ *
+ * So the pipe is emptied rather than left full. Once a write is refused, this
+ * class knows there is no reader keeping up, and from then on it takes back
+ * whatever nobody has collected — a second read end on the FIFO, opened for the
+ * length of one `read` loop and closed again — immediately before writing the
+ * chunk it has. The pipe then holds one chunk, a tenth of a second, and that is
+ * the whole of what stands in front of the next program to press record.
+ * `lib/mic.js` reaches the same conclusion for the recording buffer in the same
+ * words: what nobody has heard yet is worth more than what was said eight
+ * seconds ago.
+ *
+ * It stops taking bytes back the moment a reader appears: a flush that comes up
+ * with less than a chunk means the far end collected what was written a tenth
+ * of a second ago, which nothing but a running reader does. The read end is
+ * opened only for the flush and never held, so a module somebody unloaded by
+ * hand still shows up as `EPIPE` on the next write rather than being masked by
+ * this class reading its own bytes forever.
+ *
+ * What is left after that is not ours. PipeWire keeps roughly half a second of
+ * its own on the source node and replays it when a reader starts — verified on
+ * this machine with the FIFO empty and no writer running at all, and unmoved by
+ * `pactl suspend-source`. Getting rid of that means not being a `pipe-source`,
+ * which is a different road than this one.
+ *
  * The same reasoning runs the other way when the phone goes quiet. A source
  * whose pipe has no new bytes reads as **silence**, not as an error and not as
  * garbage — verified on this machine with `parec` — so a handset that drops
@@ -172,6 +207,8 @@ export class PipeSource {
     this.fd = null
     this.bytes = 0
     this.dropped = 0
+    this.flushed = 0
+    this.stalled = false
     this.startedAt = null
   }
 
@@ -233,6 +270,8 @@ export class PipeSource {
     }
     this.bytes = 0
     this.dropped = 0
+    this.flushed = 0
+    this.stalled = false
     this.startedAt = Date.now()
     log.ok(`the phone is now an input on this desktop — "${this.description}" in any picker`)
     return this.summary()
@@ -261,24 +300,49 @@ export class PipeSource {
   /**
    * One chunk of PCM towards the source. Never throws, never blocks.
    *
-   * A short write is treated as a full pipe rather than retried in a loop: the
-   * only reason the kernel takes less than a chunk is that there is no room
-   * for the rest, and looping there is the blocking write this file exists to
-   * avoid, spelled differently.
+   * The first write is the ordinary case and costs one syscall. A refusal is
+   * the interesting one: it says that whatever is in the pipe is not on its way
+   * to anybody, so the pipe is emptied and the chunk in hand goes in on its
+   * own. From then on every chunk is preceded by that same emptying, until a
+   * flush comes up nearly dry — which only a reader that is keeping up can
+   * cause — and the ordinary case resumes.
    */
   write(pcm) {
     if (this.fd === null) return false
+
+    // Stalled: what is in there is older than what is in hand, and a reader
+    // that arrives in the next tenth of a second should hear the new thing.
+    if (this.stalled && this.flush() < pcm.length) this.stalled = false
+
+    let outcome = this.push(pcm)
+    if (outcome === 'full') {
+      if (!this.stalled) log.debug('nothing is reading the phone microphone source; the pipe is being kept short')
+      this.stalled = true
+      this.flush()
+      outcome = this.push(pcm)
+    }
+    return outcome === true
+  }
+
+  /**
+   * One `write(2)` at the pipe. `'full'` means there was no room for the whole
+   * chunk — either `EAGAIN` or a short write, which are the same fact told two
+   * ways, and neither is retried in a loop here: looping is the blocking write
+   * this file exists to avoid, spelled differently.
+   */
+  push(pcm) {
     try {
       const wrote = fs.writeSync(this.fd, pcm)
       this.bytes += wrote
-      if (wrote < pcm.length) this.dropped += pcm.length - wrote
-      return wrote === pcm.length
+      if (wrote === pcm.length) return true
+      this.dropped += pcm.length - wrote
+      return 'full'
     } catch (err) {
       if (err.code === 'EAGAIN') {
         // Nobody is reading, or whoever is has fallen behind. Sound with no
         // listener; say nothing, keep the count.
         this.dropped += pcm.length
-        return false
+        return 'full'
       }
       if (err.code === 'EPIPE') {
         // The module went away underneath us — somebody unloaded it by hand.
@@ -290,6 +354,53 @@ export class PipeSource {
       this.dropped += pcm.length
       return false
     }
+  }
+
+  /**
+   * Take back everything nobody has collected, and say how many bytes that was.
+   *
+   * A second read end on the same FIFO, opened for this loop and closed before
+   * the caller writes anything: held open it would make this class a reader in
+   * its own right, and a module that had been unloaded would never be noticed,
+   * because the write that should have raised `EPIPE` would land in our own
+   * hands instead.
+   *
+   * Every byte taken back is counted as dropped, because that is what it is —
+   * sound that reached this desktop and no program on it. Nothing here throws:
+   * a pipe that has gone (the module unloaded a moment ago) is the next write's
+   * problem to report, not this one's.
+   */
+  flush() {
+    let gone = 0
+    let rfd = null
+    try {
+      rfd = fs.openSync(this.file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK)
+      const bin = Buffer.allocUnsafe(65536)
+      for (;;) {
+        let read = 0
+        try {
+          read = fs.readSync(rfd, bin, 0, bin.length, null)
+        } catch (err) {
+          if (err.code === 'EAGAIN') break
+          throw err
+        }
+        if (read <= 0) break
+        gone += read
+      }
+    } catch (err) {
+      log.debug('could not empty the microphone pipe:', err.message)
+    } finally {
+      if (rfd !== null) {
+        try {
+          fs.closeSync(rfd)
+        } catch {
+          /* nothing left to close */
+        }
+      }
+    }
+    this.dropped += gone
+    this.flushed += gone
+    return gone
   }
 
   /**
@@ -323,6 +434,7 @@ export class PipeSource {
       /* gone already */
     }
     this.startedAt = null
+    this.stalled = false
     return { ...was, enabled: false }
   }
 
@@ -341,6 +453,8 @@ export class PipeSource {
             channels: CHANNELS,
             bytes: this.bytes,
             dropped: this.dropped,
+            flushed: this.flushed,
+            stalled: this.stalled,
           }
         : {}),
     }

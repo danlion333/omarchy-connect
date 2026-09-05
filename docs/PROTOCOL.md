@@ -1767,6 +1767,31 @@ default input is never changed: appearing in the list is the feature, and
 becoming a machine's microphone without being asked is not — the same rule the
 hands-free gateway follows.
 
+**And nothing waits in the pipe.** `module-pipe-source` does not read while no
+program has the source selected, so what is written meanwhile would simply sit
+there — and a pipe is read at real time, which makes anything standing in it a
+delay for the whole of the session that follows, not a reserve of sound
+somebody wanted. Measured against pipewire-pulse 1.6.8: switch on, wait ten
+seconds, then `parec`, and half a second of ten-second-old audio came out
+before the first live syllable. So the first refused write is taken as proof
+that nobody is collecting, and from then on the daemon takes back whatever is
+still in the pipe immediately before writing the chunk it has — a second read
+end on the FIFO, opened for that read and closed again, so an unloaded module
+still shows up as `EPIPE`. The pipe holds one chunk, and a program that presses
+record ten minutes after the switch was flipped starts on what is being said
+now. It stops taking bytes back as soon as a flush comes up with less than a
+chunk, which only a reader that is keeping up can cause. Everything taken back
+is counted in `dropped`, with the flushed part reported separately as `flushed`
+beside a `stalled` flag, so `omarchy-connect mic input status` says both how
+much sound reached no program and whether anything is listening at all.
+
+What is left after that belongs to PipeWire: the source node keeps roughly half
+a second of its own and replays it when a reader starts — verified with the
+FIFO empty and no writer running, and unmoved by `pactl suspend-source`. It is
+a fixed cost rather than a growing one: it does not get worse the longer the
+switch is on, and a reader that stops for ten seconds and starts again meets
+the same half second it met the first time.
+
 **The module never outlives the daemon.** It is global state in someone else's
 process, so it is unloaded synchronously on `SIGTERM`, and any
 `module-pipe-source` still carrying this source's name is reaped on the way up
