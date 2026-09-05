@@ -2,7 +2,20 @@ import crypto from 'node:crypto'
 
 import { loadConfig, updateConfig } from '../lib/config.js'
 import { log } from '../lib/log.js'
-import { CHUNK_MS, CHANNELS, MAX_GAIN, MAX_SECONDS, RATE, Recorder, amplify, parseFrame, pathFor, readGain } from '../lib/mic.js'
+import {
+  CHUNK_MS,
+  CHANNELS,
+  Leveller,
+  MAX_GAIN,
+  MAX_SECONDS,
+  RATE,
+  Recorder,
+  amplify,
+  parseFrame,
+  pathFor,
+  readAuto,
+  readGain,
+} from '../lib/mic.js'
 import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable } from '../lib/pipesource.js'
 
 /**
@@ -106,12 +119,17 @@ const changed = () => bus?.emit('audio.state')
 
 export function summary() {
   const desktop = { input: inputSummary() }
-  if (!live) return { streaming: false, gain: currentGain(), ...desktop }
+  if (!live) return { streaming: false, gain: currentGain(), auto: currentAuto(), ...desktop }
   return {
     streaming: true,
     stream: live.stream,
     since: live.startedAt,
-    gain: live.gain,
+    // `gain` is always the number a person would get by turning the follower
+    // off right now: their own when they chose one, and otherwise wherever the
+    // follower has arrived. Rounded, because two decimals of a live gain is
+    // noise in a status line that redraws every second.
+    gain: live.auto ? Math.round(live.leveller.gain * 10) / 10 : live.gain,
+    auto: live.auto,
     ...live.recorder.summary(),
     ...desktop,
   }
@@ -168,17 +186,51 @@ export function setInput(on) {
  * game of stop and start.
  */
 export function currentGain() {
-  return live ? live.gain : readGain(loadConfig().audio?.gain)
+  if (live) return live.auto ? live.leveller.gain : live.gain
+  return readGain(loadConfig().audio?.gain)
 }
 
+/** Is the follower in charge, on a running stream or on the next one? */
+export function currentAuto() {
+  return live ? live.auto : readAuto(loadConfig().audio?.auto)
+}
+
+/**
+ * Take the knob, or give it back.
+ *
+ * A number is a person saying they would rather have a constant than a
+ * follower — nobody types `mic gain 6` while something is already choosing
+ * for them — so a number turns the follower off as well as setting the
+ * number. `auto` is how they hand it back, and the number they had chosen is
+ * left in the config so that handing it over and taking it again is not a
+ * choice they have to make twice.
+ */
 export function setGain(value) {
+  if (value === 'auto' || value === true) {
+    updateConfig((cfg) => {
+      cfg.audio = { ...(cfg.audio || {}), auto: true }
+    })
+    if (live) {
+      live.auto = true
+      // From where the constant left off, not from one: the level the person
+      // was hearing a moment ago is the least surprising place to start
+      // following from.
+      live.leveller = new Leveller({ gain: live.gain })
+    }
+    log.info("the phone's microphone follows the room again on this desktop")
+    changed()
+    return currentGain()
+  }
   const asked = Number(value)
   if (!Number.isFinite(asked) || asked <= 0) throw new Error('the microphone gain is a number greater than zero')
   if (asked > MAX_GAIN) throw new Error(`the microphone gain tops out at ${MAX_GAIN}`)
   updateConfig((cfg) => {
-    cfg.audio = { ...(cfg.audio || {}), gain: asked }
+    cfg.audio = { ...(cfg.audio || {}), gain: asked, auto: false }
   })
-  if (live) live.gain = asked
+  if (live) {
+    live.gain = asked
+    live.auto = false
+  }
   log.info(`the phone's microphone is now ${asked}x on this desktop`)
   changed()
   return currentGain()
@@ -326,8 +378,9 @@ export function feed(session, frame) {
   // Loud once, for everybody. The WAV and the PipeWire source are two readers
   // of the same bytes, and a desktop where the recording and the input in
   // Zoom's list disagreed about the level would be a bug nobody could hear
-  // their way out of.
-  const pcm = amplify(chunk.pcm, live.gain)
+  // their way out of. That is also why the follower lives on this line and not
+  // in `pipesource.js`: one gain, chosen once, ahead of every consumer.
+  const pcm = live.auto ? live.leveller.push(chunk.pcm) : amplify(chunk.pcm, live.gain)
   live.recorder.push(pcm, chunk.seq)
   for (const listener of listeners) {
     try {
@@ -435,6 +488,11 @@ export default {
         // times a second. `setGain` moves it under a running stream on
         // purpose, because the only way to pick this number is to hear it.
         gain: readGain(loadConfig().audio?.gain),
+        auto: readAuto(loadConfig().audio?.auto),
+        // One follower per stream. A reconnect is a new room as far as this is
+        // concerned, and starting it at the saved constant means the first
+        // second of a fresh stream is no quieter than #41 already made it.
+        leveller: new Leveller({ gain: readGain(loadConfig().audio?.gain) }),
         recorder: new Recorder({ file }),
         // The half hour is a backstop rather than a feature: something that
         // asked for a microphone and then crashed must not leave a handset

@@ -35,6 +35,7 @@ const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-audio-'))
 const local = () => localHeaders(path.join(sandbox, 'state'))
 const audioDir = path.join(sandbox, '.cache', 'omarchy-connect', 'audio')
+const configFile = path.join(sandbox, 'omarchy-connect', 'config.json')
 
 quietBluetooth(sandbox, { port: PORT, deviceName: 'audio-test', devices: [] })
 
@@ -252,8 +253,15 @@ check('stopping when nothing is streaming is refused rather than pretended', idl
 // number reaches the bytes on the way in — before the WAV and before anything
 // listening live — so that a recording and a program's input picker cannot
 // end up at two different volumes.
+const untouched = await mic('status')
+check('a desktop nobody has touched follows the room rather than pinning a number', untouched.body?.audio?.auto === true, JSON.stringify(untouched.body?.audio))
+
 const turnedUp = await mic('gain', 3)
 check('the desktop takes a new gain and answers with it', turnedUp.body?.audio?.gain === 3, JSON.stringify(turnedUp.body?.audio))
+// Typing a number is how somebody says they would rather be in charge than be
+// followed, so it is also how the follower is turned off. Anything else and
+// the number they chose would be quietly overridden a second later.
+check('and asking for a number takes the knob off the follower', turnedUp.body?.audio?.auto === false, JSON.stringify(turnedUp.body?.audio))
 check('a gain of zero is refused rather than muting the phone', (await mic('gain', 0)).status === 400)
 const tooLoud = await mic('gain', 999)
 check('and one past the ceiling is refused with a sentence', /tops out/.test(tooLoud.body?.error || ''), JSON.stringify(tooLoud.body))
@@ -272,8 +280,13 @@ check(
   [0, 2, 4, 6].map((i) => onDisk.readInt16LE(i)).join(','),
 )
 
+const followsAgain = await mic('gain', 'auto')
+check('and `auto` hands it back', followsAgain.body?.audio?.auto === true, JSON.stringify(followsAgain.body?.audio))
+check('which does not forget the number that was chosen', readGain(JSON.parse(fs.readFileSync(configFile, 'utf8')).audio?.gain) === 3, fs.readFileSync(configFile, 'utf8'))
+
 // Back to untouched samples for the rest of the suite, which counts bytes
-// rather than reads them and should not have to care.
+// rather than reads them and should not have to care — and pinned, because a
+// follower would move them.
 await mic('gain', 1)
 
 /* ── the phone offering, rather than being asked ───────────────────────── */

@@ -582,10 +582,11 @@ async function cmdLocate(args) {
  * default input is left exactly where it was — this appears in the list, it
  * does not take anybody's place.
  *
- * `mic gain 6` is the volume knob. The handset sends what its hardware heard
- * with no automatic gain on it, on purpose, and how loud that turns out to be
- * is a property of the phone and the room; the desktop multiplies on the way
- * in, ahead of both the recording and the input in Zoom's list. It takes
+ * `mic gain` is the volume knob, and by default nobody has to turn it: the
+ * handset sends what its hardware heard with no automatic gain on it, on
+ * purpose, and this desktop follows the level on the way in — ahead of both
+ * the recording and the input in Zoom's list. `mic gain 6` takes the knob
+ * back and pins it, and `mic gain auto` hands it over again. Either takes
  * effect on a stream that is already running, because the only way anybody
  * picks this number is by listening.
  */
@@ -601,7 +602,7 @@ async function cmdMic(args) {
         ? 'status'
         : null
   if (!op) {
-    log.error('usage: omarchy-connect mic <start|stop|status|gain N|input on|input off>')
+    log.error('usage: omarchy-connect mic <start|stop|status|gain N|gain auto|input on|input off>')
     process.exit(1)
   }
   const res = await daemonRequest('/api/mic', { method: 'POST', body: { op }, timeout: 30_000 })
@@ -619,8 +620,9 @@ async function cmdMic(args) {
   }
   const audio = res.data?.audio || {}
   if (op === 'status') {
-    if (!audio.streaming) return log.info(`the phone is not streaming its microphone (gain ${audio.gain}x)`)
-    return log.ok(`listening at ${audio.gain}x — ${audio.seconds}s so far into ${audio.path}`)
+    const how = audio.auto ? `following the room, ${audio.gain}x now` : `${audio.gain}x`
+    if (!audio.streaming) return log.info(`the phone is not streaming its microphone (${how})`)
+    return log.ok(`listening at ${how} — ${audio.seconds}s so far into ${audio.path}`)
   }
   if (op === 'start') {
     return log.ok(
@@ -635,15 +637,18 @@ async function cmdMic(args) {
 /**
  * How loud the phone is here.
  *
- * With no number it reports; with one it saves it and applies it. Printed as
- * decibels beside the multiplier because that is the unit anybody comparing
- * this with another microphone already thinks in.
+ * With no argument it reports; with a number it pins that number and stops
+ * following; with `auto` it follows again. Printed as decibels beside the
+ * multiplier because that is the unit anybody comparing this with another
+ * microphone already thinks in — and when the follower is in charge the
+ * number is where it happens to be standing, not a promise about tomorrow.
  */
 async function cmdMicGain(rest) {
   const [word] = rest
-  const body = word === undefined ? { op: 'status' } : { op: 'gain', value: Number(word) }
-  if (word !== undefined && !Number.isFinite(body.value)) {
-    log.error('usage: omarchy-connect mic gain [N]   — 1 is the phone untouched, 4 the default')
+  const auto = word === 'auto' || word === 'on'
+  const body = word === undefined ? { op: 'status' } : { op: 'gain', value: auto ? 'auto' : Number(word) }
+  if (word !== undefined && !auto && !Number.isFinite(body.value)) {
+    log.error('usage: omarchy-connect mic gain [N|auto]   — auto is the default, 1 is the phone untouched')
     process.exit(1)
   }
   const res = await daemonRequest('/api/mic', { method: 'POST', body, timeout: 10_000 })
@@ -657,7 +662,14 @@ async function cmdMicGain(rest) {
   }
   const gain = res.data?.audio?.gain ?? 1
   const dB = (20 * Math.log10(gain)).toFixed(1)
-  log.ok(`the phone's microphone is ${gain}x (+${dB} dB) on this desktop`)
+  const sign = dB < 0 ? '' : '+'
+  if (res.data?.audio?.auto) {
+    return log.ok(
+      `the phone's microphone follows the room on this desktop — ${gain}x (${sign}${dB} dB) at the moment\n` +
+        '  pin it with `omarchy-connect mic gain N`',
+    )
+  }
+  log.ok(`the phone's microphone is pinned at ${gain}x (${sign}${dB} dB) on this desktop`)
 }
 
 /**
@@ -2092,7 +2104,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('locate')} [stop]               ring the phone until somebody finds it
   ${bold('mic')} <start|stop|status>     stream the phone's microphone to this desktop
   ${bold('mic input')} <on|off|status>  offer the phone as an input every app can pick
-  ${bold('mic gain')} [N]                how much louder the desktop makes it
+  ${bold('mic gain')} [N|auto]           how much louder the desktop makes it
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('remote')} <status|on|off>      let the phone in from off this network

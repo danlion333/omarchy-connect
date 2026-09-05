@@ -144,22 +144,27 @@ export function parseFrame(frame) {
 }
 
 /**
- * How much louder the desktop makes what the phone sends, by default.
+ * How much louder the desktop makes what the phone sends, when a person has
+ * taken the knob into their own hands.
  *
  * The phone opens `VOICE_RECOGNITION` and deliberately leaves Android's
- * automatic gain off, because a gain that rides over pauses is exactly what
- * ruins a transcription. The price of that honesty is the level: on the
- * handset this was measured on, ordinary speech at arm's length peaks around
- * -15 dBFS and sits near -33 dBFS, which is a recording you have to lean into
- * and a Zoom call where somebody asks you to speak up.
+ * automatic gain off. That is still the right choice — it is why this handset
+ * has a *lower* noise floor than the USB webcam it is being held against
+ * (measured on this desk with nobody speaking: phone -71 dBFS raw against the
+ * webcam's -51 dBFS) — and it is why every decibel this desktop adds is added
+ * to a clean signal rather than to hiss the phone already inflated.
  *
- * So the desktop multiplies. Four is +12 dB: it puts the same speech near
- * -3 dBFS at the peaks with the loudest measured sample still short of the
- * rail, and — because it is a constant and not a compressor — it moves the
- * noise floor by exactly as much as it moves the voice. That is the whole
- * reason a plain multiply was chosen over `AutomaticGainControl` on the phone:
- * the ratio between speech and silence is left exactly where the microphone
- * put it, and nothing swells during a pause.
+ * The price of that honesty is the level, and #41 tried to pay it with one
+ * number. Four is +12 dB, which is the right amount for exactly one loudness
+ * of speaking. Measured on the real link afterwards, in a single recording:
+ * ordinary speech sat near -19 dBFS while the loud moments already hit the
+ * rail — 114 samples pinned at ±32767. One multiplier cannot be both small
+ * enough for the shouting and large enough for the murmur, which is the whole
+ * reason `Leveller` below exists and is on by default.
+ *
+ * This number survives as the manual override: `omarchy-connect mic gain N`
+ * is a person saying they would rather have a constant than a follower, and a
+ * constant is what they then get.
  */
 export const DEFAULT_GAIN = 4
 
@@ -171,6 +176,18 @@ export function readGain(value) {
   const n = Number(value)
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_GAIN
   return Math.min(n, MAX_GAIN)
+}
+
+/**
+ * Whether the follower is in charge, out of the config.
+ *
+ * Absent means yes. A desktop upgraded from #41 has an `audio.gain` in its
+ * config and no `audio.auto` beside it, and that desktop is exactly the one
+ * this issue is about — it gets the follower, and keeps its number for the
+ * moment it asks for it back.
+ */
+export function readAuto(value) {
+  return value === undefined || value === null ? true : Boolean(value)
 }
 
 /**
@@ -194,6 +211,136 @@ export function amplify(pcm, gain = DEFAULT_GAIN) {
     out.writeInt16LE(scaled > 32767 ? 32767 : scaled < -32768 ? -32768 : scaled, i)
   }
   return out
+}
+
+/**
+ * Where the follower aims a syllable's peak, as a fraction of the rail.
+ *
+ * -8 dBFS. Not louder, because the follower reacts to the chunk it is holding
+ * and a consonant can be sharper than the vowel that announced it, so the
+ * headroom above this is what absorbs the surprise. Not quieter, because the
+ * point of the exercise is to land beside a webcam that puts the same speech
+ * around -23 dBFS on its loudest tenth of a second, and a peak here does that
+ * with room to spare.
+ */
+const TARGET_PEAK = 0.4 * 32767
+
+/**
+ * The rail the follower will not let a sample past, as a fraction of full
+ * scale. Below `TARGET_PEAK` there is nothing to do; above it the gain is cut
+ * on the spot rather than eased down, because eased-down is another word for
+ * clipped.
+ */
+const CEILING = 0.92 * 32767
+
+/**
+ * The quietest chunk that is allowed to *raise* the gain.
+ *
+ * Measured with nobody in the room, the handset's raw peaks sit under 60. A
+ * gate ten decibels above that is a gate that a breath crosses and a fridge
+ * does not, and holding the gain — rather than winding it up — through the
+ * silence is the whole of what stops a follower from turning every pause into
+ * a swell of hiss. It is also why the comment above `DEFAULT_GAIN` still
+ * stands: nothing here swells, it only stops chasing.
+ */
+const GATE_PEAK = 200
+
+/** The widest the follower will open. Past this the room is louder than the voice. */
+export const MAX_AUTO_GAIN = 24
+
+/** The narrowest. A phone held against a mouth needs less than one. */
+export const MIN_AUTO_GAIN = 0.5
+
+/** How fast the follower may open up, in decibels per second. */
+const RISE_DB_PER_S = 6
+
+/**
+ * A slow automatic gain, on the desktop, over the phone's untouched signal.
+ *
+ * ## Why here and not on the handset
+ *
+ * Android will hand out an `AutomaticGainControl` on the capture session, and
+ * that is the obvious place for this. It is the wrong place for three
+ * reasons. It rides *before* the noise floor is known, so it lifts hiss and
+ * voice together with no way to tell them apart; it is a different black box
+ * on every handset, which makes the desktop's level a property of somebody's
+ * silicon; and it cannot be turned off from here, so the manual override
+ * would stop meaning anything. Doing it on this side keeps the wire carrying
+ * what the microphone actually heard — which is also what a transcriber
+ * wants — and keeps the one knob a person can reach.
+ *
+ * ## What it does
+ *
+ * Per chunk: look at the loudest sample, work out the gain that would put it
+ * at `TARGET_PEAK`, and move towards that gain — but never faster than
+ * `RISE_DB_PER_S` upwards, and never at all upwards while the chunk is below
+ * `GATE_PEAK`. Downwards is different: when the gain already in hand would
+ * push this chunk past `CEILING`, it is cut to whatever keeps the chunk under
+ * the rail and it is cut *before* the chunk is written, not eased into over
+ * the next few. That asymmetry is the difference between a compressor and a
+ * limiter, and a microphone needs to be both: slow enough that a room does
+ * not breathe, fast enough that a laugh does not clip.
+ *
+ * Upward moves are interpolated across the chunk sample by sample so that a
+ * step in gain never lands as a step in the waveform. Downward moves are not,
+ * deliberately: the whole point of a cut is that it applies to the sample
+ * that provoked it.
+ *
+ * Stateful, and one per stream. `feed()` makes a fresh one for every stream so
+ * that a reconnect starts from the same place rather than inheriting a gain
+ * chosen for a conversation that has ended.
+ */
+export class Leveller {
+  constructor({ rate = RATE, gain = 1 } = {}) {
+    this.rate = rate
+    /** The gain in hand — what the previous chunk went out at. */
+    this.gain = gain
+  }
+
+  /** The most this gain may be multiplied by over one chunk of `samples`. */
+  #riseLimit(samples) {
+    return 10 ** ((RISE_DB_PER_S * (samples / this.rate)) / 20)
+  }
+
+  /**
+   * `pcm` levelled. Always a new buffer, for the same reason `amplify` makes
+   * one: what `parseFrame` hands over is a window onto the decrypted frame and
+   * more than one consumer reads it.
+   */
+  push(pcm) {
+    const usable = pcm.length - (pcm.length % BYTES_PER_SAMPLE)
+    const samples = usable / BYTES_PER_SAMPLE
+    if (samples === 0) return Buffer.alloc(0)
+
+    let peak = 0
+    for (let i = 0; i < usable; i += BYTES_PER_SAMPLE) {
+      const v = Math.abs(pcm.readInt16LE(i))
+      if (v > peak) peak = v
+    }
+
+    const from = this.gain
+    let to = from
+    if (peak > 0 && peak * from > CEILING) {
+      // The limiter. Applied flat across the whole chunk, including the
+      // samples before the loud one, because a ramp that arrives after the
+      // transient has arrived after the clipping too.
+      to = CEILING / peak
+    } else if (peak >= GATE_PEAK) {
+      const wanted = TARGET_PEAK / peak
+      to = wanted > from ? Math.min(wanted, from * this.#riseLimit(samples)) : wanted
+    }
+    to = Math.min(MAX_AUTO_GAIN, Math.max(MIN_AUTO_GAIN, to))
+    const flat = to < from
+
+    const out = Buffer.allocUnsafe(usable)
+    for (let i = 0, n = 0; i < usable; i += BYTES_PER_SAMPLE, n += 1) {
+      const g = flat ? to : from + ((to - from) * (n + 1)) / samples
+      const scaled = Math.round(pcm.readInt16LE(i) * g)
+      out.writeInt16LE(scaled > 32767 ? 32767 : scaled < -32768 ? -32768 : scaled, i)
+    }
+    this.gain = to
+    return out
+  }
 }
 
 /**
