@@ -768,7 +768,7 @@ export function ShareScreen({
             offers.length
               ? `${offers.length} new`
               : inbox.length
-                ? `${inbox.length} on the desktop`
+                ? '~/Downloads/Omarchy Connect'
                 : !connected
                   ? 'desktop offline'
                   : inboxLoaded
@@ -822,9 +822,6 @@ export function ShareScreen({
             {inbox.map((item, i) => (
               <FileRow key={item.name} title={item.name} subtitle={`${bytes(item.size)} · ${clock(item.at)}`} last={i === inbox.length - 1} />
             ))}
-            <Hint icon="folder" style={{ marginTop: space.md }}>
-              ~/Downloads/Omarchy Connect
-            </Hint>
           </>
         ) : null}
 

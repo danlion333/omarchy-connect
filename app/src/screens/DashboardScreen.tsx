@@ -276,7 +276,7 @@ export function DashboardScreen() {
 function linkStatus(palette: Palette, status: ConnectionStatus, hello: Hello | null) {
   switch (status) {
     case 'connected':
-      return { label: hello?.server.name ?? 'connected', tone: palette.green }
+      return { label: 'connected', tone: palette.green }
     case 'connecting':
     case 'pairing':
     case 'reconnecting':

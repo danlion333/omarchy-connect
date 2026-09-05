@@ -207,7 +207,8 @@ export function Screen({
 }
 
 /**
- * The line at the top of every tab: what this screen is, in caps, and up to
+ * The line at the top of every tab: what this screen is, as a bold title —
+ * caps at 10sp next to a 36dp button read as a footnote — and up to
  * two actions on the right. `status` is the small coloured word beside the
  * title — "connected", "offline" — and is the only place a tab says how the
  * link is doing.
@@ -223,13 +224,13 @@ export function ScreenHeader({
 }) {
   return (
     <View style={{ flexDirection: 'row', alignItems: 'center', minHeight: touch, marginBottom: space.sm }}>
-      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-        <Caps>{title}</Caps>
+      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'baseline', gap: space.md, minWidth: 0 }}>
+        <Title style={{ fontSize: size.title + 2, lineHeight: line.title + 2 }}>{title}</Title>
         {status ? (
-          <>
-            <StatusDot tone={status.tone} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs + 2, flexShrink: 1 }}>
+            <StatusDot tone={status.tone} size={6} />
             <Caps tone={status.tone}>{status.label}</Caps>
-          </>
+          </View>
         ) : null}
       </View>
       {right ? <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>{right}</View> : null}
