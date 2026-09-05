@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Linking, Pressable, ScrollView, StyleSheet, Text, View, type TextStyle } from 'react-native'
+import { Linking, Pressable, ScrollView, StyleSheet, View, type TextStyle } from 'react-native'
 import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 import * as Haptics from 'expo-haptics'
 
-import { alpha, font, radius, size, space, type Palette } from '../theme'
+import { font, line, radius, size, space, type Palette } from '../theme'
 import { usePalette } from '../state/ConnectionContext'
 import { parseMarkdown, type Align, type Block, type Span } from '../lib/markdown'
 import { sameMarkdown } from '../lib/transcript'
+import { Mono } from './kit'
 
 /**
  * What the agent wrote, drawn the way it was written.
@@ -18,10 +19,12 @@ import { sameMarkdown } from '../lib/transcript'
  * right edge in the same font as the prose around it. This is the other half —
  * the same text with its structure showing.
  *
- * The whole thing stays in the terminal's own type. This app is set in
- * JetBrains Mono end to end and a proportional heading in the middle of a
- * monospace transcript reads as a different app, so weight, colour and
- * indentation carry the hierarchy that a font change would carry elsewhere.
+ * The whole thing stays in the terminal's own type, at the kit's own sizes:
+ * prose is `Body`, a heading is `Value` or `Title` in medium weight, code is
+ * `Label`. This app is set in JetBrains Mono end to end and a proportional
+ * heading in the middle of a monospace transcript reads as a different app, so
+ * weight, colour and indentation carry the hierarchy that a font change would
+ * carry elsewhere.
  */
 function MarkdownView({ text, tone }: { text: string; tone?: string }) {
   const palette = usePalette()
@@ -42,6 +45,15 @@ function MarkdownView({ text, tone }: { text: string; tone?: string }) {
  * each of them is what a long chat pays for on every keystroke of the agent's.
  */
 export const Markdown = React.memo(MarkdownView, sameMarkdown)
+
+/**
+ * The width of one character of body type.
+ *
+ * JetBrains Mono advances six tenths of its size, so a gutter measured in
+ * characters lines up with the text beside it exactly — which is the whole
+ * point of a hanging indent in a monospace face.
+ */
+const CH = size.body * 0.6
 
 function Blocks({ blocks, palette, tone }: { blocks: Block[]; palette: Palette; tone?: string }) {
   return (
@@ -68,29 +80,30 @@ function BlockView({
     color: tone ?? palette.foreground,
     fontFamily: font.regular,
     fontSize: size.body,
-    lineHeight: 21,
+    lineHeight: line.body,
   }
 
   switch (block.kind) {
     case 'paragraph':
       return (
-        <Text selectable style={body}>
+        <Mono selectable style={body}>
           {render(block.spans, palette)}
-        </Text>
+        </Mono>
       )
 
     case 'heading': {
       // Three steps, not six: past the third level the difference stops being
       // legible at this size and the indentation of the content says more than
-      // another point of type would.
+      // another point of type would. Medium rather than bold, because bold is
+      // what a strong span is and a heading full of them must still read.
       const heading: TextStyle =
         block.level === 1
-          ? { fontFamily: font.bold, fontSize: size.value + 3, lineHeight: 24 }
+          ? { fontFamily: font.medium, fontSize: size.title, lineHeight: line.title }
           : block.level === 2
-            ? { fontFamily: font.bold, fontSize: size.value, lineHeight: 21 }
-            : { fontFamily: font.medium, fontSize: size.body, lineHeight: 20 }
+            ? { fontFamily: font.medium, fontSize: size.value, lineHeight: line.value }
+            : { fontFamily: font.medium, fontSize: size.body, lineHeight: line.body }
       return (
-        <Text
+        <Mono
           selectable
           style={[
             body,
@@ -100,7 +113,7 @@ function BlockView({
           ]}
         >
           {render(block.spans, palette)}
-        </Text>
+        </Mono>
       )
     }
 
@@ -147,9 +160,12 @@ function BlockView({
  * The marker sits in a fixed-width gutter rather than inline, so a wrapped
  * second line lands under the first word instead of under the bullet — which
  * on a screen this narrow is the difference between a list and a paragraph
- * with dots in it. Ordered lists number themselves from the number the agent
- * started at, because "3." in the middle of an answer usually means the third
- * step of something that began before this message.
+ * with dots in it. The gutter is two characters for a bullet and as many as
+ * the widest number needs for an ordered list, so every item's text starts on
+ * the same column as it would in the terminal. Ordered lists number themselves
+ * from the number the agent started at, because "3." in the middle of an
+ * answer usually means the third step of something that began before this
+ * message.
  */
 function ListView({
   block,
@@ -161,36 +177,33 @@ function ListView({
   tone?: string
 }) {
   const marker: TextStyle = {
-    color: palette.muted,
+    color: palette.light_foreground,
     fontFamily: font.regular,
     fontSize: size.body,
-    lineHeight: 21,
+    lineHeight: line.body,
   }
-  // Wide enough for the marker *and* the space after it. A checkbox is drawn
-  // rather than typed, so it has to be told to leave that space; a bullet
-  // sitting in the same column keeps the two kinds of item lined up.
-  const width = block.ordered ? 8 + String(block.start + block.items.length).length * 8 : 18
+  const width = Math.round((block.ordered ? String(block.start + block.items.length - 1).length + 2 : 2) * CH)
 
   return (
     <View style={{ gap: space.xs }}>
       {block.items.map((item, i) => (
         <View key={i} style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
           {item.checked === null ? (
-            <Text style={[marker, { width }]}>{block.ordered ? `${block.start + i}.` : '•'}</Text>
+            <Mono style={[marker, { width }]}>{block.ordered ? `${block.start + i}.` : '•'}</Mono>
           ) : (
-            <View style={{ width, paddingTop: 4, alignItems: 'flex-start' }}>
+            <View style={{ width, height: line.body, justifyContent: 'center', alignItems: 'flex-start' }}>
               <Feather
                 name={item.checked ? 'check-square' : 'square'}
                 size={12}
-                color={item.checked ? palette.green : palette.muted}
+                color={item.checked ? palette.green : palette.light_foreground}
               />
             </View>
           )}
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, minWidth: 0 }}>
             <Blocks
               blocks={item.blocks}
               palette={palette}
-              tone={item.checked ? palette.muted : tone}
+              tone={item.checked ? palette.light_foreground : tone}
             />
           </View>
         </View>
@@ -243,44 +256,63 @@ function CodeBlock({ lang, text, palette }: { lang: string; text: string; palett
         style={{
           flexDirection: 'row',
           alignItems: 'center',
-          paddingHorizontal: space.sm,
-          paddingVertical: space.xs,
+          paddingLeft: space.md,
+          paddingRight: space.xs,
+          minHeight: 32,
           backgroundColor: palette.dark_background,
         }}
       >
-        <Text
+        <Mono
           style={{
             flex: 1,
             color: palette.muted,
-            fontFamily: font.regular,
+            fontFamily: font.medium,
             fontSize: size.micro,
-            letterSpacing: 1,
+            lineHeight: line.micro,
+            letterSpacing: 1.2,
+            textTransform: 'uppercase',
           }}
           numberOfLines={1}
         >
           {lang || 'code'}
-        </Text>
-        <Pressable onPress={copy} hitSlop={10} style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}>
-          <Feather name={copied ? 'check' : 'copy'} size={12} color={copied ? palette.green : palette.muted} />
+        </Mono>
+        <Pressable
+          onPress={copy}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel={copied ? 'Copied' : 'Copy the code'}
+          style={({ pressed }) => ({
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: space.xs,
+            minHeight: 28,
+            paddingHorizontal: space.sm,
+            borderRadius: radius.sm,
+            backgroundColor: pressed ? palette.selection : 'transparent',
+          })}
+        >
+          <Feather name={copied ? 'check' : 'copy'} size={13} color={copied ? palette.green : palette.light_foreground} />
           {copied ? (
-            <Text style={{ color: palette.green, fontFamily: font.regular, fontSize: size.micro }}>copied</Text>
+            <Mono style={{ color: palette.green, fontFamily: font.regular, fontSize: size.micro, lineHeight: line.micro }}>
+              copied
+            </Mono>
           ) : null}
         </Pressable>
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <Text
+        <Mono
           selectable
           style={{
             color: palette.light_foreground,
             fontFamily: font.regular,
             fontSize: size.label,
-            lineHeight: 18,
+            lineHeight: line.label,
             padding: space.md,
           }}
         >
           {text}
-        </Text>
+        </Mono>
       </ScrollView>
     </View>
   )
@@ -289,13 +321,13 @@ function CodeBlock({ lang, text, palette }: { lang: string; text: string; palett
 /* ── tables ──────────────────────────────────────────────────────────── */
 
 /**
- * A table, made to fit rather than made to scroll.
+ * A table, as wide as its columns need and no narrower.
  *
- * An agent's table is nearly always two or three short columns — a name and a
- * verdict — and those fit a phone if the cells are allowed to wrap. Wrapping
- * costs a couple of lines of height; scrolling sideways costs the reader the
- * column they were comparing against, which is the only reason the table was
- * drawn.
+ * A cell that wraps loses the one thing a table is for, which is reading down
+ * a column; so cells keep their width and the whole table scrolls sideways
+ * when a phone cannot hold it, with the first column pinned in the eye by
+ * being where scrolling starts. Each column is as wide as its longest cell,
+ * up to a cap that keeps one verbose cell from dragging the rest off screen.
  */
 function TableView({
   block,
@@ -307,69 +339,95 @@ function TableView({
   tone?: string
 }) {
   const columns = Math.max(block.head.length, ...block.rows.map((row) => row.length), 1)
-  const cell: TextStyle = { fontFamily: font.regular, fontSize: size.label, lineHeight: 17 }
+  const cell: TextStyle = { fontFamily: font.regular, fontSize: size.label, lineHeight: line.label }
+  // A column is as wide as its widest cell, in characters of label type, with
+  // room to breathe — capped so a paragraph in a cell wraps there instead of
+  // pushing every other column past the edge.
+  const ch = size.label * 0.6
+  const widths = Array.from({ length: columns }, (_, c) => {
+    const longest = Math.max(
+      spanLength(block.head[c] || []),
+      ...block.rows.map((row) => spanLength(row[c] || [])),
+      3,
+    )
+    return Math.min(longest, 34) * ch + space.sm * 2
+  })
 
   return (
-    <View
-      style={{
-        borderColor: palette.lighter_background,
-        borderWidth: StyleSheet.hairlineWidth * 2,
-        borderRadius: radius.sm,
-        overflow: 'hidden',
-      }}
-    >
-      <View style={{ flexDirection: 'row', backgroundColor: palette.dark_background }}>
-        {Array.from({ length: columns }, (_, c) => (
-          <Cell
-            key={c}
-            spans={block.head[c] || []}
-            align={block.align[c] || 'left'}
-            palette={palette}
-            style={[cell, { color: palette.bright_foreground, fontFamily: font.medium }]}
-          />
-        ))}
-      </View>
-      {block.rows.map((row, r) => (
-        <View
-          key={r}
-          style={{
-            flexDirection: 'row',
-            borderTopWidth: StyleSheet.hairlineWidth * 2,
-            borderTopColor: palette.lighter_background,
-          }}
-        >
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <View
+        style={{
+          borderColor: palette.lighter_background,
+          borderWidth: StyleSheet.hairlineWidth * 2,
+          borderRadius: radius.sm,
+          overflow: 'hidden',
+        }}
+      >
+        <View style={{ flexDirection: 'row', backgroundColor: palette.dark_background }}>
           {Array.from({ length: columns }, (_, c) => (
             <Cell
               key={c}
-              spans={row[c] || []}
+              spans={block.head[c] || []}
               align={block.align[c] || 'left'}
+              width={widths[c]}
               palette={palette}
-              style={[cell, { color: tone ?? palette.foreground }]}
+              style={[cell, { color: palette.bright_foreground, fontFamily: font.medium }]}
             />
           ))}
         </View>
-      ))}
-    </View>
+        {block.rows.map((row, r) => (
+          <View
+            key={r}
+            style={{
+              flexDirection: 'row',
+              borderTopWidth: StyleSheet.hairlineWidth * 2,
+              borderTopColor: palette.lighter_background,
+            }}
+          >
+            {Array.from({ length: columns }, (_, c) => (
+              <Cell
+                key={c}
+                spans={row[c] || []}
+                align={block.align[c] || 'left'}
+                width={widths[c]}
+                palette={palette}
+                style={[cell, { color: tone ?? palette.foreground }]}
+              />
+            ))}
+          </View>
+        ))}
+      </View>
+    </ScrollView>
+  )
+}
+
+/** How many characters a cell would take on one line, markup removed. */
+function spanLength(spans: Span[]): number {
+  return spans.reduce(
+    (n, span) => n + (span.kind === 'text' || span.kind === 'code' ? span.text.length : spanLength(span.spans)),
+    0,
   )
 }
 
 function Cell({
   spans,
   align,
+  width,
   palette,
   style,
 }: {
   spans: Span[]
   align: Align
+  width: number
   palette: Palette
   style: TextStyle[]
 }) {
   const flat = StyleSheet.flatten(style)
   return (
-    <View style={{ flex: 1, paddingHorizontal: space.sm, paddingVertical: space.xs, minWidth: 0 }}>
-      <Text selectable style={[flat, { textAlign: align }]}>
+    <View style={{ width, paddingHorizontal: space.sm, paddingVertical: space.xs + 2, justifyContent: 'center' }}>
+      <Mono selectable style={[flat, { textAlign: align }]}>
         {render(spans, palette)}
-      </Text>
+      </Mono>
     </View>
   )
 }
@@ -382,7 +440,7 @@ function Cell({
  * Everything comes out of one `Text`, so a bold word in the middle of a
  * sentence wraps with the sentence instead of being its own box. Emphasis is
  * carried by weight and colour rather than by italics alone — a monospace
- * italic at 14 points is a guess, not a signal.
+ * italic at 13 points is a guess, not a signal.
  */
 function render(spans: Span[], palette: Palette): React.ReactNode[] {
   return spans.map((span, i) => {
@@ -392,42 +450,43 @@ function render(spans: Span[], palette: Palette): React.ReactNode[] {
 
       case 'code':
         return (
-          <Text
+          <Mono
             key={i}
             style={{
               fontFamily: font.regular,
               color: palette.cyan,
-              backgroundColor: alpha(palette.lighter_background, 0.55),
+              backgroundColor: palette.darker_background,
+              borderRadius: radius.sm,
             }}
           >
             {span.text}
-          </Text>
+          </Mono>
         )
 
       case 'strong':
         return (
-          <Text key={i} style={{ fontFamily: font.bold, color: palette.bright_foreground }}>
+          <Mono key={i} style={{ fontFamily: font.bold, color: palette.bright_foreground }}>
             {render(span.spans, palette)}
-          </Text>
+          </Mono>
         )
 
       case 'em':
         return (
-          <Text key={i} style={{ fontStyle: 'italic', color: palette.light_foreground }}>
+          <Mono key={i} style={{ fontStyle: 'italic', color: palette.light_foreground }}>
             {render(span.spans, palette)}
-          </Text>
+          </Mono>
         )
 
       case 'strike':
         return (
-          <Text key={i} style={{ textDecorationLine: 'line-through', color: palette.muted }}>
+          <Mono key={i} style={{ textDecorationLine: 'line-through', color: palette.muted }}>
             {render(span.spans, palette)}
-          </Text>
+          </Mono>
         )
 
       case 'link':
         return (
-          <Text
+          <Mono
             key={i}
             style={{ color: palette.blue, textDecorationLine: 'underline' }}
             onPress={() => void Linking.openURL(span.href).catch(() => {})}
@@ -439,7 +498,7 @@ function render(spans: Span[], palette: Palette): React.ReactNode[] {
             }}
           >
             {render(span.spans, palette)}
-          </Text>
+          </Mono>
         )
     }
   })
