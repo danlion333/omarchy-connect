@@ -1,10 +1,29 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { RefreshControl, View } from 'react-native'
 
-import { useConnection, useStats } from '../state/ConnectionContext'
-import { Body, Caps, Card, CardHeader, DataGrid, Divider, Meter, Notice, Screen, Segmented, StatusDot, Value, toneFor } from '../ui/kit'
+import { useConnection, usePalette, useStats } from '../state/ConnectionContext'
+import type { ConnectionStatus, Hello, Stats } from '../api/client'
+import {
+  Card,
+  CardHeader,
+  DataGrid,
+  Divider,
+  Hint,
+  IconButton,
+  Meter,
+  Mono,
+  Notice,
+  Pill,
+  Row,
+  Screen,
+  ScreenHeader,
+  Section,
+  Segmented,
+  Stat,
+  toneFor,
+} from '../ui/kit'
 import { bytes, duration, ms, percent, rate } from '../lib/format'
-import { size, space } from '../theme'
+import { font, line, radius, size, space, type Palette } from '../theme'
 
 const DNS_OPTIONS = [
   { value: 'DHCP', label: 'DHCP' },
@@ -20,6 +39,8 @@ export function DashboardScreen() {
   const stats = useStats()
   const [dns, setDns] = useState<DnsProvider | null>(null)
   const [dnsError, setDnsError] = useState<unknown>(null)
+  // The choice that failed, kept so the notice can offer it again in place.
+  const [dnsRetry, setDnsRetry] = useState<DnsProvider | null>(null)
   const [refreshing, setRefreshing] = useState(false)
 
   const loadDns = useCallback(async () => {
@@ -57,157 +78,235 @@ export function DashboardScreen() {
       const previous = dns
       setDns(provider)
       setDnsError(null)
+      setDnsRetry(null)
       try {
         await call('dns.set', { provider })
       } catch (err) {
         setDns(previous)
         setDnsError(err)
+        setDnsRetry(provider)
       }
     },
     [call, dns],
   )
 
+  const connected = status === 'connected'
   const net = stats?.network
   const mem = stats?.memory
   const cpu = stats?.cpu
-
-  const linkLabel = (() => {
-    if (!net || !net.up) return 'Offline'
-    if (net.type === 'wifi') return net.ssid ? `Wi-Fi (${net.ssid})` : 'Wi-Fi'
-    const speed = net.linkSpeedMbit
-    const pretty = speed ? (speed >= 1000 ? `${speed / 1000}gbit` : `${speed}mbit`) : null
-    return pretty ? `Ethernet (${pretty})` : 'Ethernet'
-  })()
-
-  const traffic = (net?.rxRate ?? 0) + (net?.txRate ?? 0)
-  const linkState = !net?.up ? 'Link down' : traffic > 2048 ? 'Handling packets' : 'Idle'
+  const wifi = net?.type === 'wifi'
+  const dnsOffered = can('desktop', 'dns')
 
   const memFraction = mem && mem.total ? mem.used / mem.total : 0
+  const swapFraction = mem && mem.swapTotal ? mem.swapUsed / mem.swapTotal : 0
   const diskFraction = stats?.disk && stats.disk.total ? stats.disk.used / stats.disk.total : 0
+  const cpuTone = cpu?.tempC && cpu.tempC > 80 ? palette.red : undefined
 
   return (
     <Screen refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={palette.muted} />}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: space.lg, gap: space.sm }}>
-        <StatusDot tone={status === 'connected' ? palette.green : status === 'error' ? palette.red : palette.orange} />
-        <Caps tone={palette.foreground}>{hello?.server.name ?? 'not connected'}</Caps>
-        <View style={{ flex: 1 }} />
-        <Caps>{stats ? `up ${duration(stats.uptime)}${latencyMs === null ? '' : ` · ${latencyMs}ms`}` : status}</Caps>
-      </View>
+      <ScreenHeader
+        title="Stats"
+        status={linkStatus(palette, status, hello)}
+        right={
+          <>
+            {/* The numbers stop moving with the link; the header says so rather than letting them look live. */}
+            {stats && !connected ? <Pill label="paused" icon="pause" /> : null}
+            {connected && latencyMs !== null ? <Pill label={`${latencyMs} ms`} /> : null}
+            <IconButton icon="refresh-cw" label="Refresh" onPress={onRefresh} loading={refreshing} disabled={!connected} />
+          </>
+        }
+      />
 
-      <Card>
+      <Card tone={net && !net.up ? palette.red : undefined}>
         <CardHeader
-          icon={net?.type === 'wifi' ? 'wifi' : 'server'}
-          title={linkLabel}
-          subtitle={linkState}
-          tone={net?.up ? palette.bright_foreground : palette.red}
-          right={
-            <View style={{ alignItems: 'flex-end' }}>
-              <Value tone={palette.accent} style={{ fontSize: size.body }}>
-                {net?.interface ?? '—'}
-              </Value>
-            </View>
-          }
+          icon={!net ? 'activity' : !net.up ? 'wifi-off' : wifi ? 'wifi' : 'server'}
+          title={!net ? 'Network' : !net.up ? 'Offline' : wifi ? 'Wi-Fi' : 'Ethernet'}
+          subtitle={linkSubtitle(net)}
+          tone={net && !net.up ? palette.red : undefined}
         />
 
-        <DataGrid
-          pairs={[
-            { label: 'Ping', value: ms(net?.pingMs), tone: pingTone(palette, net?.pingMs) },
-            { label: 'Packet Loss', value: net?.packetLoss === null || net?.packetLoss === undefined ? '—' : `${net.packetLoss}%`, tone: net?.packetLoss ? palette.orange : undefined },
-            { label: 'Receiving', value: rate(net?.rxRate) },
-            { label: 'Sending', value: rate(net?.txRate) },
-            { label: 'Downloaded', value: bytes(net?.rxTotal) },
-            { label: 'Uploaded', value: bytes(net?.txTotal) },
-            { label: 'IP Address', value: net?.ip ?? '—' },
-            { label: 'Gateway', value: net?.gateway ?? '—' },
-          ]}
-        />
+        {!net ? (
+          <Skeleton rows={6} />
+        ) : (
+          <>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: space.md }}>
+              <Stat value={ms(net.pingMs)} label="Ping" tone={pingTone(palette, net.pingMs)} />
+              <Stat
+                value={net.packetLoss === null || net.packetLoss === undefined ? '—' : `${net.packetLoss}%`}
+                label="Loss"
+                tone={net.packetLoss ? palette.orange : undefined}
+                align="right"
+              />
+            </View>
+
+            {/* One column on purpose: the rates change every second and a grid
+                that re-paired them each tick would jump between layouts. */}
+            <DataGrid
+              columns={1}
+              pairs={[
+                { label: 'Down', value: rate(net.rxRate) },
+                { label: 'Up', value: rate(net.txRate) },
+                { label: 'Downloaded', value: bytes(net.rxTotal) },
+                { label: 'Uploaded', value: bytes(net.txTotal) },
+                ...(wifi ? [{ label: 'Network', value: net.ssid ?? '—' }] : []),
+                ...(wifi && net.signalDbm != null ? [{ label: 'Signal', value: `${net.signalDbm} dBm` }] : []),
+                { label: 'IP address', value: net.ip ?? '—' },
+                { label: 'Gateway', value: net.gateway ?? '—' },
+              ]}
+            />
+          </>
+        )}
 
         <Divider />
 
-        <Caps style={{ marginBottom: space.md }}>DNS provider</Caps>
+        <Section title="DNS provider" tone={dnsOffered ? undefined : palette.muted} />
         <Segmented
           options={DNS_OPTIONS as unknown as { value: DnsProvider; label: string }[]}
           value={dns ?? (net?.dnsProvider as DnsProvider) ?? null}
           onChange={changeDns}
-          disabled={!can('desktop', 'dns') || status !== 'connected'}
+          disabled={!dnsOffered || !connected}
         />
-        {dnsError ? (
-          <Notice error={dnsError} style={{ marginTop: space.sm, marginBottom: 0 }} onDismiss={() => setDnsError(null)} />
-        ) : net?.dns?.length ? (
-          <Body tone={palette.muted} style={{ marginTop: space.sm, fontSize: size.label }}>
-            {net.dns.join('  ')}
-          </Body>
+        {!dnsOffered ? (
+          <Hint icon="slash" style={{ marginTop: space.sm }}>
+            Not offered by this desktop
+          </Hint>
+        ) : dnsError ? (
+          <Notice
+            error={dnsError}
+            style={{ marginTop: space.sm, marginBottom: 0 }}
+            onDismiss={() => {
+              setDnsError(null)
+              setDnsRetry(null)
+            }}
+            action={dnsRetry ? { label: 'Try again', icon: 'refresh-cw', onPress: () => changeDns(dnsRetry) } : null}
+          />
+        ) : null}
+
+        {net?.dns?.length ? (
+          <>
+            <Section title="Resolvers" style={{ marginTop: space.lg }} />
+            {net.dns.map((address) => (
+              <Address key={address}>{address}</Address>
+            ))}
+          </>
         ) : null}
       </Card>
 
       <Card>
-        <CardHeader
-          icon="cpu"
-          title={percent(cpu?.usage ?? null)}
-          subtitle={`${cpuLabel(hello)} · load ${cpu?.loadavg?.[0]?.toFixed(2) ?? '—'}`}
-          right={cpu?.tempC ? <Value tone={cpu.tempC > 80 ? palette.red : palette.foreground}>{`${cpu.tempC}°C`}</Value> : undefined}
-        />
-        <Meter fraction={cpu?.usage ?? 0} tone={toneFor(palette, cpu?.usage ?? 0)} />
+        <CardHeader icon="cpu" title="System" subtitle={cpuLabel(hello)} />
 
-        <View style={{ height: space.lg }} />
+        {!cpu || !mem ? (
+          <Skeleton rows={5} />
+        ) : (
+          <>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: space.md }}>
+              <Stat value={percent(cpu.usage)} label="Load" />
+              <Stat value={cpu.tempC === null ? '—' : `${cpu.tempC}°C`} label="Temp" tone={cpuTone} align="right" />
+            </View>
+            <Meter fraction={cpu.usage ?? 0} tone={toneFor(palette, cpu.usage ?? 0)} />
+            <Row label="Load average" value={loadAverage(cpu.loadavg)} style={{ marginTop: space.sm }} />
 
-        <DataGrid
-          pairs={[
-            { label: 'Memory', value: `${bytes(mem?.used)} / ${bytes(mem?.total)}` },
-            { label: 'Swap', value: mem?.swapTotal ? bytes(mem.swapUsed) : 'none' },
-          ]}
-          columns={1}
-        />
-        <Meter fraction={memFraction} tone={toneFor(palette, memFraction)} />
+            <Divider />
 
-        <View style={{ height: space.lg }} />
+            <Row label="Memory" value={`${bytes(mem.used)} / ${bytes(mem.total)}`} />
+            <Meter fraction={memFraction} tone={toneFor(palette, memFraction)} style={{ marginBottom: space.md }} />
 
-        <DataGrid
-          pairs={[
-            { label: 'Disk', value: stats?.disk ? `${bytes(stats.disk.used)} / ${bytes(stats.disk.total)}` : '—' },
-            { label: 'Free', value: stats?.disk ? bytes(stats.disk.free) : '—' },
-          ]}
-          columns={1}
-        />
-        <Meter fraction={diskFraction} tone={toneFor(palette, diskFraction)} />
+            <Row label="Swap" value={mem.swapTotal ? `${bytes(mem.swapUsed)} / ${bytes(mem.swapTotal)}` : 'None'} />
+            {mem.swapTotal ? <Meter fraction={swapFraction} tone={toneFor(palette, swapFraction)} style={{ marginBottom: space.md }} /> : null}
+
+            <Row label="Disk" value={stats?.disk ? `${bytes(stats.disk.used)} / ${bytes(stats.disk.total)}` : '—'} />
+            <Row label="Free" value={stats?.disk ? bytes(stats.disk.free) : '—'} />
+            {stats?.disk ? <Meter fraction={diskFraction} tone={toneFor(palette, diskFraction)} /> : null}
+          </>
+        )}
       </Card>
 
       {stats?.battery ? (
         <Card>
           <CardHeader
             icon={stats.battery.charging ? 'battery-charging' : 'battery'}
-            title={`${stats.battery.percent}%`}
+            title="Battery"
             subtitle={stats.battery.status}
             tone={batteryTone(palette, stats.battery.percent, stats.battery.charging)}
-            right={stats.battery.watts ? <Value>{`${stats.battery.watts} W`}</Value> : undefined}
           />
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: space.md }}>
+            <Stat
+              value={`${stats.battery.percent}%`}
+              label="Charge"
+              tone={batteryTone(palette, stats.battery.percent, stats.battery.charging)}
+            />
+            {stats.battery.watts ? <Stat value={`${stats.battery.watts} W`} label="Draw" align="right" /> : null}
+          </View>
           <Meter
             fraction={stats.battery.percent / 100}
             tone={batteryTone(palette, stats.battery.percent, stats.battery.charging)}
           />
           {stats.battery.secondsLeft ? (
-            <Body tone={palette.muted} style={{ marginTop: space.md, fontSize: size.label }}>
-              {`${duration(stats.battery.secondsLeft)} remaining`}
-            </Body>
+            <Row label={stats.battery.charging ? 'Until full' : 'Time left'} value={duration(stats.battery.secondsLeft)} style={{ marginTop: space.sm }} />
           ) : null}
         </Card>
       ) : null}
 
       <Card>
-        <CardHeader icon="monitor" title={hello?.server.name ?? 'desktop'} subtitle={`${palette.name} theme`} />
-        <DataGrid
-          pairs={[
-            { label: 'OS', value: hello?.host?.os ?? 'Omarchy' },
-            { label: 'Kernel', value: hello?.host?.kernel ?? '—' },
-            { label: 'Cores', value: hello?.host?.cores ?? '—' },
-            { label: 'Version', value: hello?.server.version ?? '—' },
-            { label: 'Uptime', value: stats ? duration(stats.uptime) : '—' },
-            { label: 'Protocol', value: `v${hello?.protocol ?? '—'}` },
-          ]}
-        />
+        <CardHeader icon="monitor" title={hello?.server.name ?? 'Desktop'} subtitle={hello ? `${palette.name} theme` : null} />
+        {!hello ? (
+          <Skeleton rows={4} />
+        ) : (
+          <DataGrid
+            pairs={[
+              { label: 'OS', value: hello.host?.os ?? 'Omarchy' },
+              { label: 'Kernel', value: hello.host?.kernel ?? '—' },
+              { label: 'Version', value: hello.server.version },
+              { label: 'Protocol', value: `v${hello.protocol}` },
+              { label: 'Uptime', value: stats ? duration(stats.uptime) : '—' },
+            ]}
+          />
+        )}
       </Card>
     </Screen>
   )
+}
+
+/**
+ * The word beside the screen name. The desktop's own name while the link is
+ * up — one glance says which machine these numbers belong to — and the
+ * link's state in a colour otherwise. `parked` and `idle` both read "offline"
+ * here: the reason belongs to the Setup tab, not to a stats header.
+ */
+function linkStatus(palette: Palette, status: ConnectionStatus, hello: Hello | null) {
+  switch (status) {
+    case 'connected':
+      return { label: hello?.server.name ?? 'connected', tone: palette.green }
+    case 'connecting':
+    case 'pairing':
+    case 'reconnecting':
+      return { label: status, tone: palette.orange }
+    case 'error':
+      return { label: 'error', tone: palette.red }
+    default:
+      return { label: 'offline', tone: palette.light_foreground }
+  }
+}
+
+/** The interface and, when the kernel says, its speed or signal: `enp8s0 · 1 Gbit/s`. */
+function linkSubtitle(net: Stats['network'] | undefined) {
+  if (!net) return null
+  const parts: string[] = []
+  if (net.interface) parts.push(net.interface)
+  if (net.type === 'wifi') {
+    if (net.signalQuality != null) parts.push(`${net.signalQuality}% signal`)
+  } else if (net.linkSpeedMbit) {
+    parts.push(net.linkSpeedMbit >= 1000 ? `${net.linkSpeedMbit / 1000} Gbit/s` : `${net.linkSpeedMbit} Mbit/s`)
+  }
+  return parts.length ? parts.join(' · ') : null
+}
+
+function loadAverage(load: number[] | undefined) {
+  if (!load?.length) return '—'
+  return load
+    .slice(0, 3)
+    .map((v) => v.toFixed(2))
+    .join('  ')
 }
 
 function pingTone(palette: { green: string; orange: string; red: string }, value: number | null | undefined) {
@@ -224,8 +323,62 @@ function batteryTone(palette: { green: string; orange: string; red: string }, pc
   return undefined as unknown as string
 }
 
-function cpuLabel(hello: { host?: { cpuModel?: string } } | null) {
+/**
+ * The processor in the space of a card subtitle: `i5-12400F · 12 cores`.
+ *
+ * The marketing wrapper — "12th Gen Intel(R) Core(TM)", "AMD", "8-Core
+ * Processor" — is stripped, because the reader has one desktop and knows
+ * whose chip is in it; what varies, and what they might want to quote, is
+ * the model number.
+ */
+function cpuLabel(hello: { host?: { cpuModel?: string; cores?: number } } | null) {
   const model = hello?.host?.cpuModel
-  if (!model) return 'processor'
-  return model.replace(/\(R\)|\(TM\)|CPU|Processor/gi, '').replace(/\s+/g, ' ').trim()
+  if (!model) return null
+  const short = model
+    .replace(/\(R\)|\(TM\)|\bCPU\b|\bProcessor\b|\d+(st|nd|rd|th) Gen|\bIntel\b|\bAMD\b|\bCore\b|\d+-Core|with Radeon Graphics|@.*$/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  const cores = hello?.host?.cores
+  return cores ? `${short} · ${cores} cores` : short
+}
+
+/* ── local components (candidates for the kit) ───────────────────────── */
+
+/**
+ * A network address on a line of its own, shrinking to fit rather than
+ * truncating: a resolver like `fd7a:115c:a1e0::53` fits at full size, and
+ * an uncompressed IPv6 still reads whole at a smaller one.
+ */
+function Address({ children }: { children: string }) {
+  const palette = usePalette()
+  return (
+    <Mono
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.7}
+      style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.value, lineHeight: line.value, minHeight: line.value + space.xs }}
+    >
+      {children}
+    </Mono>
+  )
+}
+
+/**
+ * Where rows will be once the first sample arrives: a label-shaped block on
+ * the left, a value-shaped one on the right, at the height of a `Row`. Drawn
+ * instead of an empty card so the screen has its final shape from the start.
+ */
+function Skeleton({ rows }: { rows: number }) {
+  const palette = usePalette()
+  const widths = [72, 96, 60, 84, 72, 108]
+  return (
+    <View accessibilityLabel="Loading" accessibilityRole="progressbar">
+      {Array.from({ length: rows }, (_, i) => (
+        <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', minHeight: line.value + space.sm }}>
+          <View style={{ width: widths[i % widths.length], height: size.label, borderRadius: radius.sm / 2, backgroundColor: palette.lighter_background }} />
+          <View style={{ width: widths[(i + 3) % widths.length], height: size.value, borderRadius: radius.sm / 2, backgroundColor: palette.lighter_background }} />
+        </View>
+      ))}
+    </View>
+  )
 }
