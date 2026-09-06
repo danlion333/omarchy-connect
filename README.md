@@ -26,7 +26,7 @@ the desktop and the app repaints in the same palette.
 | | |
 | --- | --- |
 | **Live stats** | CPU, temperature, memory, swap, disk, battery, and a network card with ping, packet loss, throughput, totals, IP, gateway and DNS provider — sampled once a second. |
-| **Remote control** | Volume and mute, brightness, media keys, Hyprland workspaces and windows (focus, close), lock, sleep, reboot, shut down, screenshot, "where is my desktop". |
+| **Remote control** | Volume and mute, media keys, Hyprland workspaces and windows (focus, close), lock, sleep, reboot, shut down, screenshot, "where is my desktop". |
 | **Desktop switches** | Night light, stay awake and notification silencing read and flipped from the phone — the desktop's own `omarchy-toggle-*` scripts, so the bar's indicators follow. A switch this desktop cannot be asked about comes back as unknown rather than as off. Open a terminal, or a floating one, on the desktop from the phone. |
 | **Clipboard sync** | Whatever you copy on the desktop appears on the phone, and back. |
 | **Notifications** | Whatever the phone mirrors — messages, calls, app notifications — arrives as a desktop notification. The desktop's own notifications stay on the desktop; the app does not carry an inbox. |
@@ -879,7 +879,6 @@ handshake and the app greys out whatever is missing.
 | --- | --- |
 | Clipboard | `wl-clipboard` (`wl-copy`, `wl-paste`) |
 | Volume / mic | `wireplumber` (`wpctl`) |
-| Brightness | `brightnessctl` |
 | Media keys | `playerctl`, or `wtype` as a fallback |
 | Windows / workspaces | Hyprland (over its control socket; `hyprctl` is a fallback) |
 | Pointer, clicks, keys (`input.*`, protocol only — no screen in the app) | Hyprland — nothing else to install |

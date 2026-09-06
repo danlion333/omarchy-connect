@@ -1,10 +1,8 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, RefreshControl, View } from 'react-native'
-import { Feather } from '@expo/vector-icons'
 import * as Haptics from 'expo-haptics'
 
 import { useConnection, usePalette, useStats } from '../state/ConnectionContext'
-import type { Stats } from '../api/client'
 import { useLook } from '../ui/look'
 import { TOGGLE_COMMAND, useToggles, type ToggleName } from '../lib/toggles'
 import {
@@ -28,8 +26,6 @@ import {
   Row,
   Screen,
   ScreenHeader,
-  Section,
-  Segmented,
   Sparkline,
   Stat,
   Tile,
@@ -40,30 +36,20 @@ import {
   useToast,
   type IconName,
 } from '../ui/kit'
-import { bytes, duration, ms, percent, rate } from '../lib/format'
+import { bytes, duration, percent } from '../lib/format'
 import { space } from '../theme'
 
 type MediaState = {
   output: { percent: number; muted: boolean } | null
   input: { percent: number; muted: boolean } | null
-  brightness: { percent: number } | null
   player: { available: boolean; playing?: boolean; title?: string | null; artist?: string | null; status?: string }
 }
 
 type Workspace = { id: number; name: string; windows: number }
 type Window = { address: string; title: string; class: string; workspace: number; focused: boolean }
 
-const DNS_OPTIONS = [
-  { value: 'DHCP', label: 'DHCP' },
-  { value: 'Cloudflare', label: 'Cloudflare' },
-  { value: 'Google', label: 'Google' },
-  { value: 'Custom', label: 'Custom' },
-] as const
-
-type DnsProvider = (typeof DNS_OPTIONS)[number]['value']
-
 /** Which card a failure belongs under. A notice sits where the thing that failed is. */
-type CardKey = 'now' | 'load' | 'network' | 'media' | 'toggles' | 'quick'
+type CardKey = 'now' | 'load' | 'media' | 'toggles' | 'quick'
 
 /**
  * Workspace 1: the desktop at a glance, and the controls that change it.
@@ -89,8 +75,6 @@ export function HomeScreen() {
   const [sawWindows, setSawWindows] = useState(false)
   /** The last 40 CPU samples, kept here because the link only ever holds the latest one. */
   const [history, setHistory] = useState<number[]>([])
-  const [dns, setDns] = useState<DnsProvider | null>(null)
-  const [dnsRetry, setDnsRetry] = useState<DnsProvider | null>(null)
   const [errors, setErrors] = useState<Partial<Record<CardKey, unknown>>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
@@ -98,7 +82,6 @@ export function HomeScreen() {
   const connected = status === 'connected'
   const hyprOk = connected && can('desktop', 'hyprland')
   const togglesOffered = can('desktop', 'toggles')
-  const dnsOffered = can('desktop', 'dns')
 
   const setError = useCallback((card: CardKey, err: unknown) => {
     setErrors((prev) => ({ ...prev, [card]: err }))
@@ -142,21 +125,10 @@ export function HomeScreen() {
     }
   }, [call, can, connected, setError])
 
-  const loadDns = useCallback(async () => {
-    if (!connected || !can('desktop', 'dns')) return
-    try {
-      const res = await call<{ provider: DnsProvider | null }>('dns.get')
-      setDns(res.provider)
-    } catch {
-      /* the card still works without it */
-    }
-  }, [call, can, connected])
-
   useEffect(() => {
     void loadMedia()
     void loadHypr()
-    void loadDns()
-  }, [loadMedia, loadHypr, loadDns])
+  }, [loadMedia, loadHypr])
 
   const refreshAll = useCallback(async () => {
     setRefreshing(true)
@@ -164,14 +136,13 @@ export function HomeScreen() {
       await Promise.all([
         loadMedia(),
         loadHypr(),
-        loadDns(),
         refreshToggles(),
         call('system.stats').catch(() => null),
       ])
     } finally {
       setRefreshing(false)
     }
-  }, [call, loadMedia, loadHypr, loadDns, refreshToggles])
+  }, [call, loadMedia, loadHypr, refreshToggles])
 
   /* ── saying something back ────────────────────────────────────────── */
 
@@ -194,7 +165,7 @@ export function HomeScreen() {
       try {
         Haptics.selectionAsync().catch(() => {})
         const data = await call<any>(method, params)
-        if (data && (data.output || data.brightness || data.input)) {
+        if (data && (data.output || data.input)) {
           setMedia((prev) => (prev ? { ...prev, ...data } : prev))
         }
         if (note) toast({ value: note.value, hint: note.hint ?? 'ran on desktop' })
@@ -250,24 +221,6 @@ export function HomeScreen() {
     [act, loadHypr],
   )
 
-  const changeDns = useCallback(
-    async (provider: DnsProvider) => {
-      const previous = dns
-      setDns(provider)
-      setError('network', null)
-      setDnsRetry(null)
-      try {
-        await call('dns.set', { provider })
-        toast({ value: `omarchy-dns ${provider.toLowerCase()}`, hint: 'the desktop resolves through it now' })
-      } catch (err) {
-        setDns(previous)
-        setError('network', err)
-        setDnsRetry(provider)
-      }
-    },
-    [call, dns, setError, toast],
-  )
-
   const flipToggle = useCallback(
     async (name: ToggleName) => {
       setBusy(name)
@@ -302,17 +255,14 @@ export function HomeScreen() {
   const cpu = stats?.cpu
   const mem = stats?.memory
   const disk = stats?.disk
-  const net = stats?.network
   const battery = stats?.battery
   const focused = windows.find((win) => win.focused) ?? null
   const player = media?.player
   const volume = media?.output?.percent ?? 0
   const muted = media?.output?.muted ?? false
-  const brightness = media?.brightness?.percent ?? 0
 
   const volumeOk = connected && can('media', 'volume')
   const playerOk = connected && can('media', 'player')
-  const brightnessOk = connected && can('media', 'brightness') && media?.brightness != null
   const mediaOk = volumeOk || playerOk
 
   const loadingNow = hyprOk && !sawWindows && errors.now == null
@@ -320,7 +270,6 @@ export function HomeScreen() {
   const memFraction = mem && mem.total ? mem.used / mem.total : 0
   const swapFraction = mem && mem.swapTotal ? mem.swapUsed / mem.swapTotal : 0
   const diskFraction = disk && disk.total ? disk.used / disk.total : 0
-  const wifi = net?.type === 'wifi'
 
   const user = (hello?.host as { user?: string } | undefined)?.user
   const uptime = stats?.uptime ?? hello?.host?.uptime ?? null
@@ -473,70 +422,6 @@ export function HomeScreen() {
         </Card>
       ) : null}
 
-      {/* ── Network ──────────────────────────────────────────────────── */}
-      <Card tone={net && !net.up ? palette.red : undefined}>
-        <CardHeader
-          icon={!net ? 'activity' : !net.up ? 'wifi-off' : wifi ? 'wifi' : 'server'}
-          title={!net ? 'Network' : !net.up ? 'Offline' : wifi ? 'Wi-Fi' : 'Ethernet'}
-          subtitle={linkSubtitle(net)}
-          tone={net && !net.up ? palette.red : undefined}
-        />
-        {!net ? (
-          <Loading />
-        ) : (
-          <>
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <Stat value={ms(net.pingMs)} label="Ping" tone={pingTone(palette, net.pingMs)} />
-              <Stat
-                value={net.packetLoss === null || net.packetLoss === undefined ? '—' : `${net.packetLoss}%`}
-                label="Loss"
-                tone={net.packetLoss ? palette.orange : undefined}
-                align="right"
-              />
-            </View>
-            <Row label="Down" value={rate(net.rxRate)} />
-            <Row label="Up" value={rate(net.txRate)} />
-            <Row label="Downloaded" value={bytes(net.rxTotal)} />
-            <Row label="Uploaded" value={bytes(net.txTotal)} />
-            {wifi ? <Row label="Network" value={net.ssid ?? '—'} /> : null}
-            {wifi && net.signalDbm != null ? <Row label="Signal" value={`${net.signalDbm} dBm`} /> : null}
-            <Row label="IP address" value={net.ip ?? '—'} />
-            <Row label="Gateway" value={net.gateway ?? '—'} />
-          </>
-        )}
-
-        <Divider />
-
-        <Section title="DNS provider" tone={dnsOffered ? undefined : palette.muted} />
-        <Segmented
-          options={DNS_OPTIONS as unknown as { value: DnsProvider; label: string }[]}
-          value={dns ?? (net?.dnsProvider as DnsProvider) ?? null}
-          onChange={changeDns}
-          disabled={!dnsOffered || !connected}
-        />
-        {!dnsOffered ? (
-          <Hint icon="slash">Needs a sudo rule on the desktop</Hint>
-        ) : errors.network != null ? (
-          <Notice
-            error={errors.network}
-            onDismiss={() => {
-              setError('network', null)
-              setDnsRetry(null)
-            }}
-            action={dnsRetry ? { label: 'Try again', icon: 'refresh-cw', onPress: () => changeDns(dnsRetry) } : null}
-            style={{ marginBottom: 0 }}
-          />
-        ) : null}
-        {net?.dns?.length ? (
-          <>
-            <Section title="Resolvers" />
-            {net.dns.map((address) => (
-              <Value key={address}>{address}</Value>
-            ))}
-          </>
-        ) : null}
-      </Card>
-
       {/* ── Media ────────────────────────────────────────────────────── */}
       <Card dim={connected && !mediaOk}>
         <CardHeader
@@ -617,21 +502,6 @@ export function HomeScreen() {
               <Value style={{ width: 34, textAlign: 'right' }}>{media?.output ? String(volume) : '—'}</Value>
             </View>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-              <Feather name="sun" size={20} color={brightnessOk ? palette.light_foreground : palette.muted} />
-              <View style={{ flex: 1 }}>
-                <LevelBar
-                  value={brightness}
-                  onChange={(value) =>
-                    act('media', 'brightness', 'brightness.set', { percent: value }, { value: `brightnessctl set ${value}%` })
-                  }
-                  tone={palette.yellow}
-                  disabled={!brightnessOk}
-                />
-              </View>
-              <Value style={{ width: 34, textAlign: 'right' }}>{media?.brightness ? String(brightness) : '—'}</Value>
-            </View>
-
             {media?.input ? (
               <Row label={media.input.muted ? 'Mic muted' : 'Mic'} value={`${media.input.percent}%`} />
             ) : null}
@@ -640,10 +510,6 @@ export function HomeScreen() {
               <Hint>Needs playerctl on the desktop</Hint>
             ) : connected && !can('media', 'volume') ? (
               <Hint>Needs wpctl on the desktop</Hint>
-            ) : connected && !can('media', 'brightness') ? (
-              <Hint>Brightness needs brightnessctl on the desktop</Hint>
-            ) : connected && media && media.brightness == null ? (
-              <Hint>No adjustable display on the desktop</Hint>
             ) : null}
           </>
         )}
@@ -815,26 +681,6 @@ function loadAverage(load: number[] | undefined) {
     .slice(0, 3)
     .map((v) => v.toFixed(2))
     .join(' · ')
-}
-
-/** The interface and, when the kernel says, its speed or signal: `enp8s0 · 1 Gbit/s`. */
-function linkSubtitle(net: Stats['network'] | undefined) {
-  if (!net) return null
-  const parts: string[] = []
-  if (net.interface) parts.push(net.interface)
-  if (net.type === 'wifi') {
-    if (net.signalQuality != null) parts.push(`${net.signalQuality}% signal`)
-  } else if (net.linkSpeedMbit) {
-    parts.push(net.linkSpeedMbit >= 1000 ? `${net.linkSpeedMbit / 1000} Gbit/s` : `${net.linkSpeedMbit} Mbit/s`)
-  }
-  return parts.length ? parts.join(' · ') : null
-}
-
-function pingTone(palette: { green: string; orange: string; red: string }, value: number | null | undefined) {
-  if (value === null || value === undefined) return undefined
-  if (value > 120) return palette.red
-  if (value > 40) return palette.orange
-  return undefined
 }
 
 function batteryTone(palette: { green: string; orange: string; red: string }, pct: number, charging: boolean) {

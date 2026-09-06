@@ -1,6 +1,8 @@
 import React from 'react'
 
+import { cachedBackdrop, fetchBackdrop, type Backdrop } from '../api/backdrop'
 import { DEFAULT_LOOK, loadLook, saveLook, type LookPrefs, type Wallpaper } from '../api/storage'
+import { useConnection } from '../state/ConnectionContext'
 
 export type { Wallpaper }
 
@@ -57,6 +59,56 @@ export function LookProvider({ children }: { children: React.ReactNode }) {
 
 export function useLook(): LookValue {
   return React.useContext(LookContext)
+}
+
+/* ── the desktop's own wallpaper ─────────────────────────────────────── */
+
+/**
+ * The picture the desktop is wearing, or null until there is one.
+ *
+ * The cached copy is painted first, so switching back to this phone does not
+ * mean waiting on the socket, and the desktop is then asked only whether that
+ * copy is still current — it answers `unchanged` and sends nothing almost
+ * every time. A theme switch repaints the palette, and the palette's name is
+ * what brings the picture back around with it.
+ */
+export function useBackdrop(enabled: boolean): Backdrop | null {
+  const { call, can, status, palette } = useConnection()
+  const [picture, setPicture] = React.useState<Backdrop | null>(null)
+  const held = React.useRef<Backdrop | null>(null)
+
+  // Switching back to the gradient puts the picture away — it stays in the
+  // cache, and the ask after the next switch answers `unchanged`, but holding
+  // it on screen under a background the phone is no longer set to would not
+  // be putting it away at all.
+  React.useEffect(() => {
+    if (!enabled) {
+      setPicture(null)
+      return
+    }
+    if (!held.current) held.current = cachedBackdrop()
+    setPicture(held.current)
+  }, [enabled])
+
+  React.useEffect(() => {
+    if (!enabled || status !== 'connected' || !can('desktop', 'background')) return
+    let alive = true
+    fetchBackdrop(call, held.current)
+      .then((next) => {
+        if (!alive || !next) return
+        held.current = next
+        setPicture(next)
+      })
+      .catch(() => {
+        /* the gradient is behind this one; a wallpaper that will not come is
+           not worth a notice on every screen. */
+      })
+    return () => {
+      alive = false
+    }
+  }, [enabled, status, can, call, palette.name])
+
+  return picture
 }
 
 /* ── what the bar is waiting on ──────────────────────────────────────── */

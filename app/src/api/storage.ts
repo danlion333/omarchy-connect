@@ -101,7 +101,13 @@ export async function saveAlertPrefs(prefs: AlertPrefs): Promise<void> {
 
 const LOOK_KEY = 'omarchy-connect.look'
 
-export type Wallpaper = 'aurora' | 'dots' | 'none'
+/**
+ * `aurora` is the theme's own colours as a gradient, `photo` is the picture
+ * the desktop is wearing right now. `none` is not offered on Settings — it is
+ * what Transparency being off means, and what an older phone may still have
+ * saved.
+ */
+export type Wallpaper = 'aurora' | 'photo' | 'none'
 
 /**
  * The two choices the phone makes for itself: whether cards are glass over a
@@ -123,8 +129,10 @@ export async function loadLook(): Promise<LookPrefs> {
     const saved = JSON.parse(raw) as Partial<LookPrefs>
     return {
       transparency: typeof saved.transparency === 'boolean' ? saved.transparency : DEFAULT_LOOK.transparency,
+      // A phone that saved `dots` chose a background that no longer exists;
+      // it lands back on the default rather than on nothing at all.
       wallpaper:
-        saved.wallpaper === 'aurora' || saved.wallpaper === 'dots' || saved.wallpaper === 'none'
+        saved.wallpaper === 'aurora' || saved.wallpaper === 'photo' || saved.wallpaper === 'none'
           ? saved.wallpaper
           : DEFAULT_LOOK.wallpaper,
     }

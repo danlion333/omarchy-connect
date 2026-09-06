@@ -36,10 +36,15 @@ horizontal drag is tested against the pager before it ships.
 Cards are translucent over the wallpaper: `surface()` in `theme.ts` gives the
 card and edge colours, `Card` reads them, and the **Transparency** switch on
 Setup (`useLook()`) turns them solid and the wallpaper off. There is no real
-blur — no `expo-blur`, no native dependency for the look. The wallpaper is
-`aurora` (soft drifting lights in the theme's colours), `dots`, or `none`, and
-it is a phone-local setting like transparency; everything else about the
-colours comes from the desktop's theme.
+blur — no `expo-blur`, no native dependency for the look, and no gradient
+primitive either: `aurora` is a tilted stack of eighty flat bands whose
+colours `mix()` has already blended with the background, drifting on the
+native driver. The background is `aurora` or `photo` — the picture the desktop
+itself is wearing, fetched once through `theme.background`, cached under the id
+the desktop gave it and redrawn when a theme switch changes that id. Both are
+phone-local settings like transparency, and `none` is what Transparency being
+off means rather than a third choice; everything else about the colours comes
+from the desktop's theme.
 
 Everything below is a rule unless it says "prefer". A screen that needs to
 break one should say why in a comment.
@@ -65,7 +70,7 @@ So:
   Everything else — why a feature exists, what it costs, how it works — is
   README material and is deleted from the screen.
 - **A number the reader came for is a `Stat` or `Hero`**, not a title. CPU
-  load, volume, brightness, usage percentage. One or two per card, then the
+  load, volume, usage percentage. One or two per card, then the
   detail in `Row`s under a `Meter`.
 
 ## Type
@@ -125,7 +130,7 @@ English, sentence case, no trailing full stop on a label or a hint. Buttons
 are a verb or verb-object: "Send", "Copy on desktop", "Pair", "Try again".
 Never "Click here", never a question as a button.
 
-Caps strings are nouns: `SESSION`, `2 WINDOWS`, `DNS PROVIDER`. A caps string
+Caps strings are nouns: `SESSION`, `2 WINDOWS`, `WAKE ON LAN`. A caps string
 over 28 characters wraps, so it is wrong.
 
 Cut anything that explains the product to its owner. The reader installed the

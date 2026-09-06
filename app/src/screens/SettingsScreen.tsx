@@ -794,10 +794,13 @@ function Notifications() {
 
 /* ── the look ────────────────────────────────────────────────────────── */
 
+/**
+ * Two backgrounds, and they are the two the desktop can actually answer for:
+ * its colours as a gradient, or the picture it is wearing right now.
+ */
 const WALLPAPERS: { value: Wallpaper; label: string }[] = [
   { value: 'aurora', label: 'Aurora' },
-  { value: 'dots', label: 'Dots' },
-  { value: 'none', label: 'None' },
+  { value: 'photo', label: 'Wallpaper' },
 ]
 
 /**
@@ -892,12 +895,17 @@ function Theme() {
       <Section title="Background" />
       <Segmented
         options={WALLPAPERS}
-        value={wallpaper}
+        // An older phone may still hold `none`, which was a choice once and
+        // is now what Transparency being off means: it lands on the default.
+        value={wallpaper === 'photo' ? 'photo' : 'aurora'}
         onChange={(kind) => {
           setWallpaper(kind)
-          toast({ value: 'background', hint: `${kind} · on this phone` })
+          toast({ value: 'background', hint: `${kind === 'photo' ? "the desktop's own" : 'aurora'} · on this phone` })
         }}
       />
+      {wallpaper === 'photo' && !can('desktop', 'background') ? (
+        <Hint>The desktop has no wallpaper to send · showing the gradient</Hint>
+      ) : null}
       <Toggle
         label="Transparency"
         hint="Glass cards over the background · costs a little battery"

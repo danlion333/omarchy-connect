@@ -3,6 +3,7 @@ import path from 'node:path'
 import os from 'node:os'
 import { run, has, spawn, spawnDetached, notifyArgs } from '../lib/exec.js'
 import { readTheme } from '../lib/theme.js'
+import { backgroundPath, readBackground } from '../lib/background.js'
 import * as hypr from '../lib/hypr.js'
 
 /** Actions that end the session get their own confirm flag from the app. */
@@ -126,6 +127,10 @@ export default {
       power: has('systemctl'),
       hyprland: hypr.available(),
       themes: has('omarchy-theme-list'),
+      // The phone can wear the desktop's own wallpaper, but only if there is
+      // one to send: an Omarchy with no theme background says so here rather
+      // than offering the phone a choice that answers with nothing.
+      background: backgroundPath() !== null,
       dns: has('omarchy-dns'),
       screenshot: has('omarchy-capture-screenshot'),
       // One installed switch is enough for the tiles to be worth drawing;
@@ -231,6 +236,17 @@ export default {
 
     'theme.current'() {
       return readTheme()
+    },
+
+    /**
+     * The wallpaper the desktop is wearing, scaled for a phone screen.
+     *
+     * The phone sends back the `id` it already cached, so the usual answer is
+     * `unchanged` and no bytes at all — the picture only moves when the
+     * desktop's theme changed under it.
+     */
+    'theme.background'({ id } = {}) {
+      return readBackground({ id: typeof id === 'string' ? id : undefined })
     },
 
     async 'theme.list'() {
