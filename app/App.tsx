@@ -26,6 +26,7 @@ import { PairScreen } from './src/screens/PairScreen'
 import { ErrorBoundary } from './src/ui/ErrorBoundary'
 import { FeedbackProvider, Notice, StatusDot, Wallpaper } from './src/ui/kit'
 import { LookProvider, SetupAsksProvider, useSetupAsks } from './src/ui/look'
+import { useToggles } from './src/lib/toggles'
 import { FALLBACK_PALETTE, alpha, font, radius, size, space } from './src/theme'
 import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
 import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
@@ -331,6 +332,7 @@ function OmarchyBar({ current, onChange }: { current: TabKey; onChange: (tab: Ta
   const { palette, status } = useConnection()
   const { agentsWaiting } = useAgents()
   const asks = useSetupAsks()
+  const { toggles } = useToggles()
   const insets = useSafeAreaInsets()
   const clock = useClock()
 
@@ -432,10 +434,14 @@ function OmarchyBar({ current, onChange }: { current: TabKey; onChange: (tab: Ta
       >
         <StatusDot tone={link} size={6} />
         <Feather name="wifi" size={16} color={palette.light_foreground} />
-        {/* The desktop's notification silencing lives here once `system.toggles`
-            lands; until the daemon answers for it, the bell only says the tray
-            is where it will be. */}
-        <Feather name="bell" size={16} color={palette.light_foreground} />
+        {/* The desktop's own notification silencing, read from `system.toggles`:
+            a struck-through bell while it is silencing, a plain one otherwise,
+            and a plain one too on a desktop that cannot be asked. */}
+        <Feather
+          name={toggles?.silencing?.on ? 'bell-off' : 'bell'}
+          size={16}
+          color={palette.light_foreground}
+        />
         <Text
           maxFontSizeMultiplier={1.2}
           style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.label, fontVariant: ['tabular-nums'] }}
