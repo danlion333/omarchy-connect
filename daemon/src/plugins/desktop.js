@@ -20,6 +20,85 @@ const POWER = {
 
 const WINDOW_ADDRESS = /^0x[0-9a-f]+$/i
 
+/**
+ * The three desktop switches the phone's Home tiles draw.
+ *
+ * Each one is a different animal on this desktop — a hyprsunset temperature, a
+ * flag file under XDG_STATE_HOME, a property living inside the Quickshell
+ * process — so each gets its own reader and its own flip, and the phone gets
+ * one shape back. `on: null` is the honest answer for a switch this machine
+ * cannot be asked about: the script is not installed, the shell is not
+ * answering, the output was not what the script promises. The app dims the
+ * tile rather than inventing a position for it.
+ */
+const TOGGLES = {
+  nightlight: {
+    bin: 'omarchy-toggle-nightlight',
+    // `--status` prints {enabled, temperature}; temperature is null when
+    // hyprsunset is not running at all, which is simply "not warm".
+    read: () => statusEnabled('omarchy-toggle-nightlight', ['--status']),
+    // The script resends the temperature until a freshly started hyprsunset
+    // stops overriding it — up to ten 0.2 s rounds — so the flip is awaited
+    // with room for that, and the reply carries the state it settled on.
+    flip: ['omarchy-toggle-nightlight', [], 8000],
+  },
+
+  idle: {
+    bin: 'omarchy-toggle-idle',
+    // "Stay awake" is a flag file, and `status` prints enabled:true when it
+    // exists. `enabled` here means the desktop is being held awake — not that
+    // idling is enabled, which is what the word looks like it says.
+    read: () => statusEnabled('omarchy-toggle-idle', ['status']),
+    flip: ['omarchy-toggle-idle', ['toggle'], 5000],
+  },
+
+  silencing: {
+    // Do-not-disturb lives in the Quickshell process rather than on disk, and
+    // `omarchy-toggle-notification-silencing` only ever flips it. `dndState`
+    // is the read-only half of the same IPC handler `toggleDnd` calls, so the
+    // switch can be read without being moved.
+    bin: 'omarchy-shell',
+    read: async () => {
+      const res = await run('omarchy-shell', ['notifications', 'dndState'])
+      if (!res.ok) return null
+      const word = res.stdout.split('\n')[0].trim().toLowerCase()
+      return word === 'on' ? true : word === 'off' ? false : null
+    },
+    // Flipping goes through the toggle script rather than straight at the IPC
+    // so the bar's bell follows: the script refreshes the indicators after.
+    flip: ['omarchy-toggle-notification-silencing', [], 5000],
+  },
+}
+
+/** What the phone may ask to be started, and what actually starts it. */
+const LAUNCH = {
+  terminal: ['omarchy-launch-terminal', []],
+  // The presentation wrapper builds `omarchy-show-logo; $*; omarchy-show-done`
+  // and hands it to bash, so with no command it produces a syntax error rather
+  // than a window. A shell is the command that makes it a terminal.
+  'floating-terminal': ['omarchy-launch-floating-terminal-with-presentation', ['bash']],
+}
+
+/** The `enabled` field of a one-line status JSON, or null if it is not there. */
+async function statusEnabled(bin, args) {
+  const res = await run(bin, args)
+  if (!res.ok) return null
+  try {
+    const parsed = JSON.parse(res.stdout.split('\n')[0])
+    return typeof parsed.enabled === 'boolean' ? parsed.enabled : null
+  } catch {
+    return null
+  }
+}
+
+/** One switch as the phone sees it: `{ on }`, or null when it cannot be read. */
+async function readToggle(name) {
+  const spec = TOGGLES[name]
+  if (!has(spec.bin)) return null
+  const on = await spec.read()
+  return on === null ? null : { on }
+}
+
 export default {
   name: 'desktop',
 
@@ -30,6 +109,10 @@ export default {
       themes: has('omarchy-theme-list'),
       dns: has('omarchy-dns'),
       screenshot: has('omarchy-capture-screenshot'),
+      // One installed switch is enough for the tiles to be worth drawing;
+      // the ones this desktop cannot answer for come back null.
+      toggles: Object.values(TOGGLES).some((t) => has(t.bin)),
+      launch: has('omarchy-launch-terminal'),
       openUrl: has('xdg-open'),
     }
   },
@@ -58,6 +141,35 @@ export default {
       if (!targets.includes(target)) throw new Error(`target must be one of ${targets.join(', ')}`)
       spawnDetached('omarchy-capture-screenshot', [mode, target])
       return { ok: true, mode, target }
+    },
+
+    /** Every switch in one round trip, because the tiles are drawn together. */
+    async 'system.toggles'() {
+      const names = Object.keys(TOGGLES)
+      const states = await Promise.all(names.map((name) => readToggle(name)))
+      return Object.fromEntries(names.map((name, i) => [name, states[i]]))
+    },
+
+    async 'system.toggle'({ name } = {}) {
+      if (!Object.hasOwn(TOGGLES, name)) throw new Error(`unknown toggle: ${name}`)
+      const spec = TOGGLES[name]
+      if (!has(spec.bin)) throw new Error(`${spec.bin} not installed`)
+      const [bin, args, timeout] = spec.flip
+      if (!has(bin)) throw new Error(`${bin} not installed`)
+      // Awaited, not detached: the phone flipped a tile and the answer it
+      // needs is where the switch ended up, which is only knowable after.
+      await run(bin, args, { timeout })
+      const state = await readToggle(name)
+      return { name, on: state ? state.on : null }
+    },
+
+    async 'system.launch'({ app } = {}) {
+      if (!Object.hasOwn(LAUNCH, app)) throw new Error(`unknown app: ${app}`)
+      const [bin, args] = LAUNCH[app]
+      if (!has(bin)) throw new Error(`${bin} not installed`)
+      // Detached: these exec into a terminal that outlives the request.
+      spawnDetached(bin, args)
+      return { ok: true, app }
     },
 
     async 'system.openUrl'({ url }) {

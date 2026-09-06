@@ -27,6 +27,7 @@ the desktop and the app repaints in the same palette.
 | --- | --- |
 | **Live stats** | CPU, temperature, memory, swap, disk, battery, and a network card with ping, packet loss, throughput, totals, IP, gateway and DNS provider — sampled once a second. |
 | **Remote control** | Volume and mute, brightness, media keys, Hyprland workspaces and windows (focus, close), lock, sleep, reboot, shut down, screenshot, "where is my desktop". |
+| **Desktop switches** | Night light, stay awake and notification silencing read and flipped from the phone — the desktop's own `omarchy-toggle-*` scripts, so the bar's indicators follow. A switch this desktop cannot be asked about comes back as unknown rather than as off. Open a terminal, or a floating one, on the desktop from the phone. |
 | **Clipboard sync** | Whatever you copy on the desktop appears on the phone, and back. |
 | **Notifications** | Whatever the phone mirrors — messages, calls, app notifications — arrives as a desktop notification. The desktop's own notifications stay on the desktop; the app does not carry an inbox. |
 | **Files** | Send a file or photo from the phone to `~/Downloads/Omarchy Connect/`; push a desktop file to the phone with `omarchy-connect send <file>`. A picture arrives on the phone as a picture — thumbnail in the list, full screen on a tap, pinch to read the small print, and one more tap keeps it in the phone's own gallery. An offer the desktop is still holding is there when the app opens, not only while it was watching. |
