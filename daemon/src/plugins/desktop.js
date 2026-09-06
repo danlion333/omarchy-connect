@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import os from 'node:os'
-import { run, has, spawnDetached, notifyArgs } from '../lib/exec.js'
+import { run, has, spawn, spawnDetached, notifyArgs } from '../lib/exec.js'
 import { readTheme } from '../lib/theme.js'
 import * as hypr from '../lib/hypr.js'
 
@@ -99,6 +99,25 @@ async function readToggle(name) {
   return on === null ? null : { on }
 }
 
+/** Runs a command to completion with no pipes to inherit, resolving on exit. */
+function exited(bin, args, timeout) {
+  return new Promise((resolve) => {
+    const child = spawn(bin, args, { stdio: 'ignore' })
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve()
+    }, timeout)
+    child.once('exit', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+    child.once('error', () => {
+      clearTimeout(timer)
+      resolve()
+    })
+  })
+}
+
 export default {
   name: 'desktop',
 
@@ -158,7 +177,11 @@ export default {
       if (!has(bin)) throw new Error(`${bin} not installed`)
       // Awaited, not detached: the phone flipped a tile and the answer it
       // needs is where the switch ended up, which is only knowable after.
-      await run(bin, args, { timeout })
+      // Awaited on exit with no pipes, though — the nightlight script starts
+      // hyprsunset in the background the first time, and a child holding an
+      // inherited stdout kept `run` waiting for EOF until its timeout while
+      // the tile on the phone sat greyed out for eight seconds.
+      await exited(bin, args, timeout)
       const state = await readToggle(name)
       return { name, on: state ? state.on : null }
     },
