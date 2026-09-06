@@ -181,7 +181,7 @@ All of the frames below travel inside the encrypted channel described above.
 because the moment it is wanted there is no daemon to ask.
 
 `capabilities` reports what this particular machine can actually do — whether
-`wpctl`, `brightnessctl`, `playerctl`, `hyprctl` and the `omarchy-*` helpers are
+`wpctl`, `playerctl`, `hyprctl` and the `omarchy-*` helpers are
 installed. The app greys out what is missing instead of failing at call time.
 
 `endpoints` is every address this desktop can be dialled on, best first: the
@@ -306,11 +306,10 @@ a sleeping phone's TCP connection dies silently.
 
 | Method | Params |
 | --- | --- |
-| `media.state` | — → output/input volume, brightness, player metadata |
+| `media.state` | — → output/input volume, player metadata |
 | `volume.set` | `{ percent }` (0–100, capped at 100%) |
 | `volume.step` | `{ delta }` — routes through the Omarchy OSD when available |
 | `volume.mute` | `{ target: "output" \| "input" }` |
-| `brightness.set` / `brightness.step` | `{ percent }` / `{ delta }` |
 | `player.play` / `player.next` / `player.previous` / `player.stop` | — |
 
 ### clipboard, notifications, share, desktop

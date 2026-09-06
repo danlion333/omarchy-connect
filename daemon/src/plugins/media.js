@@ -22,18 +22,6 @@ async function setVolume(target, percent) {
   return readVolume(target)
 }
 
-async function readBrightness() {
-  if (!has('brightnessctl')) return null
-  const res = await run('brightnessctl', ['-m'])
-  if (!res.ok) return null
-  const [, , current, percent, max] = res.stdout.split('\n')[0].split(',')
-  return {
-    percent: Number.parseInt(percent, 10) || 0,
-    current: Number(current) || 0,
-    max: Number(max) || 0,
-  }
-}
-
 /** Media keys work through playerctl; wtype replays the raw key as a fallback. */
 async function playerAction(action) {
   const map = {
@@ -83,7 +71,6 @@ export default {
   capabilities() {
     return {
       volume: has('wpctl'),
-      brightness: has('brightnessctl'),
       player: has('playerctl') || has('wtype'),
       osd: has('omarchy-audio-output-volume'),
     }
@@ -91,13 +78,12 @@ export default {
 
   methods: {
     async 'media.state'() {
-      const [output, input, brightness, player] = await Promise.all([
+      const [output, input, player] = await Promise.all([
         readVolume(SINK),
         readVolume(SOURCE),
-        readBrightness(),
         playerStatus(),
       ])
-      return { output, input, brightness, player }
+      return { output, input, player }
     },
 
     async 'volume.set'({ percent }) {
@@ -125,26 +111,6 @@ export default {
       const res = await run('wpctl', ['set-mute', dev, 'toggle'])
       if (!res.ok) throw new Error(res.stderr || 'wpctl failed')
       return { [target]: await readVolume(dev) }
-    },
-
-    async 'brightness.set'({ percent }) {
-      if (!has('brightnessctl')) throw new Error('brightnessctl not installed')
-      const value = Math.round(clamp01(Number(percent) / 100) * 100)
-      const res = await run('brightnessctl', ['-m', 'set', `${value}%`])
-      if (!res.ok) throw new Error(res.stderr || 'brightnessctl failed')
-      return { brightness: await readBrightness() }
-    },
-
-    async 'brightness.step'({ delta = 5 }) {
-      const step = Math.trunc(Number(delta))
-      if (has('omarchy-brightness-display')) {
-        await run('omarchy-brightness-display', [step > 0 ? `+${step}%` : `${Math.abs(step)}%-`])
-      } else if (has('brightnessctl')) {
-        await run('brightnessctl', ['-m', 'set', step > 0 ? `${step}%+` : `${Math.abs(step)}%-`])
-      } else {
-        throw new Error('no brightness backend')
-      }
-      return { brightness: await readBrightness() }
     },
 
     'player.play': () => playerAction('play'),
