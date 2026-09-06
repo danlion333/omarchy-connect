@@ -40,7 +40,17 @@ quietBluetooth(sandbox)
 // a desktop notification out of it.
 const fakeBin = path.join(sandbox, 'bin')
 fs.mkdirSync(fakeBin, { recursive: true })
-fs.writeFileSync(path.join(fakeBin, 'notify-send'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+// It also keeps a line per call, because one of the checks below is that a
+// request which fails halfway never reaches the desktop at all.
+const notifyLog = path.join(sandbox, 'notify.log')
+fs.writeFileSync(path.join(fakeBin, 'notify-send'), `#!/bin/sh\necho "$@" >> ${JSON.stringify(notifyLog)}\nexit 0\n`, { mode: 0o755 })
+const notifyCount = () => {
+  try {
+    return fs.readFileSync(notifyLog, 'utf8').split('\n').filter(Boolean).length
+  } catch {
+    return 0
+  }
+}
 
 // The inbox is derived from the environment at import time, so it has to be
 // pointed at the sandbox before `share.js` is loaded — these checks are about
@@ -174,6 +184,106 @@ check('the file on disk has no control characters in its name',
   typeof landed.name === 'string' && !CONTROL.test(landed.name), JSON.stringify(landed.name))
 check('and it really is in the inbox under that name',
   fs.existsSync(path.join(downloads, 'Omarchy Connect', String(landed.name))), String(landed.name))
+
+/* ── a body that stops halfway ────────────────────────────────────────── */
+
+// A phone that walks out of Wi-Fi mid-upload sends a `content-length` it
+// never finishes. Nothing separated that from a whole file: the socket closed,
+// `out` closed, and the daemon announced, counted and acknowledged half a
+// video. The request has to be written by hand — `fetch` will not send a
+// length it does not intend to honour — and the socket is half-closed rather
+// than destroyed so the 400 can still be read back.
+const statusFile = path.join(sandbox, 'state', 'status.json')
+const readState = () => {
+  try {
+    return JSON.parse(fs.readFileSync(statusFile, 'utf8'))
+  } catch {
+    return {}
+  }
+}
+const before = readState()
+const notifiedBefore = notifyCount()
+
+const cutShort = await new Promise((resolve) => {
+  ticketFor('upload').then((ticket) => {
+    const sock = net.connect(PORT, '127.0.0.1', () => {
+      sock.write(
+        'POST /api/upload HTTP/1.1\r\n' +
+          `Host: 127.0.0.1:${PORT}\r\n` +
+          `x-oc-ticket: ${ticket}\r\n` +
+          'x-oc-filename: cut-short.bin\r\n' +
+          'content-length: 4096\r\n' +
+          '\r\n' +
+          'x'.repeat(100),
+      )
+      // FIN with a hundred bytes of a four-kilobyte body sent.
+      sock.end()
+    })
+    let buf = ''
+    sock.on('data', (d) => (buf += d))
+    sock.on('close', () => resolve(buf))
+    sock.on('error', () => resolve(buf))
+    setTimeout(() => {
+      sock.destroy()
+      resolve(buf)
+    }, 6000)
+  })
+})
+
+check('an upload whose body stops short of its content-length gets a 400',
+  /^HTTP\/1\.1 400/.test(cutShort), cutShort.split('\r\n')[0] || 'nothing came back')
+// Deliberately not a check on the words in the body: a half-closed request is
+// answered by Node's own `clientError` handler, which writes a bare
+// `400 Bad Request` and destroys the socket before any handler of ours can
+// put JSON on it. The refusal is the observable part; the sentence in
+// `fail(400, 'the upload was truncated')` is for the reader of the log and
+// for the sealed road's `400`, which does reach a live socket.
+check('and it is not the success the phone used to get', !/HTTP\/1\.1 200/.test(cutShort))
+// The clean-up and the status file are both a tick behind the socket.
+await new Promise((r) => setTimeout(r, 400))
+check('the half a file is not left in the inbox',
+  !fs.existsSync(path.join(downloads, 'Omarchy Connect', 'cut-short.bin')))
+
+const after = readState()
+check('the incoming-file counter did not move',
+  (after.counters?.filesIn ?? 0) === (before.counters?.filesIn ?? 0),
+  `${before.counters?.filesIn ?? 0} -> ${after.counters?.filesIn ?? 0}`)
+check('and nothing about it was written into the transfer list',
+  !(after.transfers || []).some((t) => t.name === 'cut-short.bin'),
+  JSON.stringify((after.transfers || []).map((t) => t.name)))
+check('the desktop was never told a file had arrived', notifyCount() === notifiedBefore,
+  `${notifiedBefore} -> ${notifyCount()}`)
+check('the daemon is still up after a body that stopped halfway', await alive())
+
+// The check is on a declared length, so a request that declares none is
+// untouched: chunked bodies still land.
+const chunked = await new Promise((resolve) => {
+  ticketFor('upload').then((ticket) => {
+    const sock = net.connect(PORT, '127.0.0.1', () => {
+      sock.write(
+        'POST /api/upload HTTP/1.1\r\n' +
+          `Host: 127.0.0.1:${PORT}\r\n` +
+          `x-oc-ticket: ${ticket}\r\n` +
+          'x-oc-filename: chunked.txt\r\n' +
+          'transfer-encoding: chunked\r\n' +
+          '\r\n' +
+          '5\r\nhello\r\n0\r\n\r\n',
+      )
+    })
+    let buf = ''
+    sock.on('data', (d) => (buf += d))
+    sock.on('close', () => resolve(buf))
+    sock.on('error', () => resolve(buf))
+    setTimeout(() => {
+      sock.destroy()
+      resolve(buf)
+    }, 6000)
+  })
+})
+check('a chunked upload, which declares no length, still gets a 200',
+  /^HTTP\/1\.1 200/.test(chunked), chunked.split('\r\n')[0] || 'nothing came back')
+check('and its body really is in the inbox',
+  fs.readFileSync(path.join(downloads, 'Omarchy Connect', 'chunked.txt'), 'utf8') === 'hello')
 
 /* ── a request the router itself cannot parse ─────────────────────────── */
 
