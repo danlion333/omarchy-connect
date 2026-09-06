@@ -184,11 +184,11 @@ export function AgentsScreen({ open: requested, onOpened }: { open?: string | nu
       <ScreenHeader
         title="Agents"
         // One line, and the half of it that matters is the count of agents
-        // stopped on something: orange while any of them is, and the dot is
-        // the only colour `ScreenHeader` has to say it with.
+        // stopped on something: orange while any of them is, otherwise the
+        // link's own green, and the dot is the only colour `ScreenHeader` has.
         status={{
           label: `${sorted.length} session${sorted.length === 1 ? '' : 's'} · ${waiting ? `${waiting} waiting` : 'none waiting'}`,
-          tone: waiting ? palette.orange : palette.muted,
+          tone: waiting ? palette.orange : status === 'connected' ? palette.green : palette.muted,
         }}
         right={
           <>

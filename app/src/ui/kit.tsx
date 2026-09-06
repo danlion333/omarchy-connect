@@ -921,7 +921,7 @@ export function Notice({
         </Pressable>
         {action ? (
           <View style={{ flexDirection: 'row', marginTop: space.sm }}>
-            <Button label={action.label} icon={action.icon} onPress={action.onPress} variant="solid" tone={colour} compact />
+            <Button label={action.label} icon={action.icon} onPress={action.onPress} tone={colour} compact />
           </View>
         ) : null}
       </View>

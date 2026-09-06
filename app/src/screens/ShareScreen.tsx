@@ -818,7 +818,7 @@ export function ShareScreen({
           icon="arrow-up"
           value={draft}
           onChange={setDraft}
-          placeholder="Send text to the desktop clipboard"
+          placeholder="Send text to the desktop"
           onSubmit={sendText}
           right={
             <IconButton

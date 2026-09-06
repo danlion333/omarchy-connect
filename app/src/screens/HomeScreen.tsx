@@ -371,7 +371,9 @@ export function HomeScreen() {
       <ScreenHeader
         title={hello ? (user ? `${user}@${hello.host.hostname}` : hello.host.hostname) : 'Desktop'}
         dot={connected ? 'ok' : status === 'connecting' || status === 'pairing' || status === 'reconnecting' ? 'warn' : 'off'}
-        sub={[palette.name, shortKernel(hello?.host?.kernel), uptime === null ? null : `up ${duration(uptime)}`]
+        // Theme and uptime only: with the kernel the line ran past a 360dp phone
+        // ("lackluster-mint · 7.1.9-arch1-…"), and Setup carries the kernel.
+        sub={[palette.name, uptime === null ? null : `up ${duration(uptime)}`]
           .filter(Boolean)
           .join(' · ')}
         right={
@@ -835,11 +837,6 @@ export function HomeScreen() {
 
 /* ── the small decisions ─────────────────────────────────────────────── */
 
-/** `7.1.9-arch1-2-g0a41bf1` is a row that does not fit; `7.1.9-arch1-2` is the same kernel. */
-function shortKernel(kernel: string | undefined | null): string | null {
-  if (!kernel) return null
-  return kernel.replace(/-g[0-9a-f]{6,}.*$/i, '').replace(/\.(x86_64|aarch64)$/i, '')
-}
 
 /** The chip for a workspace: its number, then one dot per window on it. */
 function dotted(id: number, windows: number): string {
