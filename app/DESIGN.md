@@ -36,10 +36,15 @@ horizontal drag is tested against the pager before it ships.
 Cards are translucent over the wallpaper: `surface()` in `theme.ts` gives the
 card and edge colours, `Card` reads them, and the **Transparency** switch on
 Setup (`useLook()`) turns them solid and the wallpaper off. There is no real
-blur — no `expo-blur`, no native dependency for the look. The wallpaper is
-`aurora` (soft drifting lights in the theme's colours), `dots`, or `none`, and
-it is a phone-local setting like transparency; everything else about the
-colours comes from the desktop's theme.
+blur — no `expo-blur`, no native dependency for the look, and no gradient
+primitive either: `aurora` is a tilted stack of eighty flat bands whose
+colours `mix()` has already blended with the background, drifting on the
+native driver. The background is `aurora` or `photo` — the picture the desktop
+itself is wearing, fetched once through `theme.background`, cached under the id
+the desktop gave it and redrawn when a theme switch changes that id. Both are
+phone-local settings like transparency, and `none` is what Transparency being
+off means rather than a third choice; everything else about the colours comes
+from the desktop's theme.
 
 Everything below is a rule unless it says "prefer". A screen that needs to
 break one should say why in a comment.
