@@ -39,20 +39,71 @@ export function cpuUsage() {
   return Math.max(0, Math.min(1, usage))
 }
 
-export function cpuTemp() {
+/** Where a sensor's name places it: lower is more likely to be the CPU. */
+function sensorRank(name) {
+  if (/x86_pkg_temp|k10temp|zenpower|coretemp/i.test(name)) return 0
+  if (/cpu[-_ ]?thermal|soc_thermal/i.test(name)) return 1
+  if (/cpu/i.test(name)) return 2
+  if (/acpitz/i.test(name)) return 4
+  return Infinity
+}
+
+/** `sysfs` is only ever passed by the test, which points it at a fixture tree. */
+export function cpuTemp(sysfs = '/sys/class') {
+  /*
+   * Ranked, because a machine exposes several thermal sensors and only some of
+   * them are the CPU. `acpitz` is the board's ambient probe: it reads a steady
+   * room temperature no matter what the cores are doing, and it is usually
+   * thermal_zone0 — so taking the first zone whose type matched anything meant
+   * the app showed that one number forever. Take the best sensor on offer
+   * instead, and fall back to the ambient probe only when there is no other.
+   */
+  let best = Infinity
+  let celsius = null
+  const offer = (rank, milli) => {
+    if (rank >= best || milli === null) return
+    const c = milli / 1000
+    // A plausible CPU sits between freezing and its own shutdown trip; anything
+    // outside that is a sensor reporting in units we did not expect.
+    if (c <= 0 || c >= 150) return
+    best = rank
+    celsius = c
+  }
+
   try {
-    for (const zone of fs.readdirSync('/sys/class/thermal')) {
+    for (const zone of fs.readdirSync(`${sysfs}/thermal`)) {
       if (!zone.startsWith('thermal_zone')) continue
-      const type = readText(`/sys/class/thermal/${zone}/type`) || ''
-      if (/x86_pkg_temp|k10temp|cpu|coretemp|acpitz/i.test(type)) {
-        const milli = readInt(`/sys/class/thermal/${zone}/temp`)
-        if (milli) return Math.round(milli / 1000)
-      }
+      const type = readText(`${sysfs}/thermal/${zone}/type`) || ''
+      offer(sensorRank(type), readInt(`${sysfs}/thermal/${zone}/temp`))
     }
   } catch {
     /* no thermal zones exposed */
   }
-  return null
+
+  /*
+   * hwmon carries the same package sensors on machines whose thermal zones do
+   * not (an AMD box often exposes only acpitz there), and it labels them:
+   * "Package id 0" on Intel, "Tctl"/"Tdie" on AMD — a whole-package reading,
+   * which is what a dashboard wants, ahead of any single core.
+   */
+  try {
+    for (const node of fs.readdirSync(`${sysfs}/hwmon`)) {
+      const dir = `${sysfs}/hwmon/${node}`
+      const rank = sensorRank(readText(`${dir}/name`) || '')
+      if (rank === Infinity) continue
+      for (const entry of fs.readdirSync(dir)) {
+        const m = entry.match(/^temp(\d+)_input$/)
+        if (!m) continue
+        const label = readText(`${dir}/temp${m[1]}_label`) || ''
+        const packaged = /package|tctl|tdie/i.test(label)
+        offer(rank + (packaged ? 0 : 0.5), readInt(`${dir}/${entry}`))
+      }
+    }
+  } catch {
+    /* no hwmon sensors exposed */
+  }
+
+  return celsius === null ? null : Math.round(celsius)
 }
 
 export function cpuModel() {
