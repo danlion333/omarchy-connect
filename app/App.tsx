@@ -1,5 +1,15 @@
-import React, { useEffect, useMemo, useState } from 'react'
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+  useWindowDimensions,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native'
 import { StatusBar } from 'expo-status-bar'
 import * as Linking from 'expo-linking'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
@@ -7,27 +17,35 @@ import { Feather } from '@expo/vector-icons'
 import { useFonts, JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsMono_700Bold } from '@expo-google-fonts/jetbrains-mono'
 
 import { ConnectionProvider, useAgents, useConnection } from './src/state/ConnectionContext'
-import { DashboardScreen } from './src/screens/DashboardScreen'
-import { RemoteScreen } from './src/screens/RemoteScreen'
+import { HomeScreen } from './src/screens/HomeScreen'
+import { TerminalScreen } from './src/screens/TerminalScreen'
 import { ShareScreen } from './src/screens/ShareScreen'
 import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { ErrorBoundary } from './src/ui/ErrorBoundary'
-import { Notice } from './src/ui/kit'
-import { FALLBACK_PALETTE, font, size, space } from './src/theme'
+import { FeedbackProvider, Notice, StatusDot, Wallpaper } from './src/ui/kit'
+import { LookProvider, SetupAsksProvider, useSetupAsks } from './src/ui/look'
+import { FALLBACK_PALETTE, alpha, font, radius, size, space } from './src/theme'
 import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
 import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
 
-type TabKey = 'stats' | 'remote' | 'agents' | 'share' | 'setup'
+/**
+ * The five workspaces, in the order the Omarchy bar numbers them. They are
+ * workspaces rather than tabs: the bar at the bottom is the desktop's own bar,
+ * the numbers are the desktop's numbers, and a swipe moves between them.
+ */
+type TabKey = 'home' | 'agents' | 'terminal' | 'share' | 'setup'
 
-const TABS: { key: TabKey; icon: React.ComponentProps<typeof Feather>['name']; label: string }[] = [
-  { key: 'stats', icon: 'activity', label: 'Stats' },
-  { key: 'remote', icon: 'sliders', label: 'Remote' },
-  { key: 'agents', icon: 'terminal', label: 'Agents' },
-  { key: 'share', icon: 'upload-cloud', label: 'Share' },
-  { key: 'setup', icon: 'settings', label: 'Setup' },
+const WORKSPACES: { key: TabKey; label: string }[] = [
+  { key: 'home', label: 'home' },
+  { key: 'agents', label: 'agents' },
+  { key: 'terminal', label: 'terminal' },
+  { key: 'share', label: 'share' },
+  { key: 'setup', label: 'setup' },
 ]
+
+const indexOf = (key: TabKey) => Math.max(0, WORKSPACES.findIndex((entry) => entry.key === key))
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -39,7 +57,13 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      <ConnectionProvider>{fontsLoaded ? <Shell /> : <Splash />}</ConnectionProvider>
+      <ConnectionProvider>
+        <LookProvider>
+          <SetupAsksProvider>
+            <FeedbackProvider>{fontsLoaded ? <Shell /> : <Splash />}</FeedbackProvider>
+          </SetupAsksProvider>
+        </LookProvider>
+      </ConnectionProvider>
     </SafeAreaProvider>
   )
 }
@@ -54,7 +78,7 @@ function Splash() {
 
 function Shell() {
   const { desktop, ready, palette, serverError, dismissServerError } = useConnection()
-  const [tab, setTab] = useState<TabKey>('stats')
+  const [tab, setTab] = useState<TabKey>('home')
   const route = useRequestedRoute()
   const [opening, setOpening] = useState<string | null>(null)
   const [shared, setShared] = useState<SharePayload | null>(null)
@@ -70,7 +94,7 @@ function Shell() {
   }, [route])
 
   // Somebody shared to this app from another one: whatever they were looking
-  // at, the screen that says what is happening to it is the Share screen.
+  // at, the screen that says what is happening to it is the Share workspace.
   useEffect(() => {
     if (shared) setTab('share')
   }, [shared])
@@ -79,28 +103,31 @@ function Shell() {
   // A share that arrives before there is anywhere to send it must not vanish
   // into a pairing screen without a word: the whole point of the share sheet
   // is that nobody is watching the app afterwards.
-  if (!desktop) return <PairScreen notice={shared ? shareBlocked({ paired: false, connected: false }) : null} />
+  // Pairing happens before there is a desktop to take a wallpaper from, so it
+  // gets the plain background rather than the glass the workspaces wear.
+  if (!desktop) {
+    return (
+      <View style={{ flex: 1, backgroundColor: palette.background }}>
+        <PairScreen notice={shared ? shareBlocked({ paired: false, connected: false }) : null} />
+      </View>
+    )
+  }
 
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
-      {/*
-        A screen that throws while rendering used to take the whole tree with
-        it and leave a blank window. It stops here now, and switching tabs —
-        which moves `resetKey` — puts the broken one back on its feet.
-      */}
-      <ErrorBoundary resetKey={tab}>
-        <View style={{ flex: 1 }}>
-          {tab === 'stats' ? <DashboardScreen /> : null}
-          {tab === 'remote' ? <RemoteScreen /> : null}
-          {tab === 'agents' ? <AgentsScreen open={opening} onOpened={() => setOpening(null)} /> : null}
-          {tab === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={() => setShared(null)} /> : null}
-          {tab === 'setup' ? <SettingsScreen /> : null}
-        </View>
-      </ErrorBoundary>
+      <Wallpaper />
+      <Workspaces
+        current={tab}
+        onChange={setTab}
+        opening={opening}
+        onOpened={() => setOpening(null)}
+        shared={shared}
+        onSharedTaken={() => setShared(null)}
+      />
       {/*
         The desktop's own complaints. They belong to no screen — the request
-        that drew one may have been sent from a tab the user has since left —
-        so they are shown above the tab bar wherever the user happens to be,
+        that drew one may have been sent from a workspace the user has since
+        left — so they are shown above the bar wherever the user happens to be,
         and stay until dismissed.
       */}
       {serverError ? (
@@ -108,8 +135,108 @@ function Shell() {
           <Notice error={serverError} tone="warning" onDismiss={dismissServerError} />
         </View>
       ) : null}
-      <TabBar current={tab} onChange={setTab} />
+      <OmarchyBar current={tab} onChange={setTab} />
     </View>
+  )
+}
+
+/**
+ * The five workspaces side by side, one screen wide each.
+ *
+ * A page is mounted the first time it is visited and then stays mounted, so
+ * moving back to Home does not re-fetch everything it already knows; each one
+ * keeps its own `ErrorBoundary`, so a screen that throws takes only its own
+ * page down and is put back on its feet by leaving and returning.
+ */
+function Workspaces({
+  current,
+  onChange,
+  opening,
+  onOpened,
+  shared,
+  onSharedTaken,
+}: {
+  current: TabKey
+  onChange: (tab: TabKey) => void
+  opening: string | null
+  onOpened: () => void
+  shared: SharePayload | null
+  onSharedTaken: () => void
+}) {
+  const { width } = useWindowDimensions()
+  const scroller = useRef<ScrollView>(null)
+  const index = indexOf(current)
+  const [seen, setSeen] = useState<TabKey[]>([current])
+
+  useEffect(() => {
+    setSeen((was) => (was.includes(current) ? was : [...was, current]))
+    scroller.current?.scrollTo({ x: index * width, animated: true })
+  }, [current, index, width])
+
+  // A page the finger is dragging toward has to be there before it arrives, or
+  // the swipe reveals a blank screen and fills it a beat later.
+  const reveal = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const at = event.nativeEvent.contentOffset.x / Math.max(1, width)
+      const near = [Math.floor(at), Math.ceil(at)]
+      setSeen((was) => {
+        const next = [...was]
+        for (const i of near) {
+          const key = WORKSPACES[i]?.key
+          if (key && !next.includes(key)) next.push(key)
+        }
+        return next.length === was.length ? was : next
+      })
+    },
+    [width],
+  )
+
+  const settled = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const page = Math.round(event.nativeEvent.contentOffset.x / Math.max(1, width))
+      const next = WORKSPACES[Math.max(0, Math.min(WORKSPACES.length - 1, page))]
+      if (next && next.key !== current) onChange(next.key)
+    },
+    [current, onChange, width],
+  )
+
+  const page = (key: TabKey) => {
+    if (!seen.includes(key)) return null
+    return (
+      <ErrorBoundary resetKey={key}>
+        {key === 'home' ? <HomeScreen /> : null}
+        {key === 'agents' ? <AgentsScreen open={opening} onOpened={onOpened} /> : null}
+        {key === 'terminal' ? <TerminalScreen /> : null}
+        {key === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={onSharedTaken} /> : null}
+        {key === 'setup' ? <SettingsScreen /> : null}
+      </ErrorBoundary>
+    )
+  }
+
+  return (
+    <ScrollView
+      ref={scroller}
+      horizontal
+      pagingEnabled
+      // A drag that starts on a chip row, a slider or a text field belongs to
+      // that control: the inner horizontal scroller takes the gesture first,
+      // and the responder system hands a slider its drag before this view sees
+      // a move. Vertical drags never reach here at all.
+      directionalLockEnabled
+      keyboardShouldPersistTaps="handled"
+      showsHorizontalScrollIndicator={false}
+      onScroll={reveal}
+      scrollEventThrottle={32}
+      onMomentumScrollEnd={settled}
+      style={{ flex: 1 }}
+      contentContainerStyle={{ width: width * WORKSPACES.length }}
+    >
+      {WORKSPACES.map((entry) => (
+        <View key={entry.key} style={{ width }} accessibilityElementsHidden={entry.key !== current} importantForAccessibility={entry.key === current ? 'auto' : 'no-hide-descendants'}>
+          {page(entry.key)}
+        </View>
+      ))}
+    </ScrollView>
   )
 }
 
@@ -155,7 +282,7 @@ function useIncomingShare(onShare: (payload: SharePayload) => void) {
 function useRequestedRoute(): { tab: TabKey; agent?: string } | null {
   const url = Linking.useURL()
   // Memoised on the URL, not merely computed: a fresh object every render
-  // would re-fire the effect that acts on it, and the tab bar would spring
+  // would re-fire the effect that acts on it, and the bar would spring
   // back to the notification's screen every time anything else re-rendered.
   return useMemo(() => {
     if (!url) return null
@@ -171,31 +298,62 @@ function useRequestedRoute(): { tab: TabKey; agent?: string } | null {
   }, [url])
 }
 
-function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
+/** The clock in the tray, to the minute — the bar's, not a stopwatch. */
+function useClock(): string {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    // Line up with the wall clock's own minute rather than drifting a second
+    // further from it on every tick.
+    let timer: ReturnType<typeof setTimeout>
+    const schedule = () => {
+      const date = new Date()
+      timer = setTimeout(() => {
+        setNow(new Date())
+        schedule()
+      }, 60000 - (date.getSeconds() * 1000 + date.getMilliseconds()))
+    }
+    schedule()
+    return () => clearTimeout(timer)
+  }, [])
+  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * The Omarchy bar, at the bottom, where it is on the desktop.
+ *
+ * Five numbered workspaces — the active one says its name and wears an accent
+ * underline — badges for what is waiting (an agent's permission prompt, a
+ * permission Android never granted), and a tray on the right with the link,
+ * the network, notification silencing and the clock. Tapping the tray goes to
+ * Setup, which is where every one of those is changed.
+ */
+function OmarchyBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
   const { palette, status } = useConnection()
   const { agentsWaiting } = useAgents()
+  const asks = useSetupAsks()
   const insets = useSafeAreaInsets()
+  const clock = useClock()
+
+  const link = status === 'connected' ? palette.green : status === 'error' ? palette.muted : palette.orange
 
   return (
     <View
+      accessibilityRole="tablist"
       style={{
         flexDirection: 'row',
-        backgroundColor: palette.dark_background,
-        borderTopWidth: StyleSheet.hairlineWidth * 2,
-        borderTopColor: palette.lighter_background,
-        paddingBottom: Math.max(insets.bottom, space.sm),
+        alignItems: 'center',
+        gap: 3,
+        paddingHorizontal: 10,
         paddingTop: space.sm,
+        paddingBottom: 10 + insets.bottom,
+        backgroundColor: alpha(palette.darker_background, 0.88),
+        borderTopWidth: StyleSheet.hairlineWidth * 2,
+        borderTopColor: alpha(palette.lighter_background, 0.85),
       }}
     >
-      {TABS.map((entry) => {
+      {WORKSPACES.map((entry, i) => {
         const active = entry.key === current
-        // An agent stuck on a permission prompt is the one thing on this bar
-        // that is costing someone time right now.
-        const count = entry.key === 'agents' ? agentsWaiting : 0
-        const badge = count > 0
-        // Inactive tabs read in `light_foreground`, not `muted`: the muted grey
-        // on the bar's own background is under 3:1 and the labels vanished.
-        const idle = palette.light_foreground
+        const count = entry.key === 'agents' ? agentsWaiting : entry.key === 'setup' ? asks : 0
         return (
           <Pressable
             key={entry.key}
@@ -203,58 +361,88 @@ function TabBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey
             accessibilityRole="tab"
             accessibilityState={{ selected: active }}
             accessibilityLabel={entry.label}
-            style={{ flex: 1, alignItems: 'center', paddingVertical: space.xs, gap: 3, minHeight: 48 }}
+            style={{
+              height: 34,
+              paddingHorizontal: space.sm,
+              borderRadius: radius.sm,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 7,
+              backgroundColor: active ? palette.selection : 'transparent',
+            }}
           >
-            <View>
-              <Feather name={entry.icon} size={20} color={active ? palette.bright_foreground : idle} />
-              {badge ? (
-                <View
-                  style={{
-                    position: 'absolute',
-                    top: -2,
-                    right: -6,
-                    minWidth: 14,
-                    height: 14,
-                    borderRadius: 7,
-                    paddingHorizontal: 3,
-                    backgroundColor: palette.orange,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                  }}
-                >
-                  <Text style={{ color: palette.bright_foreground, fontFamily: font.medium, fontSize: 9 }}>
-                    {count > 9 ? '9+' : count}
-                  </Text>
-                </View>
-              ) : null}
-            </View>
             <Text
               maxFontSizeMultiplier={1.2}
-              numberOfLines={1}
               style={{
-                color: active ? palette.bright_foreground : idle,
-                fontFamily: active ? font.medium : font.regular,
-                fontSize: size.micro,
-                letterSpacing: 0.6,
+                color: active ? palette.accent : palette.light_foreground,
+                fontFamily: font.bold,
+                fontSize: size.label,
+                fontVariant: ['tabular-nums'],
               }}
             >
-              {entry.label}
+              {i + 1}
             </Text>
-            {entry.key === 'stats' && status !== 'connected' ? (
+            {active ? (
+              <Text
+                maxFontSizeMultiplier={1.2}
+                numberOfLines={1}
+                style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.label, letterSpacing: 0.4 }}
+              >
+                {entry.label}
+              </Text>
+            ) : null}
+            {count > 0 ? (
               <View
                 style={{
                   position: 'absolute',
-                  bottom: 2,
-                  width: 4,
-                  height: 4,
-                  borderRadius: 2,
-                  backgroundColor: status === 'error' ? palette.red : palette.orange,
+                  top: -3,
+                  right: -4,
+                  minWidth: 14,
+                  height: 14,
+                  borderRadius: 7,
+                  paddingHorizontal: 3,
+                  backgroundColor: palette.orange,
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
-              />
+              >
+                <Text style={{ color: palette.background, fontFamily: font.bold, fontSize: 9, lineHeight: 14 }}>{count > 9 ? '9+' : count}</Text>
+              </View>
+            ) : null}
+            {active ? (
+              <View style={{ position: 'absolute', left: space.sm, right: space.sm, bottom: 2, height: 2, borderRadius: 1, backgroundColor: palette.accent }} />
             ) : null}
           </Pressable>
         )
       })}
+      <Pressable
+        onPress={() => onChange('setup')}
+        accessibilityRole="button"
+        accessibilityLabel="Link and clock, jump to Setup"
+        style={({ pressed }) => ({
+          marginLeft: 'auto',
+          height: 34,
+          paddingHorizontal: space.sm,
+          borderRadius: radius.sm,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 7,
+          backgroundColor: pressed ? palette.selection : 'transparent',
+        })}
+      >
+        <StatusDot tone={link} size={6} />
+        <Feather name="wifi" size={16} color={palette.light_foreground} />
+        {/* The desktop's notification silencing lives here once `system.toggles`
+            lands; until the daemon answers for it, the bell only says the tray
+            is where it will be. */}
+        <Feather name="bell" size={16} color={palette.light_foreground} />
+        <Text
+          maxFontSizeMultiplier={1.2}
+          style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.label, fontVariant: ['tabular-nums'] }}
+        >
+          {clock}
+        </Text>
+      </Pressable>
     </View>
   )
 }
