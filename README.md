@@ -43,7 +43,6 @@ the desktop and the app repaints in the same palette.
 | **Dictation** | Speak your answer instead of typing it, and let the desktop do the listening. The recording crosses to the machine you are already talking to, `voxtype` reads it there with a large Whisper model on the GPU — primed with the vocabulary these conversations are actually made of, so `hyprctl` and `cherry-pick` survive — and the words land in the composer for you to fix a name and press send. Nothing goes to a keyboard vendor, and nothing is kept: the audio is deleted the moment it has been read. |
 | **Agents you start** | Pick up any conversation that desktop has ever had — the CLI's own `--resume`, from a list with the titles it wrote for them — or send a new agent off with a prompt and no terminal at all, and read what it did later. A background agent's own running commentary ("exploring project state for commit + merge flow") is on the phone, and nowhere else: nothing on the desktop draws it. Behind a second switch, `omarchy-connect agent spawn on`, because starting a process is not the same decision as reading one. |
 | **Phone notifications** | One ongoing line saying whether this phone can currently see its desktop — the KDE Connect habit — with a reconnect button on it while it cannot. Then four things it will tell you about: an agent waiting on a question (with a reply box on the notification), an agent that finished something long, a file the desktop sent (with **Save** straight to the gallery), and whatever the desktop last copied (silent, with **Copy**). Each has its own switch. |
-| **Wake on LAN** | The desktop hands the phone its MAC and broadcast address while it is still awake, so a magic packet from the sofa brings it back out of sleep. Android only — nothing in Expo Go or on iOS can send the packet. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **From anywhere** | Off by default. Switched on, the desktop tells the phone the address its tunnel gave it — Tailscale, Headscale, WireGuard, ZeroTier, NetBird, whatever is already there — and the phone keeps that beside the home address and dials whichever one it can reach. No tunnel of ours, no relay, no account: the desktop reports what your own overlay handed it. Calls and messages stay at home — every telephony surface is switched off on a remote link, because hands-free is a radio link to a handset in this room and mirroring a text to a desktop the phone cannot see is carrying private mail somewhere nobody will read it. |
 | **Desktop client** | An Omarchy bar widget and panel: one line saying whether the phone is linked and what it is doing, whatever has just happened, and one click each to pair, send a file, or open the inbox — or a file dropped straight onto the bar icon. The counters and the two switches fold away until you ask for them. |
@@ -102,7 +101,6 @@ omarchy-connect agent <status|enable|spawn|run|…>  read, answer and start codi
 omarchy-connect tls <status|enable|…>       serve https + wss with a pinned certificate
 omarchy-connect config [key] [value]        read or change configuration
 omarchy-connect firewall                    check the port is reachable
-omarchy-connect wake                        whether a phone could wake this desktop
 omarchy-connect panel <status|install|remove>  the Omarchy bar client
 omarchy-connect install-service             write a systemd user unit
 ```
@@ -891,7 +889,6 @@ handshake and the app greys out whatever is missing.
 | Dictating to an agent | `voxtype` ([voxtype.io](https://voxtype.io)) and `ffmpeg`. The phone hides the microphone unless the desktop reports both. |
 | Pairing QR | `qrencode` |
 | Browsing for a file to send (`send --pick`) | the XDG desktop portal (`xdg-desktop-portal` plus a backend) — the file chooser a browser opens. Without one, pass the path: `omarchy-connect send <file>`. |
-| Waking it from the phone | a wired card set to wake the machine — `omarchy-connect wake` says whether yours is, and prints the command |
 
 ### Firewall
 
@@ -960,39 +957,6 @@ controls and the hands-free panel are simply not there. A phone at the far end
 of a tunnel also does not count as present, so `handsfree.autoConnect =
 presence` will not raise a Bluetooth profile on a handset five hundred
 kilometres away.
-
-### Wake on LAN
-
-A desktop that is asleep runs no daemon, so nothing can be asked of it at the
-moment it is wanted. The answers are handed over earlier instead: every `hello`
-carries this machine's MAC, the broadcast address of its subnet and whether its
-card is set to wake it, and the phone keeps that copy beside the pairing. The
-button is on the Remote screen, under Sleep, and it is the one control there
-that comes alive when the desktop does not answer.
-
-Check the desktop half with:
-
-```bash
-omarchy-connect wake
-```
-
-It reads the card's own wakeup flag — no root, nothing changed — and if the
-card is not armed it prints the command that arms it for good:
-
-```bash
-nmcli connection modify "Wired connection 1" 802-3-ethernet.wake-on-lan magic
-```
-
-NetworkManager is the road worth taking because it re-applies the setting every
-time the link comes up; `sudo ethtool -s enp8s0 wol g` does the same thing until
-the next reboot and then quietly stops. The other half is in the BIOS — usually
-"Wake on LAN" or "Power on by PCI-E" — and no command here can read or set it.
-
-Two honest limits. Wi-Fi cards almost never wake a machine from a magic packet,
-so this is a feature for a wired desktop. And the phone needs a UDP socket,
-which the React Native runtime does not have — the packet goes out through this
-project's own Android module, so waking works in the Android build and nowhere
-else.
 
 ### DNS switching
 

@@ -115,7 +115,6 @@ declare class OmarchyLink extends NativeModule<Events> {
   isMicRunning(): boolean
   hasMicPermission(): boolean
   requestMicPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
-  sendDatagram(payload: string, host: string, port: number): Promise<number>
   takeShareIntent(): Promise<SharePayload | null>
 }
 
@@ -547,23 +546,3 @@ export async function openBatterySettings(): Promise<void> {
   }
 }
 
-/**
- * Whether this build can put a UDP datagram on the network at all.
- *
- * There is no socket of that kind in the React Native runtime, so the answer
- * is no everywhere but an Android build carrying this module — which is the
- * honest reason waking a desktop is Android-only. The function check is for
- * the other case: an installed build older than the feature, whose module is
- * present but has never heard of it.
- */
-export function datagramsSupported(): boolean {
-  const native = linkService()
-  return typeof (native as unknown as { sendDatagram?: unknown } | null)?.sendDatagram === 'function'
-}
-
-/** One datagram, usually at a broadcast address. Answers with its size. */
-export async function sendDatagram(payload: string, host: string, port: number): Promise<number> {
-  const native = linkService()
-  if (!native) throw new Error('this build cannot send a UDP packet')
-  return native.sendDatagram(payload, host, port)
-}

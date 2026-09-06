@@ -27,7 +27,6 @@ import { reduceAgents } from '../lib/agents'
 import { remember } from '../lib/clipboard'
 import { merged } from '../lib/state'
 import { errorLine } from '../lib/errors.ts'
-import { canWake, sendWakePacket, waitForDesktop } from './wake'
 import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
 import { startLocateResponder } from './locate'
@@ -146,8 +145,6 @@ export type LinkState = {
   files: FileEvent[]
   latencyMs: number | null
   relocating: boolean
-  /** A magic packet is out and the desktop has not answered yet. */
-  waking: boolean
   /**
    * Whether the desktop is listening to this phone's microphone, and why the
    * last press did not do what it said. Kept here rather than in the card,
@@ -180,7 +177,6 @@ const INITIAL: LinkState = {
   files: [],
   latencyMs: null,
   relocating: false,
-  waking: false,
   mic: NO_MIC,
   client: null,
 }
@@ -198,7 +194,6 @@ class Link {
   private starting: Promise<void> | null = null
   private started = false
   private relocatingNow = false
-  private wakingNow = false
   private listening = false
   /**
    * How many screens are asking for the per-second stats snapshot.
@@ -405,8 +400,7 @@ class Link {
       }),
       client.on('hello', (msg: Hello) => {
         this.patch({ hello: msg, ...(msg.theme ? { palette: { ...FALLBACK_PALETTE, ...msg.theme } } : {}) })
-        // Written down every time rather than once at pairing: the wake card
-        // can be armed, swapped or given a new subnet long after, the address
+        // Written down every time rather than once at pairing: the address
         // list changes with the desktop's tunnels, and the address this socket
         // actually landed on is only known now.
         void this.rememberPairing(client, msg)
@@ -642,14 +636,13 @@ class Link {
   /**
    * Everything a working `hello` teaches us about the pairing, written down.
    *
-   * One after another rather than three at once: each of these reads the
+   * One after another rather than both at once: each of these reads the
    * stored record, changes one part of it and writes the whole thing back, so
    * running them together would have the last writer quietly drop what the
    * others had just decided.
    */
   private async rememberPairing(client: ConnectClient, msg: Hello) {
     await this.rememberAddress(client.host, client.port)
-    await this.rememberWake(msg.wake ?? null)
     await this.rememberEndpoints(msg.endpoints ?? null)
   }
 
@@ -691,7 +684,8 @@ class Link {
 
   /**
    * Keeps the stored list of addresses in step with what the desktop just
-   * said about itself, the way `rememberWake` does for the wake block.
+   * said about itself. A no-op when nothing moved — this writes to secure
+   * storage, and doing that once a reconnect for no reason is a waste.
    *
    * An address somebody typed in survives this; see `mergeEndpoints`.
    */
@@ -705,20 +699,6 @@ class Link {
     this.client?.setEndpoints(addresses)
     if (JSON.stringify(desktop.endpoints ?? []) === JSON.stringify(addresses)) return
     const next = { ...desktop, endpoints: addresses }
-    await saveDesktop(next).catch(() => {})
-    this.patch({ desktop: next })
-  }
-
-  /**
-   * Keeps the stored pairing's wake block in step with what the desktop just
-   * said about itself. A no-op when nothing moved — this writes to secure
-   * storage, and doing that once a reconnect for no reason is a waste.
-   */
-  private async rememberWake(wake: Hello['wake'] | null) {
-    const desktop = this.state.desktop
-    if (!desktop || !wake) return
-    if (JSON.stringify(desktop.wake ?? null) === JSON.stringify(wake)) return
-    const next = { ...desktop, wake }
     await saveDesktop(next).catch(() => {})
     this.patch({ desktop: next })
   }
@@ -912,42 +892,6 @@ class Link {
     this.client?.setEndpoints(endpoints ?? [])
     await saveDesktop(next).catch(() => {})
     this.patch({ desktop: next })
-  }
-
-  /**
-   * Wakes the desktop, then waits for it to come back.
-   *
-   * Nothing acknowledges a magic packet, so the only honest confirmation is
-   * the daemon answering `/api/info` again — which is what this waits for, and
-   * what it reports. A desktop that came up on a new address is not a failure
-   * either: the socket's own retry hands over to `relocate()`, which finds it
-   * by the key the phone pinned.
-   */
-  async wake(): Promise<boolean> {
-    const desktop = this.state.desktop
-    if (!desktop) throw new Error('not paired with a desktop yet')
-    if (!canWake(desktop.wake)) {
-      throw new Error(
-        desktop.wake?.mac
-          ? 'waking a desktop needs the Android app — nothing in Expo Go or on iOS can send this packet'
-          : 'this desktop has not told the app how to wake it — connect once and try again',
-      )
-    }
-    if (this.wakingNow) return false
-    this.wakingNow = true
-    this.patch({ waking: true })
-    try {
-      await sendWakePacket(desktop.wake!, desktop.host)
-      const answered = await waitForDesktop(() => probeHost(desktop.host, desktop.port))
-      // Forced on the strength of the probe: something just answered at that
-      // address over HTTP, which is better evidence that the desktop is
-      // reachable than anything the transport can imply.
-      this.client?.reconnectNow(true)
-      return answered
-    } finally {
-      this.wakingNow = false
-      this.patch({ waking: false })
-    }
   }
 
   call<T = any>(method: string, params: Record<string, unknown> = {}): Promise<T> {

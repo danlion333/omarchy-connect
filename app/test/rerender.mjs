@@ -44,7 +44,6 @@ const base = {
   files: [],
   latencyMs: 12,
   relocating: false,
-  waking: false,
   client: null,
 }
 

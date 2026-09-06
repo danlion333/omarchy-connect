@@ -2,7 +2,6 @@ import * as SecureStore from 'expo-secure-store'
 
 import { DEFAULT_ALERTS, type AlertPrefs } from './alerts'
 import { migrateEndpoints, type Endpoint } from '../lib/endpoints'
-import type { WakeInfo } from '../lib/wol'
 
 export { MAX_ENDPOINTS, mergeEndpoints, migrateEndpoints } from '../lib/endpoints'
 export type { Endpoint, EndpointKind } from '../lib/endpoints'
@@ -23,12 +22,6 @@ export type SavedDesktop = {
   tls?: boolean
   /** Its certificate pin, pinned at the same moment as the identity key. */
   certPin?: string | null
-  /**
-   * What it would take to wake this desktop, as it described itself at the
-   * last `hello`. Kept here rather than asked for because the moment it is
-   * wanted is the moment there is nothing to ask.
-   */
-  wake?: WakeInfo | null
   /**
    * Every address this desktop said it could be reached on, best first.
    *

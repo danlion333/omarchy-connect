@@ -28,8 +28,6 @@ type Actions = {
   reconnect: () => void
   /** Clears the desktop's last complaint once it has been read. */
   dismissServerError: () => void
-  /** Sends the magic packet, then waits for the desktop to answer again. */
-  wake: () => Promise<boolean>
   forget: () => Promise<void>
   /** Adds an address by hand, after proving it is the paired desktop. */
   addEndpoint: (host: string, port: number) => Promise<{ ok: boolean; error?: string }>
@@ -106,7 +104,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
   const removeEndpoint = useCallback((host: string, port: number) => link.removeEndpoint(host, port), [])
   const reconnect = useCallback(() => link.reconnectNow(), [])
   const dismissServerError = useCallback(() => link.dismissServerError(), [])
-  const wake = useCallback(() => link.wake(), [])
   const refreshAgents = useCallback(() => link.refreshAgents(), [])
   const refreshAgentJobs = useCallback(() => link.refreshAgentJobs(), [])
   const watchStats = useCallback(() => link.watchStats(), [])
@@ -120,7 +117,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       pair,
       reconnect,
       dismissServerError,
-      wake,
       forget,
       addEndpoint,
       removeEndpoint,
@@ -134,7 +130,6 @@ export function ConnectionProvider({ children }: { children: React.ReactNode }) 
       pair,
       reconnect,
       dismissServerError,
-      wake,
       forget,
       addEndpoint,
       removeEndpoint,

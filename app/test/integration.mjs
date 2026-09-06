@@ -12,7 +12,6 @@ import path from 'node:path'
 import { localHeaders } from '../../daemon/test/sandbox.mjs'
 import { ConnectClient } from '../src/api/client.ts'
 import { mergeEndpoints } from '../src/lib/endpoints.ts'
-import { magicPacket, wakeTargets } from '../src/lib/wol.ts'
 
 const PORT = Number(process.env.PORT || 8801)
 const results = []
@@ -112,17 +111,6 @@ client.setEndpoints(merged)
 check('and the client dials down the merged list',
   client.endpoints.length === merged.length)
 
-// Wake-on-LAN is the one thing the phone has to be told before it needs it:
-// once the desktop is asleep there is nothing left to ask.
-check('the desktop says how it could be woken', hello.wake && typeof hello.wake.supported === 'boolean',
-  hello.wake ? `${hello.wake.interface ?? 'no link'} ${hello.wake.mac ?? ''}`.trim() : 'absent')
-check(
-  'and what it says is enough to build a packet with',
-  hello.wake?.supported !== true ||
-    (magicPacket(hello.wake.mac).length === 102 && wakeTargets(hello.wake, null, null).length > 0),
-  hello.wake?.broadcast ? `${hello.wake.broadcast}:${hello.wake.port}` : 'no broadcast address',
-)
-
 const stats = await client.call('system.stats')
 check('client.call round trip', stats.memory.total > 0, `${stats.network.type} ${stats.network.ip ?? ''}`)
 
@@ -199,7 +187,7 @@ impostor.close()
 // desktop sends after the key exchange is encrypted, which makes a *text*
 // frame proof of an impostor rather than a message — and it used to be parsed
 // as trusted: an `ev:phone` that sends an SMS from this handset, a `hello.ok`
-// that rewrites the addresses and the wake record the phone remembers.
+// that rewrites the addresses the phone remembers.
 //
 // The fake desktop below is the real server-side handshake (the daemon's own
 // `accept`, reading the same identity key out of the sandbox) with one thing
@@ -223,7 +211,6 @@ impostor.close()
     protocol: 2,
     secure: true,
     endpoints: [{ host: '198.51.100.7', port: 9, kind: 'lan' }],
-    wake: { supported: true, mac: 'de:ad:be:ef:00:01' },
   })
   const forgedSms = JSON.stringify({
     t: 'ev',

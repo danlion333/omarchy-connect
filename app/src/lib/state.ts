@@ -60,7 +60,6 @@ export type StatusSlice = {
   files: FileEvent[]
   latencyMs: number | null
   relocating: boolean
-  waking: boolean
   /**
    * Whether the desktop is listening to this phone. In this slice rather than
    * one of its own because it moves a handful of times in a session — a press,
@@ -85,7 +84,6 @@ export function statusSlice(state: LinkState): StatusSlice {
     files: state.files,
     latencyMs: state.latencyMs,
     relocating: state.relocating,
-    waking: state.waking,
     mic: state.mic,
     client: state.client,
   }

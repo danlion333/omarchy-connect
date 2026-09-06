@@ -133,18 +133,6 @@ export async function networkFacts() {
 export const noteAgentAlert = record('noteAgentAlert')
 export const noteFileAlert = record('noteFileAlert')
 
-/* ── UDP, for the magic packet and the discovery listener ───────────── */
-
-/**
- * React Native has no datagram socket, so the native module lends one. Here it
- * only has to exist: nothing in a test wakes a desktop or listens for one.
- */
-export function datagramsSupported() {
-  return false
-}
-
-export const sendDatagram = record('sendDatagram')
-
 /* ── the rest of the native surface ─────────────────────────────────── */
 
 /**
