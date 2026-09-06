@@ -587,7 +587,7 @@ function Permissions({ telephony, remote }: { telephony: boolean; remote: boolea
       <CardHeader
         icon="smartphone"
         title="Permissions"
-        subtitle="Android · tap a row to ask again"
+        subtitle="Tap a row to ask again"
         right={<Pill label={`${granted} of ${every.length}`} />}
       />
       {loading ? <Busy label="Reading permissions" /> : null}
