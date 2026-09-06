@@ -100,7 +100,39 @@ async function keyState(key, state, mods = '') {
   )
 }
 
+/**
+ * wtype's names for Hyprland's modifiers. wtype speaks xkb keysyms, which is
+ * the vocabulary `input.key` already promises (`Return`, `BackSpace`, `Up`).
+ */
+const WTYPE_MODS = { SUPER: 'logo', CTRL: 'ctrl', ALT: 'alt', SHIFT: 'shift' }
+
+/**
+ * One key press and release.
+ *
+ * Verified on Hyprland 0.56, not assumed: `hl.dsp.send_key_state` answers
+ * `ok` for `a` and `key not found` for `Return`, and delivers neither to the
+ * focused window — a `read` in the target terminal sees nothing. wtype, which
+ * the daemon already needs for `input.text`, delivers both text and named
+ * keys through the virtual-keyboard protocol. So a keyboard key goes through
+ * wtype whenever it is installed, and the compositor's dispatcher is the road
+ * only when it is not. Mouse buttons (`mouse:272`) are not keys wtype knows
+ * and keep the dispatcher.
+ */
 async function tap(key, mods = '') {
+  if (!key.startsWith('mouse:') && has('wtype')) {
+    const held = String(mods)
+      .split(/\s+/)
+      .filter(Boolean)
+      .map((m) => WTYPE_MODS[m])
+      .filter(Boolean)
+    const args = []
+    for (const m of held) args.push('-M', m)
+    args.push('-k', key)
+    for (const m of [...held].reverse()) args.push('-m', m)
+    const res = await run('wtype', args, { timeout: 5000 })
+    if (!res.ok) throw new Error(res.stderr || `wtype could not press ${key}`)
+    return
+  }
   await keyState(key, 'down', mods)
   await sleep(CLICK_GAP_MS)
   await keyState(key, 'up', mods)
@@ -122,12 +154,12 @@ export default {
     return {
       pointer: hyprland,
       buttons: hyprland,
-      keys: hyprland,
-      scroll: hyprland,
+      keys: hyprland || has('wtype'),
+      scroll: hyprland || has('wtype'),
       // 'wheel' is a real scroll axis; 'keys' moves by arrow key instead.
       scrollMode: has('ydotool') ? 'wheel' : hyprland ? 'keys' : 'none',
       // wtype types arbitrary text, including anything that is not on a
-      // keyboard; without it we can still send named keys.
+      // keyboard, and is how named keys are pressed too (see `tap`).
       text: has('wtype'),
     }
   },
