@@ -1,5 +1,4 @@
 import type { Palette } from '../theme'
-import type { WakeInfo } from '../lib/wol'
 import {
   isTunnelKind,
   orderCandidates,
@@ -49,8 +48,6 @@ export type Hello = {
   server: { name: string; version: string }
   device: { id: string; name: string; platform: string; pairedAt: number }
   host: HostInfo
-  /** How this desktop could be woken once it is asleep. Absent on older daemons. */
-  wake?: WakeInfo
   /**
    * Every address this desktop can be dialled on, best first. Absent on
    * daemons that predate remote access, which is why nothing may assume it.

@@ -76,7 +76,6 @@ const state = {
   files: [],
   latencyMs: null,
   relocating: false,
-  waking: false,
   client: null,
 }
 check('the slice carries the history by identity', statusSlice(state).clipboard === two)

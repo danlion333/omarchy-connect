@@ -15,8 +15,7 @@ import dgram from 'node:dgram'
  * holds an id, a name and a token and no address of any kind, and by design —
  * see `server.js`, where the phone is always the side that dials. What is left
  * is the one address that needs no knowledge of who is listening, which is the
- * subnet's own broadcast address. `wol.js` solves the mirror image of this
- * problem the same way and for the same reason.
+ * subnet's own broadcast address.
  *
  * So: one short burst of UDP on the wire when the daemon starts, and nothing
  * else, ever. It is a nudge and not a beacon — a phone that missed it is
@@ -29,11 +28,8 @@ import dgram from 'node:dgram'
  */
 
 /**
- * Where the phone listens. Not 9 — that is the discard port a magic packet
- * goes to, and a magic packet is a shape rather than a message, so sharing a
- * port with it would mean two unrelated things arriving at the same socket.
- * 8766 is the daemon's own port plus one, which is where anyone looking for it
- * would look.
+ * Where the phone listens. 8766 is the daemon's own port plus one, which is
+ * where anyone looking for it would look.
  */
 export const ANNOUNCE_PORT = 8766
 

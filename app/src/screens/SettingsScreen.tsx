@@ -7,7 +7,6 @@ import * as MediaLibrary from 'expo-media-library'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import {
-  Body,
   Button,
   Buttons,
   Card,
@@ -53,7 +52,6 @@ import {
   backgroundLinkRunning,
   backgroundLinkSupported,
   canPostNotifications,
-  datagramsSupported,
   hasMicPermission,
   isBatteryOptimized,
   micSupported,
@@ -63,11 +61,9 @@ import {
   startBackgroundLink,
   stopBackgroundLink,
 } from '../../modules/omarchy-link'
-import { canWake } from '../api/wake'
 import { alertPrefs, setAlertPrefs, type AlertCategory, type AlertPrefs } from '../api/alerts'
 import { saveAlertPrefs } from '../api/storage'
-import type { WakeInfo } from '../lib/wol'
-import { font, radius, size, space } from '../theme'
+import { space } from '../theme'
 
 /**
  * Setup, in the mock's language: the desktop at the top, then everything this
@@ -139,23 +135,21 @@ export function SettingsScreen() {
 
 /**
  * The machine on the other end, and every fact about how this socket got to
- * it: the key it was pinned to, the road it took, the road it would take if
- * the first one went away, and whether it could be woken once it is asleep.
+ * it: the key it was pinned to, the road it took, and the road it would take
+ * if the first one went away.
  *
- * Remote access and Wake on LAN were two cards of their own and are now two
- * sections of this one, because both are answers to the same question — where
- * is this desktop and how do I reach it — and neither is worth a header on a
- * screen that already has eight.
+ * Remote access was a card of its own and is now a section of this one,
+ * because it is an answer to the same question — where is this desktop and how
+ * do I reach it — and it is not worth a header on a screen that already has
+ * eight.
  */
 function Desktop() {
-  const { desktop, hello, palette, status, error, fingerprint, reconnect, wake, waking, client } = useConnection()
+  const { desktop, hello, palette, status, error, fingerprint, reconnect } = useConnection()
   const toast = useToast()
   const [copied, setCopied] = useState(false)
 
   const connected = status === 'connected'
   const dialling = status === 'connecting' || status === 'reconnecting' || status === 'pairing'
-  const wakeable = canWake(desktop?.wake)
-  const wol = desktop?.wake ?? hello?.wake ?? null
 
   const endpoints = hello?.endpoints ?? desktop?.endpoints ?? []
   const travelling = endpoints.filter((entry) => entry.kind !== 'lan')
@@ -167,15 +161,6 @@ function Desktop() {
     setCopied(true)
     toast({ value: fingerprint, hint: 'copied · compare with omarchy-connect status' })
   }, [fingerprint, toast])
-
-  const send = useCallback(async () => {
-    try {
-      const answered = await wake()
-      toast({ value: 'omarchy-connect wake', hint: answered ? 'the desktop answered' : 'magic packet sent' })
-    } catch (err) {
-      toast({ value: 'wake', hint: err instanceof Error ? err.message : 'the packet did not go' })
-    }
-  }, [toast, wake])
 
   return (
     <Card>
@@ -204,11 +189,6 @@ function Desktop() {
         value={fallback ? `${kindLabel(fallback.kind)} · ready` : 'none'}
         tone={fallback ? undefined : palette.muted}
       />
-      <Row
-        label="Wake on LAN"
-        value={wolLabel(wol)}
-        tone={wol?.armed === true ? undefined : palette.orange}
-      />
       {!hello && dialling ? <Busy label="Connecting" /> : null}
       <Notice
         error={error}
@@ -216,7 +196,6 @@ function Desktop() {
         style={{ marginBottom: 0 }}
       />
       <Buttons>
-        {wakeable ? <Button compact icon="power" label="Wake" loading={waking} onPress={() => void send()} /> : null}
         <Button
           compact
           icon="refresh-cw"
@@ -229,49 +208,8 @@ function Desktop() {
         />
       </Buttons>
 
-      {wol?.supported ? <WakeDetail wake={wol} offTheWire={client?.networkFacts ? !client.networkFacts.lan : false} /> : null}
-
       <RemoteAccess />
     </Card>
-  )
-}
-
-/**
- * The half of Wake on LAN that is a diagnosis rather than a button: which card
- * would answer, whether it is armed, and the one command that arms it. All of
- * it was read while the desktop was still awake, because once it is asleep
- * there is nobody left to ask.
- */
-function WakeDetail({ wake, offTheWire }: { wake: WakeInfo; offTheWire: boolean }) {
-  const palette = usePalette()
-  const toast = useToast()
-  const [copied, setCopied] = useState(false)
-
-  const copy = (command: string) => {
-    void Clipboard.setStringAsync(command)
-    setCopied(true)
-    toast({ value: command, hint: 'copied · run it on the desktop' })
-  }
-
-  return (
-    <>
-      <Divider />
-      <Section title="Wake on LAN" />
-      <Row label="Interface" value={wake.interface ? `${wake.interface} (${wake.type})` : '—'} />
-      <Row label="MAC" value={wake.mac ?? '—'} />
-      <Row label="Packet to" value={wake.broadcast ? `${wake.broadcast}:${wake.port}` : '—'} />
-      {!datagramsSupported() ? (
-        <Hint icon="alert-triangle" tone={palette.orange}>
-          Android only
-        </Hint>
-      ) : offTheWire ? (
-        <Hint icon="alert-triangle" tone={palette.orange}>
-          Not on the desktop's network · the packet has nowhere to go
-        </Hint>
-      ) : null}
-      {wake.note ? <Hint>{wake.note}</Hint> : null}
-      <ArmCommand command={wake.command} copied={copied} onCopy={copy} />
-    </>
   )
 }
 
@@ -1156,14 +1094,6 @@ function kindLabel(kind: string) {
   return kind.charAt(0).toUpperCase() + kind.slice(1)
 }
 
-/** Wake on LAN, in the one word that says whether pressing the button would work. */
-function wolLabel(wake: { supported: boolean; armed: boolean | null } | null) {
-  if (!wake || !wake.supported) return 'not available'
-  if (wake.armed === true) return 'armed'
-  if (wake.armed === null) return 'cannot tell'
-  return 'not armed'
-}
-
 /** `receiveFiles` → `receive files`, so a pill in caps stays readable. */
 function featureLabel(feature: string) {
   return feature.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
@@ -1211,36 +1141,5 @@ function Busy({ label }: { label: string }) {
       <ActivityIndicator size="small" color={p.light_foreground} />
       <Label>{label}</Label>
     </View>
-  )
-}
-
-/** A shell command to be run elsewhere: selectable, wrapping, in a box. */
-function Command({ text }: { text: string }) {
-  const p = usePalette()
-  return (
-    <View style={{ backgroundColor: p.darker_background, borderRadius: radius.sm, paddingHorizontal: space.md, paddingVertical: space.sm }}>
-      <Body selectable tone={p.bright_foreground} style={{ fontFamily: font.medium, fontSize: size.label }}>
-        {text}
-      </Body>
-    </View>
-  )
-}
-
-/** The command that arms the card, and the one press that puts it in the clipboard. */
-function ArmCommand({ command, copied, onCopy }: { command: string | null; copied: boolean; onCopy: (text: string) => void }) {
-  if (!command) return null
-  return (
-    <>
-      <Command text={command} />
-      <View style={{ flexDirection: 'row' }}>
-        <Button
-          compact
-          variant="ghost"
-          icon={copied ? 'check' : 'copy'}
-          label={copied ? 'Copied' : 'Copy command'}
-          onPress={() => onCopy(command)}
-        />
-      </View>
-    </>
   )
 }

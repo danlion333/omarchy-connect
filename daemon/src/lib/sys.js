@@ -170,8 +170,8 @@ export function primaryInterface() {
  * `192.168.1.42` + `255.255.255.0` → `192.168.1.255`.
  *
  * The directed broadcast address of the subnet the desktop is on, which is
- * where a magic packet has to be addressed: the machine it is meant for is
- * asleep, so it holds no ARP entry and nothing can be unicast to it.
+ * where a packet meant for whoever happens to be listening has to be
+ * addressed — nobody here knows the phone's address to unicast at.
  */
 export function broadcastFor(ip, netmask) {
   if (typeof ip !== 'string' || typeof netmask !== 'string') return null

@@ -115,10 +115,6 @@ export function baseSnapshot({ version = null, port = null } = {}) {
     // `enabled` is config and survives a stopped daemon; everything else is
     // an answer only a running one can give, so it publishes as empty here.
     remote: { enabled: cfg.remote?.enabled === true, kind: null, address: null, dnsName: null, keyExpiresAt: null },
-    // What a phone would need to wake this desktop. It is the running daemon
-    // that reads the card, so a stopped one publishes the shape and no answer
-    // — the phone already has the copy it was given at `hello` anyway.
-    wake: { supported: false, interface: null, type: 'offline', mac: null, broadcast: null, port: 9, armed: null, command: null, note: null },
     devices: cfg.devices.map(publicDevice),
     transfers: [],
     counters: { filesIn: 0, filesOut: 0, notifications: 0 },

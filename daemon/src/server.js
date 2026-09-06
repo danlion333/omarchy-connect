@@ -61,7 +61,6 @@ import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
 import * as state from './lib/state.js'
 import * as firewall from './lib/firewall.js'
-import * as wol from './lib/wol.js'
 import * as tls from './lib/tls.js'
 import * as sysinfo from './lib/sys.js'
 import * as overlay from './lib/overlay.js'
@@ -175,9 +174,6 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   let started = false
   let firewallState = { blocked: false, tool: null, command: null, remoteCommand: null }
   let firewallCheckedAt = 0
-  // What a phone would need to wake this desktop. Answered while the daemon
-  // is up because by the time it is wanted there is no daemon to ask.
-  let wakeState = { supported: false, interface: null, mac: null, broadcast: null, port: wol.WAKE_PORT, armed: null, command: null, note: null }
 
   function recordTransfer(entry) {
     transfers.unshift({ ...entry, at: Date.now() })
@@ -202,7 +198,6 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       pairing: activePairing(),
       firewall: firewallState,
       remote: { enabled: remoteEnabled(), ...overlay.summary(overlayState) },
-      wake: { ...wakeState },
       scheme,
       tls: certificate
         ? { enabled: true, pin: certificate.pin, fingerprint: certificate.fingerprint, notAfter: certificate.notAfter }
@@ -303,12 +298,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
    * Where the "this desktop is up" packet goes, and on which port.
    *
    * The address is the current subnet's broadcast address — `sysinfo.network()`
-   * has already worked it out with `broadcastFor`, which is the same arithmetic
-   * a magic packet is aimed with. The override exists for the suite and for
-   * nothing else: a test machine has no subnet it may shout across, and a
-   * broadcast is the one thing that cannot be pointed at a loopback listener
-   * without saying so. It is read fresh rather than captured so a test can set
-   * it per run, in the spirit of `OMARCHY_CONNECT_STATE`.
+   * has already worked it out with `broadcastFor`. The override exists for the
+   * suite and for nothing else: a test machine has no subnet it may shout
+   * across, and a broadcast is the one thing that cannot be pointed at a
+   * loopback listener without saying so. It is read fresh rather than captured
+   * so a test can set it per run, in the spirit of `OMARCHY_CONNECT_STATE`.
    */
   function announceTarget() {
     const override = process.env.OMARCHY_ANNOUNCE_TO
@@ -412,15 +406,6 @@ export function createServer({ port, version = '0.1.0' } = {}) {
     if (overlayChanged) changed = true
     if ((addressChanged || overlayChanged) && certificate) refreshCertificate(ip)
     if (overlayChanged) announceEndpoints()
-
-    // Cheap enough to redo on every tick: one `nmcli` call cached per
-    // interface, and a sysfs read. The card can be armed while the daemon
-    // runs, and the phone should be told the moment it is.
-    const wake = await wol.check(net).catch(() => null)
-    if (wake && (wake.mac !== wakeState.mac || wake.armed !== wakeState.armed || wake.broadcast !== wakeState.broadcast)) {
-      changed = true
-    }
-    if (wake) wakeState = wake
 
     // `ufw` is checked through a synchronous systemctl call, so it gets a
     // slow lane of its own rather than riding every republish.
@@ -1349,13 +1334,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       server: { name: loadConfig().deviceName, version },
       device: publicDevice(device),
       host: hostInfo(),
-      // Handed over now because it cannot be asked for later: this is what
-      // the phone sends a magic packet at once this desktop is asleep.
-      wake: { ...wakeState },
       // Every address this desktop can be dialled on, so a phone that moves
       // off the subnet has somewhere to go without being re-paired. The list
-      // is handed over rather than asked for, for the same reason `wake` is:
-      // the moment it is wanted is the moment there is nothing to ask.
+      // is handed over rather than asked for because the moment it is wanted
+      // is the moment there is nothing to ask.
       endpoints: endpoints(),
       link: { via: client.via, kind: client.link },
       capabilities: collectCapabilities({ remote: client.via === 'remote' }),

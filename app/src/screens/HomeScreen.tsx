@@ -40,9 +40,6 @@ import {
   useToast,
   type IconName,
 } from '../ui/kit'
-import { canWake } from '../api/wake'
-import { datagramsSupported } from '../../modules/omarchy-link'
-import { macBytes } from '../lib/wol'
 import { bytes, duration, ms, percent, rate } from '../lib/format'
 import { space } from '../theme'
 
@@ -68,9 +65,6 @@ type DnsProvider = (typeof DNS_OPTIONS)[number]['value']
 /** Which card a failure belongs under. A notice sits where the thing that failed is. */
 type CardKey = 'now' | 'load' | 'network' | 'media' | 'toggles' | 'quick'
 
-/** The daemon probes the desktop this long before it admits it did not come up. */
-const WAKE_WAIT = '90 s'
-
 /**
  * Workspace 1: the desktop at a glance, and the controls that change it.
  *
@@ -81,7 +75,7 @@ const WAKE_WAIT = '90 s'
  * every tap answers with a toast naming the command that ran.
  */
 export function HomeScreen() {
-  const { hello, palette, status, call, can, desktop, wake, waking, watchStats } = useConnection()
+  const { hello, palette, status, call, can, desktop, watchStats } = useConnection()
   const stats = useStats()
   const look = useLook()
   const toast = useToast()
@@ -100,7 +94,6 @@ export function HomeScreen() {
   const [errors, setErrors] = useState<Partial<Record<CardKey, unknown>>>({})
   const [busy, setBusy] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
-  const [woke, setWoke] = useState<{ text: string; tone: 'ok' | 'warning' } | null>(null)
 
   const connected = status === 'connected'
   const hyprOk = connected && can('desktop', 'hyprland')
@@ -303,38 +296,6 @@ export function HomeScreen() {
     },
     [act, confirm],
   )
-
-  /**
-   * The one control here that is for a desktop which is *not* answering, so
-   * it appears exactly when the rest of the screen has gone grey.
-   */
-  const wakeable = canWake(desktop?.wake)
-  const onWake = useCallback(async () => {
-    setWoke(null)
-    setError('quick', null)
-    try {
-      Haptics.selectionAsync().catch(() => {})
-      toast({ value: 'omarchy-connect wake', hint: 'magic packet sent' })
-      const answered = await wake()
-      setWoke(
-        answered
-          ? { text: 'The desktop is back', tone: 'ok' }
-          : desktop?.wake?.armed === false
-            ? { text: "No answer — the desktop's card is not set to wake it, see Setup", tone: 'warning' }
-            : { text: 'No answer yet — it may still be starting', tone: 'warning' },
-      )
-    } catch (err) {
-      setError('quick', err)
-    }
-  }, [wake, desktop?.wake?.armed, setError, toast])
-
-  const wakeHint = !datagramsSupported()
-    ? 'Android only'
-    : !macBytes(desktop?.wake?.mac)
-      ? 'Connect once so the desktop can say how to wake it'
-      : waking
-        ? `Waiting for the desktop, up to ${WAKE_WAIT}`
-        : 'Wakes the desktop over LAN'
 
   /* ── what the cards are drawn from ────────────────────────────────── */
 
@@ -819,14 +780,6 @@ export function HomeScreen() {
             disabled={!connected}
           />
         </Buttons>
-        {wakeable && !connected ? (
-          <>
-            <Divider />
-            <Button icon="zap" label={waking ? 'Waking…' : 'Wake'} compact onPress={onWake} loading={waking} disabled={waking} />
-            <Hint>{wakeHint}</Hint>
-            {woke ? <Notice error={woke.text} tone={woke.tone} onDismiss={() => setWoke(null)} style={{ marginBottom: 0 }} /> : null}
-          </>
-        ) : null}
         {errors.quick != null ? (
           <Notice error={errors.quick} onDismiss={() => setError('quick', null)} style={{ marginBottom: 0 }} />
         ) : null}

@@ -115,7 +115,7 @@ check(
   'a /24 desktop announces on its own .255',
   broadcastFor('192.168.1.42', '255.255.255.0') === '192.168.1.255',
 )
-check('the default port is not the wake port', ANNOUNCE_PORT === 8766 && ANNOUNCE_PORT !== 9)
+check('the announce port is the one the phone listens on', ANNOUNCE_PORT === 8766)
 
 // A desktop with no address has no subnet to shout across, which is the state
 // a daemon started at boot can genuinely be in — the unit is ordered after

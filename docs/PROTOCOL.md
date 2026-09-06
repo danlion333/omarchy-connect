@@ -167,7 +167,7 @@ All of the frames below travel inside the encrypted channel described above.
 // desktop → phone
 { "t": "hello.ok", "protocol": 2, "secure": true, "fingerprint": "9AD3-E65B-D149-638A",
   "server": { "name", "version" }, "device": { … }, "host": { … },
-  "wake": { … }, "endpoints": [ { "host", "port", "kind" } ], "link": { "via", "kind" },
+  "endpoints": [ { "host", "port", "kind" } ], "link": { "via", "kind" },
   "capabilities": { … }, "theme": { … }, "events": [ … ] }
 
 // desktop → phone, then the socket closes
@@ -175,10 +175,6 @@ All of the frames below travel inside the encrypted channel described above.
 // … or, when the desktop already holds a phone (close code 4003)
 { "t": "hello.err", "error": "Pixel 8 is already paired — unpair it on the desktop first" }
 ```
-
-`wake` is what the phone would need in order to wake this desktop later — see
-**Wake on LAN** below. It rides every `hello` rather than being asked for,
-because the moment it is wanted there is no daemon to ask.
 
 `capabilities` reports what this particular machine can actually do — whether
 `wpctl`, `brightnessctl`, `playerctl`, `hyprctl` and the `omarchy-*` helpers are
@@ -1509,8 +1505,7 @@ and rewrites it whenever anything changes — a phone connects or drops, a file
 moves, a pairing code is minted or used, the address or firewall verdict
 changes. It carries the daemon's identity and address, the paired device with
 its live status and telemetry, recent transfers, counters, the firewall
-verdict, what it would take to wake this desktop, whether TLS is on and under
-which pin, the last mirrored messages and
+verdict, whether TLS is on and under which pin, the last mirrored messages and
 calls, the coding agents this desktop can read and answer, whether the phone is
 speaking into this desktop's microphone list, and the argv needed to invoke the
 CLI again.
@@ -1549,49 +1544,9 @@ tests or a second daemon. A `running: true` snapshot whose writer was killed
 outright stays behind until something probes loopback — `omarchy-connect
 status --json` does exactly that and rewrites the file with the truth.
 
-## Wake on LAN
-
-The one feature whose premise is that this daemon is not running. Nothing can
-be requested at the time it is used, so everything needed is handed over during
-the handshake, while the desktop is still awake, and the phone stores it beside
-the pairing:
-
-```jsonc
-{ "supported": true, "interface": "enp8s0", "type": "ethernet",
-  "mac": "04:42:1a:9a:7a:59", "broadcast": "192.168.1.255", "port": 9,
-  "armed": false, "command": "nmcli connection modify \"Wired connection 1\" 802-3-ethernet.wake-on-lan magic",
-  "note": "this desktop's network card is not set to wake it" }
-```
-
-`broadcast` comes from the interface's own address and netmask, because that is
-where a magic packet has to go: the machine it is for is asleep, answers no ARP
-request, and cannot be unicast to. The phone falls back to its own /24 and then
-to `255.255.255.255` when the desktop gave none, and sends to ports 9 and 7,
-three times each — nothing acknowledges a magic packet, and nothing retransmits
-one.
-
-`armed` is read from `/sys/class/net/<iface>/device/power/wakeup` rather than
-from `ethtool`. It answers the same question from the other side — a driver that
-accepts `wol g` calls `device_set_wakeup_enable()`, which is that file — and it
-answers it without privileges, where reading the wake-on-lan word through
-`ETHTOOL_GWOL` needs `CAP_NET_ADMIN`. `null` means the card exposes no such
-flag and the question has no answer here. `command` is advice and nothing else:
-the daemon never changes a network setting, exactly as it never opens a
-firewall port.
-
-The packet itself is 102 bytes — six `0xFF`, then the MAC sixteen times — and
-is built on the phone, in `app/src/lib/wol.ts`, so the suite can check it byte
-for byte. All the native half does is put a datagram on the wire, which is the
-one thing the React Native runtime cannot do: it has no UDP socket, at any
-price, which is why waking is Android-only.
-
-The same block is published in the desktop status file, so the panel and
-`omarchy-connect wake` read the answer the phone was given.
-
 ## Desktop announcement
 
-The mirror image of Wake on LAN: there, the phone tells a sleeping desktop to
-come back; here, a desktop that has just come back tells a sleeping phone.
+A desktop that has just come back tells a sleeping phone about it.
 
 The phone is always the side that dials, and the paired-device record holds an
 id, a name and a token — no address, no MAC, no push token. So the desktop
@@ -1607,8 +1562,8 @@ finishes, aimed at **port 8766**:
 
 Three packets over four seconds, because UDP loses frames and a Wi-Fi radio in
 power save loses more of them. The address is the interface's own broadcast
-address — the same arithmetic a magic packet is aimed with — and the burst is
-cancelled by `server.stop()` along with the listener. Nothing repeats it: this
+address, and the burst is cancelled by `server.stop()` along with the
+listener. Nothing repeats it: this
 is the daemon coming up, not a beacon.
 
 Every field is what `GET /api/info` already gives away to anyone who asks.
