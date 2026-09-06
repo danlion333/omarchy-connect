@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import { ActivityIndicator, RefreshControl, View } from 'react-native'
-import { Feather } from '@expo/vector-icons'
 import * as Haptics from 'expo-haptics'
 
 import { useConnection, usePalette, useStats } from '../state/ConnectionContext'
@@ -49,7 +48,6 @@ import { space } from '../theme'
 type MediaState = {
   output: { percent: number; muted: boolean } | null
   input: { percent: number; muted: boolean } | null
-  brightness: { percent: number } | null
   player: { available: boolean; playing?: boolean; title?: string | null; artist?: string | null; status?: string }
 }
 
@@ -201,7 +199,7 @@ export function HomeScreen() {
       try {
         Haptics.selectionAsync().catch(() => {})
         const data = await call<any>(method, params)
-        if (data && (data.output || data.brightness || data.input)) {
+        if (data && (data.output || data.input)) {
           setMedia((prev) => (prev ? { ...prev, ...data } : prev))
         }
         if (note) toast({ value: note.value, hint: note.hint ?? 'ran on desktop' })
@@ -347,11 +345,9 @@ export function HomeScreen() {
   const player = media?.player
   const volume = media?.output?.percent ?? 0
   const muted = media?.output?.muted ?? false
-  const brightness = media?.brightness?.percent ?? 0
 
   const volumeOk = connected && can('media', 'volume')
   const playerOk = connected && can('media', 'player')
-  const brightnessOk = connected && can('media', 'brightness') && media?.brightness != null
   const mediaOk = volumeOk || playerOk
 
   const loadingNow = hyprOk && !sawWindows && errors.now == null
@@ -656,21 +652,6 @@ export function HomeScreen() {
               <Value style={{ width: 34, textAlign: 'right' }}>{media?.output ? String(volume) : '—'}</Value>
             </View>
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-              <Feather name="sun" size={20} color={brightnessOk ? palette.light_foreground : palette.muted} />
-              <View style={{ flex: 1 }}>
-                <LevelBar
-                  value={brightness}
-                  onChange={(value) =>
-                    act('media', 'brightness', 'brightness.set', { percent: value }, { value: `brightnessctl set ${value}%` })
-                  }
-                  tone={palette.yellow}
-                  disabled={!brightnessOk}
-                />
-              </View>
-              <Value style={{ width: 34, textAlign: 'right' }}>{media?.brightness ? String(brightness) : '—'}</Value>
-            </View>
-
             {media?.input ? (
               <Row label={media.input.muted ? 'Mic muted' : 'Mic'} value={`${media.input.percent}%`} />
             ) : null}
@@ -679,10 +660,6 @@ export function HomeScreen() {
               <Hint>Needs playerctl on the desktop</Hint>
             ) : connected && !can('media', 'volume') ? (
               <Hint>Needs wpctl on the desktop</Hint>
-            ) : connected && !can('media', 'brightness') ? (
-              <Hint>Brightness needs brightnessctl on the desktop</Hint>
-            ) : connected && media && media.brightness == null ? (
-              <Hint>No adjustable display on the desktop</Hint>
             ) : null}
           </>
         )}

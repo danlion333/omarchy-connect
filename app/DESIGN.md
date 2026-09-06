@@ -65,7 +65,7 @@ So:
   Everything else — why a feature exists, what it costs, how it works — is
   README material and is deleted from the screen.
 - **A number the reader came for is a `Stat` or `Hero`**, not a title. CPU
-  load, volume, brightness, usage percentage. One or two per card, then the
+  load, volume, usage percentage. One or two per card, then the
   detail in `Row`s under a `Meter`.
 
 ## Type
