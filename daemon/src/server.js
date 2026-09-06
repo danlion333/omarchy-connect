@@ -985,6 +985,21 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       plain = opener
     } else {
       req.on('error', () => fail(400, 'upload failed'))
+      // A body that stops early is the one failure that used to look exactly
+      // like success. Node does not promise an `'error'` on a request whose
+      // socket went away mid-body — it closes the message and sets
+      // `complete` to false — so `out.on('close')` fired, the file was
+      // announced, counted and written into the transfer list, and the phone
+      // got `200 {ok:true}` for half a video. `content-length` is the length
+      // the phone said it was sending; on the plain road that is also the
+      // length that has to land on disk, so anything short of it is a
+      // truncated upload and takes the same road as any other bad request.
+      // Only the plain road: on a sealed body `declared` is the size with the
+      // frame tags on (`encryptedSize`) while `written` counts opened bytes,
+      // and `decryptStream` already catches a cut body in `flush()`.
+      req.on('close', () => {
+        if (!req.complete) fail(400, 'the upload was truncated')
+      })
     }
 
     plain.on('data', (chunk) => {
@@ -996,6 +1011,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
 
     out.on('close', () => {
       if (aborted) return
+      // The other half of the same check: the request completed, but fewer
+      // bytes reached the disk than the phone declared. A request with no
+      // `content-length` at all (chunked) declares nothing, and is left
+      // exactly as it was.
+      if (!sealed && declared > 0 && written !== declared) return fail(400, 'the upload was truncated')
       if (forAgent) {
         // No notification and no counter: this is scaffolding for a question,
         // and the agent is about to be told where it is.
