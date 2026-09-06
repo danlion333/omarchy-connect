@@ -125,6 +125,30 @@ export function shade(hex: string, amount: number): string {
   return `#${[r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('')}`
 }
 
+/**
+ * Blends two #rrggbb colours, `t` of the way from the first to the second.
+ *
+ * The gradient wallpaper is built out of this: a stack of flat bands whose
+ * colours are already mixed with the background, rather than a stack of
+ * translucent layers the GPU has to compose on every frame.
+ */
+export function mix(from: string, to: string, t: number): string {
+  const a = rgb(from)
+  const b = rgb(to)
+  if (!a || !b) return from
+  const k = Math.max(0, Math.min(1, t))
+  const out = a.map((v, i) => Math.round(v + (b[i] - v) * k))
+  return `#${out.map((v) => v.toString(16).padStart(2, '0')).join('')}`
+}
+
+function rgb(hex: string): [number, number, number] | null {
+  const clean = hex.replace('#', '')
+  const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean
+  const n = Number.parseInt(full.slice(0, 6), 16)
+  if (!Number.isFinite(n)) return null
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255]
+}
+
 /** Adds an alpha channel to a #rrggbb colour. */
 export function alpha(hex: string, a: number): string {
   const clean = hex.replace('#', '')

@@ -5,6 +5,7 @@ import {
   Animated,
   AppState,
   Easing,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,9 +22,9 @@ import { Feather } from '@expo/vector-icons'
 import * as Clipboard from 'expo-clipboard'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
-import { MAX_FONT_SCALE, alpha, font, line, radius, size, space, surface, touch, type Palette } from '../theme'
+import { MAX_FONT_SCALE, alpha, font, line, mix, radius, size, space, surface, touch, type Palette } from '../theme'
 import { usePalette } from '../state/ConnectionContext'
-import { useLook } from './look'
+import { useBackdrop, useLook, type Wallpaper as WallpaperKind } from './look'
 import { problem } from '../lib/errors'
 
 /**
@@ -1486,30 +1487,51 @@ export function Sparkline({
 
 /* ── the wallpaper ───────────────────────────────────────────────────── */
 
-const BLOBS: { key: 'accent' | 'blue' | 'magenta' | 'cyan'; x: number; y: number; r: number; drift: number }[] = [
-  { key: 'accent', x: 0.42, y: 0.2, r: 0.95, drift: 26 },
-  { key: 'blue', x: 0.78, y: 0.55, r: 1.15, drift: -34 },
-  { key: 'magenta', x: 0.16, y: 0.78, r: 0.8, drift: 30 },
-  { key: 'cyan', x: 0.88, y: 0.1, r: 0.75, drift: -22 },
+/**
+ * The gradient's stops, running down the ramp.
+ *
+ * Each one is a colour out of the desktop's own theme and how far the band is
+ * mixed toward it — a wash, never the colour itself, because this sits behind
+ * text. The ramp opens and closes on the background, so the gradient meets the
+ * screen's edges in the colour everything else is drawn on.
+ */
+const AURORA: { at: number; key: 'background' | 'blue' | 'accent' | 'magenta' | 'cyan'; amount: number }[] = [
+  { at: 0, key: 'background', amount: 0 },
+  { at: 0.2, key: 'blue', amount: 0.22 },
+  { at: 0.44, key: 'accent', amount: 0.34 },
+  { at: 0.66, key: 'magenta', amount: 0.28 },
+  { at: 0.84, key: 'cyan', amount: 0.16 },
+  { at: 1, key: 'background', amount: 0 },
 ]
+
+/** Enough bands that the eye reads a gradient rather than a staircase. */
+const BANDS = 80
+
+/** How far off the vertical the ramp runs, in degrees. */
+const TILT = -18
 
 /**
  * What the cards float over.
  *
- * `aurora` is four very soft lights in the theme's own colours — each one a
- * stack of circles whose alpha falls off outward, because a phone with no
- * blur and no gradients still has to make a round glow — drifting slowly on
- * the native driver so the JS thread never sees a frame. `dots` is a static
- * grid, `none` is the background and nothing else. Reduce-motion and a
- * backgrounded app both stop the drift.
+ * `aurora` is the theme's colours as one long gradient: a stack of flat bands
+ * whose colours are already mixed with the background, which is how a phone
+ * with no gradient primitive — and no native dependency for the look — still
+ * draws a smooth ramp. It is tilted off the vertical and drifts along its own
+ * axis on the native driver, so the JS thread never sees a frame. `photo` is
+ * the wallpaper the desktop itself is wearing, dimmed harder because a
+ * photograph has lights of its own, with the gradient still behind it for the
+ * moment before it arrives. `none` is the background and nothing else, which
+ * is what Transparency being off means. Reduce-motion and a backgrounded app
+ * both stop the drift.
  */
-export function Wallpaper({ kind }: { kind?: 'aurora' | 'dots' | 'none' }) {
+export function Wallpaper({ kind }: { kind?: WallpaperKind }) {
   const p = usePalette()
   const look = useLook()
   const which = kind ?? (look.transparency ? look.wallpaper : 'none')
   const { width, height } = useWindowDimensions()
   const drift = React.useRef(new Animated.Value(0)).current
   const [moving, setMoving] = React.useState(true)
+  const picture = useBackdrop(which === 'photo')
 
   React.useEffect(() => {
     let alive = true
@@ -1539,71 +1561,55 @@ export function Wallpaper({ kind }: { kind?: 'aurora' | 'dots' | 'none' }) {
     return <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: p.background }]} />
   }
 
-  if (which === 'dots') {
-    const step = 26
-    const cols = Math.ceil(width / step)
-    const rows = Math.ceil(height / step)
-    return (
-      <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: p.background, overflow: 'hidden' }]}>
-        {Array.from({ length: rows }, (_, r) => (
-          <View key={r} style={{ flexDirection: 'row', height: step }}>
-            {Array.from({ length: cols }, (_, c) => (
-              <View key={c} style={{ width: step, alignItems: 'center', justifyContent: 'center' }}>
-                <View
-                  style={{
-                    width: 2,
-                    height: 2,
-                    borderRadius: 1,
-                    backgroundColor: alpha((r + c) % 9 === 0 ? p.accent : p.foreground, 0.16),
-                  }}
-                />
-              </View>
-            ))}
-          </View>
-        ))}
-      </View>
-    )
-  }
+  // The ramp has to cover the screen's diagonal once it turns, and it drifts
+  // along its own axis on top of that.
+  const span = Math.hypot(width, height) * 1.3
+  const band = Math.ceil(span / BANDS) + 1
+  const shift = drift.interpolate({ inputRange: [0, 1], outputRange: [-span * 0.05, span * 0.05] })
 
   return (
     <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: p.background, overflow: 'hidden' }]}>
-      {BLOBS.map((blob) => {
-        const radius0 = blob.r * width
-        const move = drift.interpolate({ inputRange: [0, 1], outputRange: [-blob.drift, blob.drift] })
-        return (
-          <Animated.View
-            key={blob.key}
-            style={{
-              position: 'absolute',
-              left: blob.x * width - radius0,
-              top: blob.y * height - radius0,
-              width: radius0 * 2,
-              height: radius0 * 2,
-              alignItems: 'center',
-              justifyContent: 'center',
-              transform: [{ translateX: move }, { translateY: Animated.multiply(move, 0.6) }],
-            }}
-          >
-            {[1, 0.78, 0.58, 0.4, 0.24, 0.12].map((ring) => (
-              <View
-                key={ring}
-                style={{
-                  position: 'absolute',
-                  width: radius0 * 2 * ring,
-                  height: radius0 * 2 * ring,
-                  borderRadius: radius0 * ring,
-                  backgroundColor: alpha(p[blob.key], p.mode === 'light' ? 0.035 : 0.045),
-                }}
-              />
-            ))}
-          </Animated.View>
-        )
-      })}
-      {/* The shade: the mock darkens the top and the bottom of the wallpaper so
-          a card's edge never fights a light. One flat wash is enough here. */}
-      <View style={[StyleSheet.absoluteFill, { backgroundColor: alpha(p.background, 0.45) }]} />
+      <Animated.View
+        style={{
+          position: 'absolute',
+          left: (width - span) / 2,
+          top: (height - span) / 2,
+          width: span,
+          height: span,
+          transform: [{ rotate: `${TILT}deg` }, { translateY: shift }],
+        }}
+      >
+        {Array.from({ length: BANDS }, (_, i) => (
+          <View key={i} style={{ height: band, backgroundColor: ramp(p, (i + 0.5) / BANDS) }} />
+        ))}
+      </Animated.View>
+      {picture ? <Image source={{ uri: picture.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
+      {/* The shade: a photograph has lights of its own, and the mock darkens
+          the wallpaper so a card's edge never fights one. The gradient needs
+          none of it — it was mixed with the background to begin with, and a
+          wash on top would only take the gradient back out of it. */}
+      {picture ? <View style={[StyleSheet.absoluteFill, { backgroundColor: alpha(p.background, 0.6) }]} /> : null}
     </View>
   )
+}
+
+/** The gradient's colour `t` of the way down the ramp, mixed with the background. */
+function ramp(p: Palette, t: number): string {
+  let lower = AURORA[0]
+  let upper = AURORA[AURORA.length - 1]
+  for (let i = 0; i < AURORA.length - 1; i += 1) {
+    if (t >= AURORA[i].at && t <= AURORA[i + 1].at) {
+      lower = AURORA[i]
+      upper = AURORA[i + 1]
+      break
+    }
+  }
+  const reach = upper.at - lower.at
+  // Smoothstep rather than a straight line: it takes the crease out of every
+  // stop, which is what would otherwise give the ramp away as bands.
+  const raw = reach > 0 ? (t - lower.at) / reach : 0
+  const k = raw * raw * (3 - 2 * raw)
+  return mix(mix(p.background, p[lower.key], lower.amount), mix(p.background, p[upper.key], upper.amount), k)
 }
 
 /* ── toast and confirm ───────────────────────────────────────────────── */
