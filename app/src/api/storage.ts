@@ -103,3 +103,43 @@ export async function loadAlertPrefs(): Promise<AlertPrefs> {
 export async function saveAlertPrefs(prefs: AlertPrefs): Promise<void> {
   await SecureStore.setItemAsync(ALERTS_KEY, JSON.stringify(prefs))
 }
+
+/* ── how the app looks on this phone ─────────────────────────────────── */
+
+const LOOK_KEY = 'omarchy-connect.look'
+
+export type Wallpaper = 'aurora' | 'dots' | 'none'
+
+/**
+ * The two choices the phone makes for itself: whether cards are glass over a
+ * wallpaper or solid, and which wallpaper. Everything else about the look
+ * comes from the desktop's theme.
+ */
+export type LookPrefs = {
+  transparency: boolean
+  wallpaper: Wallpaper
+}
+
+export const DEFAULT_LOOK: LookPrefs = { transparency: true, wallpaper: 'aurora' }
+
+/** Read leniently, like the alert preferences: an older blob still means something. */
+export async function loadLook(): Promise<LookPrefs> {
+  try {
+    const raw = await SecureStore.getItemAsync(LOOK_KEY)
+    if (!raw) return { ...DEFAULT_LOOK }
+    const saved = JSON.parse(raw) as Partial<LookPrefs>
+    return {
+      transparency: typeof saved.transparency === 'boolean' ? saved.transparency : DEFAULT_LOOK.transparency,
+      wallpaper:
+        saved.wallpaper === 'aurora' || saved.wallpaper === 'dots' || saved.wallpaper === 'none'
+          ? saved.wallpaper
+          : DEFAULT_LOOK.wallpaper,
+    }
+  } catch {
+    return { ...DEFAULT_LOOK }
+  }
+}
+
+export async function saveLook(prefs: LookPrefs): Promise<void> {
+  await SecureStore.setItemAsync(LOOK_KEY, JSON.stringify(prefs))
+}

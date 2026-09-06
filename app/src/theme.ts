@@ -75,6 +75,8 @@ export const size = {
   label: 12,
   body: 13,
   value: 14,
+  /** A card's own title. The screen's title is bigger; a card's is a value in bold. */
+  cardTitle: 14,
   title: 16,
   hero: 28,
 }
@@ -84,6 +86,7 @@ export const line = {
   label: 17,
   body: 20,
   value: 20,
+  cardTitle: 20,
   title: 22,
   hero: 34,
 }
@@ -100,7 +103,12 @@ export const space = {
   xxl: 32,
 }
 
-export const radius = { sm: 8, md: 12, lg: 16 }
+/**
+ * `sm` is the chip and the small tile corner, `ctl` every control the thumb
+ * lands on (button, icon button, field, segmented, tile), `md` a card, `pill`
+ * the fully round ones.
+ */
+export const radius = { sm: 8, ctl: 10, md: 12, lg: 16, pill: 999 }
 
 /** The one tap target size. Buttons, chips, icon buttons and list rows sit on it. */
 export const touch = 44
@@ -122,4 +130,18 @@ export function alpha(hex: string, a: number): string {
   const clean = hex.replace('#', '')
   const full = clean.length === 3 ? clean.split('').map((c) => c + c).join('') : clean
   return `#${full}${Math.round(Math.max(0, Math.min(1, a)) * 255).toString(16).padStart(2, '0')}`
+}
+
+/**
+ * The two colours the glass look is made of.
+ *
+ * The mock paints cards translucent over a wallpaper — `--card` is the dark
+ * background at 76%, `--edge` the lighter background at 85% — and the
+ * Transparency switch swaps both for the solid colours and turns the
+ * wallpaper off. Everything that draws a card surface asks here rather than
+ * writing the numbers again.
+ */
+export function surface(p: Palette, solid: boolean): { card: string; edge: string } {
+  if (solid) return { card: p.dark_background, edge: p.lighter_background }
+  return { card: alpha(p.dark_background, 0.76), edge: alpha(p.lighter_background, 0.85) }
 }

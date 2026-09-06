@@ -1,10 +1,45 @@
 # How this app is drawn
 
-The phone app is a status card from the Omarchy bar, held in one hand. Dark
-ground, one accent, JetBrains Mono for everything. That much is settled. This
-file is about the rest: what goes on a screen, how big, in what words — the
-decisions that were being made differently on every screen and that made the
-app read like a debug console.
+The phone app is the Omarchy desktop, held in one hand: five **workspaces**
+behind the desktop's own **bar** at the bottom, glass cards over a wallpaper,
+one accent, JetBrains Mono for everything. That much is settled. This file is
+about the rest: what goes on a screen, how big, in what words — the decisions
+that were being made differently on every screen and that made the app read
+like a debug console.
+
+## The shell
+
+| # | Workspace | Screen |
+| --- | --- | --- |
+| 1 | home | `HomeScreen` — what the desktop is doing and the controls that change it |
+| 2 | agents | `AgentsScreen` |
+| 3 | terminal | `TerminalScreen` — the phone as a keyboard for the desktop |
+| 4 | share | `ShareScreen` |
+| 5 | setup | `SettingsScreen` |
+
+`App.tsx` owns the shell and nothing else: the workspaces side by side in one
+paging `ScrollView` (a page mounts on first visit and stays mounted, each in
+its own `ErrorBoundary`), the `Wallpaper` behind them, and the **Omarchy bar** —
+five numbered buttons, the active one saying its name over an accent underline,
+orange badges for agents waiting and for permissions not yet granted, and a
+tray on the right with the link dot, wifi, notification silencing and the clock.
+The tray goes to Setup. A screen never draws navigation, never draws the bar,
+and never assumes it is the only thing on the phone.
+
+Swiping moves between workspaces. A control with a horizontal gesture of its
+own — `ChipRow`, `LevelBar`, a field — keeps it: the inner scroller and the
+responder system take the drag before the pager sees it. Anything new with a
+horizontal drag is tested against the pager before it ships.
+
+## Glass
+
+Cards are translucent over the wallpaper: `surface()` in `theme.ts` gives the
+card and edge colours, `Card` reads them, and the **Transparency** switch on
+Setup (`useLook()`) turns them solid and the wallpaper off. There is no real
+blur — no `expo-blur`, no native dependency for the look. The wallpaper is
+`aurora` (soft drifting lights in the theme's colours), `dots`, or `none`, and
+it is a phone-local setting like transparency; everything else about the
+colours comes from the desktop's theme.
 
 Everything below is a rule unless it says "prefer". A screen that needs to
 break one should say why in a comment.
@@ -37,12 +72,13 @@ So:
 
 | Role | Component | sp | Weight | Lines |
 | --- | --- | --- | --- | --- |
-| Screen name, section name, card subtitle | `Caps` | 10 | medium, +1.2 tracking, uppercase | 1 |
-| Key in a key–value row, list subtitle, hint | `Label` / `Hint` | 12 | regular | 1 (hint: 2) |
-| Prose, button label, notice | `Body` / `Button` | 13 | regular / medium | — |
-| Value in a row, list title, field text | `Value` | 14 | regular | 1 |
-| Card title | `Title` | 16 | bold | 1 |
-| Headline number | `Hero` / `Stat` | 28 | bold | 1 |
+| Section name, tile state, pill | `Caps` / `Pill` | 10 | medium, +1.2 tracking (pill +0.8), uppercase | 1 |
+| Key in a key–value row, list subtitle, header subtitle, hint, chip | `Label` / `Hint` | 12 | regular | 1 (hint: 2) |
+| Prose, button label | `Body` / `Button` | 13 | regular / medium | — |
+| Value in a row, list title, field text, toggle label | `Value` | 14 | regular | 1 |
+| Card title | `CardHeader` | 14 | bold | 1 |
+| Screen title | `Title` / `ScreenHeader` | 16 | bold | 1 |
+| Headline number | `Hero` / `Stat` | 28 | bold, tabular | 1 |
 
 Never set `fontSize` from a literal. Use `size.*` with its `line.*`, and put
 text through the kit components (or `Mono`) so the OS font multiplier is
@@ -55,24 +91,33 @@ and inactive controls; `muted` only for caps, hints and dividers — it is under
 
 ## Layout
 
-- Screen padding 16, card padding 14, cards 12 apart, `radius.md` corners.
-- Every screen starts with `ScreenHeader`: the tab's name in caps, the link's
-  state beside it only where that matters (Stats, Setup), and at most two
-  actions on the right (an `IconButton`, never a text button).
-- A card is: `CardHeader` → optional `Stat` row or `Meter` → `Row`s or a list
-  → optional controls → optional `Hint`. Groups inside a card are separated by
-  `Divider` and named with `Section`.
-- Tap targets are 44dp (`touch`). Buttons in a row inside a card use
-  `compact`. Icon-only actions are `IconButton` with a `label` for the screen
-  reader. Never a bare `Pressable` around an icon.
-- Lists of things (windows, files, sessions, skills) are `ListRow`s with a
-  hairline between them and `last` on the final one; the row's `right` slot
-  holds one `IconButton` or one `Pill`, not a sentence.
-- A set of choices is `Segmented` when there are two to four and they are
-  peers (DNS provider), `Chip`s in a wrapping row when there are more
-  (themes), a list of `ListRow`s when each needs a subtitle.
-- Boolean settings are `Toggle`, with the cost in its `hint`, not a pair of
-  buttons and a paragraph.
+- Workspace padding 18 top / 16 sides / 24 bottom (`Screen` does it), card
+  padding 14 with 10 between a card's children, cards 12 apart, corners 12.
+  Controls the thumb lands on are `radius.ctl` (10), chips and tiles 8, pills
+  round.
+- Every screen starts with `ScreenHeader`: the workspace's name at 16 bold,
+  one line of `sub` under it — who the desktop is, what it is wearing, how far
+  away — with a `dot` where the link matters, and at most two `IconButton`s on
+  the right.
+- A card is: `CardHeader` → optional `Stat`/`Hero` + `Meter` or `Sparkline` →
+  `Row`s or a list → optional controls (`Buttons`, `Tiles`, `ChipRow`,
+  `Segmented`, `Field`) → optional `Hint`. Groups inside a card are separated
+  by `Divider` and named with `Section`.
+- Tap targets are 44dp (`touch`). Buttons in a row inside a card use `compact`
+  (36dp, 12sp) inside `Buttons`. Icon-only actions are `IconButton` (36dp,
+  borderless, `light_foreground`) with a `label` for the screen reader. Never
+  a bare `Pressable` around an icon.
+- Lists of things (windows, files, sessions, permissions) are `ListRow`s: 48dp,
+  a hairline between them, `last` on the final one, `icon` on the left (`fill`
+  for the live one), and one `IconButton` or `Pill` in `right` — never a
+  sentence. A tappable row bleeds to the card's edge on its own.
+- A grid of desktop switches is `Tiles` of `Tile` (label + a caps state);
+  a single setting is a `Toggle` with the cost in its `hint`. A set of choices
+  is `Segmented` when there are two to four peers, `Chips` when there are more
+  and they wrap (themes), `ChipRow` when they scroll sideways (workspaces,
+  terminal keys), `ListRow`s when each needs a subtitle.
+- Something the desktop said verbatim — a command, a path, a clipboard — is
+  `Code`. A number's recent history is `Sparkline`.
 
 ## Words
 
@@ -105,13 +150,24 @@ screen checks each one by forcing it:
    Detail (the stack) stays behind the tap `Notice` already provides.
 5. **Not possible here** — a capability the desktop lacks, a platform that
    cannot (iOS, Expo Go), a remote link that disables telephony. The card is
-   still drawn, dimmed (`tone={palette.muted}` on the header), with one
-   `Hint` saying why and, when there is one, what to do about it. Never an
+   still drawn, dimmed (`dim` on the `Card`, or `tone={palette.muted}` on the
+   header), with one `Hint` saying why and, when there is one, what to do about it. Never an
    empty card, never a card that silently disappears.
 
-Destructive actions — reboot, shut down, unpair, kill an agent — confirm with
-`Alert.alert` from react-native, title as the verb ("Shut down the desktop?"),
-the destructive button styled `destructive`. Nothing else confirms.
+## Saying what happened
+
+Every command the phone sends the desktop says so, once, in a `useToast()`:
+the command or the action as `value`, what happened as `hint` ("ran on
+desktop", "on · ran on desktop"). One at a time, 2.4 seconds, no buttons. A
+screen never leaves a tap unanswered and never answers one with a full-screen
+spinner.
+
+Destructive actions — suspend, reboot, shut down, unpair, close a window, kill
+an agent — ask first with `useConfirm()`, which returns a promise: the title is
+the verb as a question ("Shut down the desktop?"), the detail is the command
+that will run, the destructive button carries the verb. It **replaces**
+`Alert.alert`; nothing in a screen reaches for react-native's alert any more,
+and nothing else confirms.
 
 ## Errors, specifically
 
@@ -129,10 +185,11 @@ link") is `info`, and usually a `Hint` instead.
 ## Doing a screen
 
 - Redesign one screen at a time, in its own worktree and branch. Own only
-  that screen's file(s). `theme.ts`, `kit.tsx`, `agentkit.tsx`, `lib/*`,
-  `api/*`, `state/*` belong to nobody's screen branch: if a primitive is
-  missing, write it at the bottom of the screen file as a local component
-  and say so in the report, so it can be lifted into the kit once.
+  that screen's file(s). `theme.ts`, `kit.tsx`, `look.tsx`, `agentkit.tsx`,
+  `App.tsx`, `lib/*`, `api/*`, `state/*` belong to nobody's screen branch: if a
+  primitive is missing, write it at the bottom of the screen file as a local
+  component and say so in the report, so it can be lifted into the kit once.
+  A screen never edits the shell to make room for itself.
 - Behaviour is not the brief. Every call the screen makes, every capability
   it checks, every state it tracks stays. This is layout, type and words.
 - `npx tsc --noEmit` and `npm test` from `app/` must stay green.
