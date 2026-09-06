@@ -3,10 +3,11 @@ import {
   ActivityIndicator,
   Animated,
   Image,
+  Linking,
   Modal,
   Pressable,
+  RefreshControl,
   StyleSheet,
-  TextInput,
   View,
   type GestureResponderEvent,
 } from 'react-native'
@@ -19,17 +20,19 @@ import * as Sharing from 'expo-sharing'
 
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import {
-  Body,
   Button,
+  Buttons,
   Caps,
   Card,
   CardHeader,
+  Code,
   Divider,
   Empty,
+  Field,
   Hint,
   IconButton,
   Label,
-  ListRow,
+  Meter,
   Mono,
   Notice,
   Pill,
@@ -37,6 +40,10 @@ import {
   ScreenHeader,
   Section,
   Title,
+  useConfirm,
+  useSurface,
+  useToast,
+  type IconName,
 } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
 import { copyPicture } from '../lib/copyimage'
@@ -45,6 +52,7 @@ import { uploadFile } from '../lib/transfer'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind, type MediaKind } from '../lib/media'
 import {
+  describeShare,
   deliverShare,
   isLink,
   shareBlocked,
@@ -52,7 +60,7 @@ import {
   type SharePayload,
 } from '../lib/share'
 import { copyPictureToClipboard } from '../../modules/omarchy-link'
-import { MAX_FONT_SCALE, alpha, font, line, radius, size, space, touch } from '../theme'
+import { alpha, font, line, radius, size, space, touch } from '../theme'
 
 type InboxItem = { name: string; size: number; at: number }
 type StandingOffer = { token: string; name: string; size: number; expiresAt: number }
@@ -62,15 +70,15 @@ type Offer = { token: string; name: string; size: number; at?: number }
 type NativeTouch = { locationX: number; locationY: number }
 
 /**
- * Which card a message belongs to. A failure is drawn where the thing that
- * failed is, not at the top of the screen, so every note and every error
- * carries the card it came from.
+ * Which card a failure belongs to. A failure is drawn where the thing that
+ * failed is, not at the top of the screen, so every error carries the card it
+ * came from. What *worked* is a toast instead — the screen says so once, over
+ * the bar, and the card keeps its shape.
  */
-type Where = 'incoming' | 'clipboard' | 'send' | 'inbox'
+type Where = 'incoming' | 'clipboard' | 'inbox'
 
 /** Whatever was thrown, untouched — `Notice` is what makes it readable. */
 type Failure = { where: Where; error: unknown; retry?: () => void }
-type Note = { where: Where; text: string; tone: 'ok' | 'info' }
 
 /**
  * How large a picture may be before the phone stops fetching it on sight.
@@ -84,10 +92,51 @@ const THUMB = 52
 /** How many older clips are shown before the history asks to be unfolded. */
 const HISTORY_FOLD = 3
 
+/** How many lines of the desktop's clip the card shows before it is folded. */
+const CLIP_LINES = 6
+
+/** Where the desktop drops what it is sent, when it has not said otherwise. */
+const DEFAULT_INBOX = '~/Downloads/Omarchy Connect'
+
 /** One line of a copied thing: whitespace flattened, then cut to fit a row. */
 const preview = (text: string) => {
   const flat = text.replace(/\s+/g, ' ').trim()
   return flat.length > 120 ? `${flat.slice(0, 120)}…` : flat || '(blank)'
+}
+
+/** `/home/dan/Downloads/…` is a header that does not fit; `~/Downloads/…` does. */
+const homely = (path: string) => path.replace(/^\/home\/[^/]+/, '~').replace(/^\/root/, '~')
+
+/**
+ * When a file landed, in the words a file list uses: the time today, the day
+ * yesterday, the date before that. `clock()` is the same idea for a value on
+ * a row; this one is for a subtitle that has to read as a sentence.
+ */
+const when = (at: number | null | undefined) => {
+  if (!at) return 'some time ago'
+  const day = new Date(at)
+  const now = new Date()
+  if (day.toDateString() === now.toDateString()) return clock(at)
+  const yesterday = new Date(now)
+  yesterday.setDate(now.getDate() - 1)
+  if (day.toDateString() === yesterday.toDateString()) return 'yesterday'
+  return clock(at)
+}
+
+const TEXTY = new Set([
+  'txt', 'md', 'log', 'json', 'yml', 'yaml', 'toml', 'ini', 'conf', 'csv', 'sh', 'lua', 'js', 'ts',
+  'tsx', 'jsx', 'py', 'rs', 'go', 'c', 'h', 'cpp', 'css', 'diff', 'patch', 'pdf',
+])
+
+/** The glyph that stands for a file in a list, going by its name. */
+function rowIcon(name: string): IconName {
+  const kind = mediaKind(name)
+  if (kind !== 'file') return iconFor(kind) as IconName
+  const dot = name.lastIndexOf('.')
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : ''
+  if (ext === 'html' || ext === 'htm' || ext === 'url') return 'globe'
+  if (TEXTY.has(ext)) return 'file-text'
+  return 'file'
 }
 
 /**
@@ -100,7 +149,9 @@ export function ShareScreen({
   incoming,
   onIncomingTaken,
 }: { incoming?: SharePayload | null; onIncomingTaken?: () => void } = {}) {
-  const { call, client, clipboard, files, palette, status } = useConnection()
+  const { call, can, client, clipboard, files, hello, palette, status } = useConnection()
+  const toast = useToast()
+  const confirm = useConfirm()
   const [draft, setDraft] = useState('')
   const [inbox, setInbox] = useState<InboxItem[]>([])
   /** True once the desktop's folder has answered at least once. */
@@ -112,7 +163,6 @@ export function ShareScreen({
   const [local, setLocal] = useState<Record<string, string>>({})
   const [saved, setSaved] = useState<Record<string, true>>({})
   const [viewing, setViewing] = useState<string | null>(null)
-  const [note, setNote] = useState<Note | null>(null)
   const [error, setError] = useState<Failure | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   /** The history entry last tapped, so its row can say so. */
@@ -121,18 +171,31 @@ export function ShareScreen({
   const [queued, setQueued] = useState<SharePayload | null>(null)
   /** Whether the clipboard history is unfolded past its first few rows. */
   const [allHistory, setAllHistory] = useState(false)
+  /**
+   * What is going up right now. A picked file is one row with a spinner; a
+   * multi-file share is the same row with a real fraction under it, counted as
+   * each upload comes back — the uploader reports nothing finer than "done",
+   * so the meter counts files and never invents bytes.
+   */
+  const [sending, setSending] = useState<{ label: string; done: number; total: number } | null>(null)
 
   const connected = status === 'connected'
+  /**
+   * Whether the desktop can hold a clipboard at all. `wl-copy` is not on every
+   * machine, and a card that offers to paste onto a desktop that cannot paste
+   * is a lie — so it is drawn dimmed with the reason instead. Only once the
+   * desktop has actually said hello: before that, "offline" is the reason.
+   */
+  const clips = !connected || can('share', 'clipboard')
 
-  const report = (where: Where, text: string, tone: Note['tone'] = 'ok') => {
-    setNote({ where, text, tone })
-    setError(null)
-    setTimeout(() => setNote(null), 4000)
-  }
+  /** The folder on the desktop, as the desktop named it when it said hello. */
+  const inboxPath = useMemo(() => {
+    const named = (hello?.capabilities as any)?.share?.inbox
+    return typeof named === 'string' && named ? homely(named) : DEFAULT_INBOX
+  }, [hello])
 
   const fail = (where: Where, err: unknown, retry?: () => void) => {
     setError({ where, error: err, retry })
-    setNote(null)
   }
 
   const loadInbox = useCallback(async () => {
@@ -167,6 +230,11 @@ export function ShareScreen({
     }
   }, [call, connected])
 
+  const reload = useCallback(() => {
+    void loadInbox()
+    void loadOffers()
+  }, [loadInbox, loadOffers])
+
   useEffect(() => {
     loadInbox()
   }, [loadInbox, files.length])
@@ -182,11 +250,11 @@ export function ShareScreen({
     try {
       const text = await Clipboard.getStringAsync()
       if (!text) {
-        report('clipboard', 'The phone clipboard is empty', 'info')
+        toast({ value: 'nothing to send', hint: 'the phone clipboard is empty', icon: 'clipboard' })
         return
       }
       await call('clipboard.set', { text })
-      report('clipboard', 'Sent to the desktop clipboard')
+      toast({ value: 'wl-copy', hint: 'the desktop clipboard is yours now' })
     } catch (err) {
       fail('clipboard', err, () => {
         void pushClipboard()
@@ -194,7 +262,7 @@ export function ShareScreen({
     } finally {
       setBusy(null)
     }
-  }, [call])
+  }, [call, toast])
 
   /**
    * Copies one remembered entry back onto the phone.
@@ -205,15 +273,18 @@ export function ShareScreen({
    * would answer with anyway. The tick beside the row it copied is the
    * confirmation, and it survives long enough to be read.
    */
-  const copyEntry = useCallback(async (text: string) => {
-    try {
-      await Clipboard.setStringAsync(text)
-      setCopied(text)
-      report('clipboard', 'Copied to the phone clipboard')
-    } catch (err) {
-      fail('clipboard', err)
-    }
-  }, [])
+  const copyEntry = useCallback(
+    async (text: string) => {
+      try {
+        await Clipboard.setStringAsync(text)
+        setCopied(text)
+        toast({ value: 'copied on phone', hint: preview(text), icon: 'smartphone' })
+      } catch (err) {
+        fail('clipboard', err)
+      }
+    },
+    [toast],
+  )
 
   const pullClipboard = useCallback(async () => {
     setBusy('pull')
@@ -223,15 +294,16 @@ export function ShareScreen({
         // A picture does not come back as text, but it is already the clip
         // above — the event that announced it carries the same offer this
         // answer does, and tapping that row pastes it.
-        report(
-          'clipboard',
-          res.kind === 'binary' ? 'The desktop copied a picture — tap it to copy it' : 'The desktop clipboard holds no text',
-          'info',
-        )
+        toast({
+          value: 'wl-paste',
+          hint: res.kind === 'binary' ? 'a picture — tap it to copy it' : 'the desktop clipboard holds no text',
+          icon: 'clipboard',
+        })
         return
       }
       await Clipboard.setStringAsync(res.text)
-      report('clipboard', 'Copied to the phone clipboard')
+      setCopied(res.text)
+      toast({ value: 'wl-paste', hint: 'copied on this phone', icon: 'smartphone' })
     } catch (err) {
       fail('clipboard', err, () => {
         void pullClipboard()
@@ -239,7 +311,20 @@ export function ShareScreen({
     } finally {
       setBusy(null)
     }
-  }, [call])
+  }, [call, toast])
+
+  /** A link the desktop copied, opened in this phone's own browser. */
+  const openHere = useCallback(
+    async (url: string) => {
+      try {
+        await Linking.openURL(url)
+        toast({ value: 'open here', hint: preview(url), icon: 'external-link' })
+      } catch (err) {
+        fail('clipboard', err)
+      }
+    },
+    [toast],
+  )
 
   /* ── text ──────────────────────────────────────────────────────────── */
 
@@ -248,21 +333,20 @@ export function ShareScreen({
     if (!text) return
     setBusy('text')
     try {
-      const isUrl = /^https?:\/\/\S+$/i.test(text)
-      if (isUrl) {
+      if (isLink(text)) {
         await call('system.openUrl', { url: text })
-        report('send', 'Opened on the desktop')
+        toast({ value: 'xdg-open', hint: 'opened on the desktop', icon: 'external-link' })
       } else {
         await call('share.text', { text, action: 'clipboard' })
-        report('send', 'Copied on the desktop')
+        toast({ value: 'wl-copy', hint: 'the desktop clipboard is yours now' })
       }
       setDraft('')
     } catch (err) {
-      fail('send', err)
+      fail('clipboard', err)
     } finally {
       setBusy(null)
     }
-  }, [call, draft])
+  }, [call, draft, toast])
 
   /* ── files out ─────────────────────────────────────────────────────── */
 
@@ -282,37 +366,41 @@ export function ShareScreen({
       const picked = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true })
       if (picked.canceled) return
       const asset = picked.assets[0]
+      setSending({ label: asset.name, done: 0, total: 1 })
       await upload(asset.uri, asset.name)
-      report('send', `Sent ${asset.name}`)
+      toast({ value: 'omarchy-connect send', hint: `${asset.name} landed in the inbox`, icon: 'upload' })
       loadInbox()
     } catch (err) {
-      fail('send', err)
+      fail('inbox', err)
     } finally {
+      setSending(null)
       setBusy(null)
     }
-  }, [loadInbox, upload])
+  }, [loadInbox, toast, upload])
 
   const pickPhoto = useCallback(async () => {
     setBusy('photo')
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync()
       if (!permission.granted) {
-        report('send', 'Photo access was denied', 'info')
+        toast({ value: 'no photos', hint: 'Android denied access to the library', icon: 'image' })
         return
       }
       const picked = await ImagePicker.launchImageLibraryAsync({ quality: 1 })
       if (picked.canceled) return
       const asset = picked.assets[0]
       const name = asset.fileName || `photo-${Date.now()}.jpg`
+      setSending({ label: name, done: 0, total: 1 })
       await upload(asset.uri, name)
-      report('send', `Sent ${name}`)
+      toast({ value: 'omarchy-connect send', hint: `${name} landed in the inbox`, icon: 'upload' })
       loadInbox()
     } catch (err) {
-      fail('send', err)
+      fail('inbox', err)
     } finally {
+      setSending(null)
       setBusy(null)
     }
-  }, [loadInbox, upload])
+  }, [loadInbox, toast, upload])
 
   /* ── the system share sheet ────────────────────────────────────────── */
 
@@ -322,33 +410,57 @@ export function ShareScreen({
    * Cleared from the queue first, on purpose: the outcome — including a file
    * that would not upload — is reported rather than retried forever, and the
    * one thing that must never happen is the same photo going twice because a
-   * re-render found it still waiting. The outcome lands on the Send card,
+   * re-render found it still waiting. The outcome lands on the Inbox card,
    * because the card that held the share is gone by the time there is one.
    */
   const deliver = useCallback(
     async (payload: SharePayload) => {
       setQueued(null)
       setBusy('incoming')
+      const total = payload.files.length + ((payload.text || '').trim() ? 1 : 0)
+      let done = 0
+      setSending({ label: describeShare(payload), done, total })
       try {
+        const step = () => {
+          done += 1
+          setSending({ label: describeShare(payload), done, total })
+        }
         const outcome = await deliverShare(payload, {
           openUrl: (url) => call('system.openUrl', { url }),
-          copyText: (text) => call('share.text', { text, action: 'clipboard' }),
-          upload: (item) => upload(item.uri, item.name),
+          copyText: async (text) => {
+            const answer = await call('share.text', { text, action: 'clipboard' })
+            step()
+            return answer
+          },
+          upload: async (item) => {
+            const answer = await upload(item.uri, item.name)
+            step()
+            return answer
+          },
         })
-        if (outcome.failed.length) {
-          fail('send', shareSummary(outcome))
-        } else {
-          report('send', shareSummary(outcome))
-        }
+        if (outcome.failed.length) fail('inbox', shareSummary(outcome))
+        else toast({ value: 'omarchy-connect send', hint: shareSummary(outcome), icon: 'share-2' })
         loadInbox()
       } catch (err) {
-        fail('send', err)
+        fail('inbox', err)
       } finally {
+        setSending(null)
         setBusy(null)
       }
     },
-    [call, loadInbox, upload],
+    [call, loadInbox, toast, upload],
   )
+
+  /** Throwing a share away is the one thing here that cannot be undone. */
+  const discard = useCallback(async () => {
+    if (!queued) return
+    const ok = await confirm({
+      title: 'Discard the share?',
+      detail: describeShare(queued),
+      confirmLabel: 'Discard',
+    })
+    if (ok) setQueued(null)
+  }, [confirm, queued])
 
   // Taken from the tree above as soon as it appears, so that a second render
   // does not see the same share again.
@@ -394,6 +506,17 @@ export function ShareScreen({
   }, [clipboard, files, standing])
 
   /**
+   * Which files in the desktop's folder this phone put there. `in` is into the
+   * desktop, so those are the ones that went up from here — the row says
+   * "from this phone" rather than claiming the desktop sent them.
+   */
+  const mine = useMemo(() => {
+    const names = new Set<string>()
+    for (const file of files) if (file.direction === 'in') names.add(file.name)
+    return names
+  }, [files])
+
+  /**
    * One download per offer, however many buttons ask for it. The promise is
    * the memo: a preview that is still crossing and a Save tapped on top of it
    * end up sharing the same bytes instead of racing for the same filename.
@@ -437,7 +560,7 @@ export function ShareScreen({
         const uri = await fetchOffer(offer.token, offer.name)
         await saveToGallery(uri)
         setSaved((prev) => ({ ...prev, [offer.token]: true }))
-        report('inbox', `${offer.name} is in your gallery`)
+        toast({ value: offer.name, hint: 'saved in your gallery', icon: 'download' })
       } catch (err) {
         fail('inbox', err, () => {
           void saveOffer(offer)
@@ -446,7 +569,7 @@ export function ShareScreen({
         setBusy(null)
       }
     },
-    [fetchOffer],
+    [fetchOffer, toast],
   )
 
   /**
@@ -463,7 +586,8 @@ export function ShareScreen({
     async (picture: { token: string; name: string }) => {
       setBusy(`copy:${picture.token}`)
       try {
-        report('clipboard', await copyPicture(picture, { fetch: fetchOffer, copy: copyPictureToClipboard }))
+        const said = await copyPicture(picture, { fetch: fetchOffer, copy: copyPictureToClipboard })
+        toast({ value: 'copied on phone', hint: said, icon: 'smartphone' })
         setCopied(picture.token)
       } catch (err) {
         fail('clipboard', err, () => {
@@ -473,7 +597,7 @@ export function ShareScreen({
         setBusy(null)
       }
     },
-    [fetchOffer],
+    [fetchOffer, toast],
   )
 
   const shareOffer = useCallback(
@@ -482,7 +606,7 @@ export function ShareScreen({
       try {
         const uri = await fetchOffer(offer.token, offer.name)
         if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(uri)
-        else report('inbox', `Saved to ${uri}`)
+        else toast({ value: offer.name, hint: `saved to ${uri}`, icon: 'download' })
       } catch (err) {
         fail('inbox', err, () => {
           void shareOffer(offer)
@@ -491,7 +615,7 @@ export function ShareScreen({
         setBusy(null)
       }
     },
-    [fetchOffer],
+    [fetchOffer, toast],
   )
 
   const openOffer = useCallback(
@@ -520,29 +644,38 @@ export function ShareScreen({
 
   const viewed = offers.find((offer) => offer.token === viewing) ?? null
 
-  /** The two lines a card may say about itself: the last note, the last failure. */
-  const notices = (where: Where) => (
-    <>
-      <Notice error={note?.where === where ? note.text : null} tone={note?.tone ?? 'ok'} />
-      <Notice
-        error={error?.where === where ? error.error : null}
-        onDismiss={() => setError(null)}
-        action={error?.where === where && error.retry ? { label: 'Try again', icon: 'refresh-cw', onPress: error.retry } : null}
-      />
-    </>
+  /** What a card says about itself when the last thing it was asked for failed. */
+  const notice = (where: Where) => (
+    <Notice
+      error={error?.where === where ? error.error : null}
+      onDismiss={() => setError(null)}
+      action={error?.where === where && error.retry ? { label: 'Try again', icon: 'refresh-cw', onPress: error.retry } : null}
+    />
   )
 
   const latest = clipboard[0] ?? null
+  const latestText = latest && typeof latest.text === 'string' ? latest.text : null
+  const latestPicture = latest && !latestText && latest.token ? { token: latest.token, name: latest.name || 'clipboard' } : null
   const earlier = clipboard.slice(1)
   const shownEarlier = allHistory ? earlier : earlier.slice(0, HISTORY_FOLD)
 
-  const sending = busy === 'text' || busy === 'file' || busy === 'photo' || busy === 'incoming'
   const blocked = shareBlocked({ paired: true, connected })
   const inboxEmpty = !offers.length && !inbox.length
+  const inboxCount = inbox.length === 1 ? '1 file' : `${inbox.length} files`
 
   return (
-    <Screen>
-      <ScreenHeader title="Share" />
+    <Screen
+      refreshControl={
+        <RefreshControl refreshing={inboxLoaded && refreshing} onRefresh={reload} enabled={connected} tintColor={palette.accent} colors={[palette.accent]} />
+      }
+    >
+      <ScreenHeader
+        title="Share"
+        sub={inboxPath}
+        right={
+          <IconButton icon="refresh-cw" label="Refresh" onPress={reload} loading={refreshing} disabled={!connected} />
+        }
+      />
 
       {queued ? (
         <Card tone={palette.accent}>
@@ -550,6 +683,7 @@ export function ShareScreen({
             icon="share-2"
             title="Incoming"
             tone={palette.accent}
+            subtitle={describeShare(queued)}
             right={<Pill label="shared" tone={palette.accent} icon="share-2" />}
           />
           {queued.files.map((file, i) => {
@@ -566,83 +700,140 @@ export function ShareScreen({
             )
           })}
           {(queued.text || '').trim() ? (
-            <View style={{ paddingVertical: space.sm + 2 }}>
-              <Body numberOfLines={3} selectable>
-                {(queued.text as string).trim()}
-              </Body>
-              <Label style={{ marginTop: 1, color: palette.muted }}>{isLink(queued.text as string) ? 'link' : 'text'}</Label>
-            </View>
+            <>
+              <Code lines={3}>{(queued.text as string).trim()}</Code>
+              <Label style={{ color: palette.muted }}>{isLink(queued.text as string) ? 'a link' : 'some text'}</Label>
+            </>
           ) : null}
           {queued.dropped ? (
-            <Hint icon="alert-triangle" tone={palette.orange} style={{ marginTop: space.sm }}>
+            <Hint icon="alert-triangle" tone={palette.orange}>
               {queued.dropped === 1 ? 'One attachment could not be read' : `${queued.dropped} attachments could not be read`}
             </Hint>
           ) : null}
-          <Notice error={blocked} tone="warning" style={{ marginTop: space.md }} />
-          <View style={{ flexDirection: 'row', gap: space.sm, marginTop: blocked ? 0 : space.md }}>
+          <Notice error={blocked} tone="warning" />
+          <Buttons>
             <Button
               icon="send"
               label="Send"
-              variant="solid"
-              tone={palette.accent}
+              variant="primary"
               onPress={() => deliver(queued)}
               loading={busy === 'incoming'}
               disabled={!connected}
-              style={{ flex: 1 }}
             />
-            <Button icon="x" label="Discard" onPress={() => setQueued(null)} style={{ flex: 1 }} />
-          </View>
+            <Button icon="x" label="Discard" onPress={discard} />
+          </Buttons>
         </Card>
       ) : null}
 
-      <Card>
+      <Card dim={!clips}>
         <CardHeader
           icon="clipboard"
           title="Clipboard"
-          tone={connected ? undefined : palette.muted}
-          subtitle={!connected ? 'desktop offline' : latest ? `synced ${clock(latest.at)}` : 'not synced yet'}
+          tone={connected && clips ? undefined : palette.muted}
+          subtitle={
+            !connected
+              ? 'desktop offline'
+              : !clips
+                ? 'no clipboard on the desktop'
+                : latest
+                  ? `on the desktop · ${clock(latest.at)}`
+                  : 'nothing copied yet'
+          }
+          // The mock's header carries nothing on the right; the app's clipboard
+          // is two-way, and asking for the desktop's clip and handing it this
+          // phone's are the two commands with nowhere else to live.
+          right={
+            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+              <IconButton
+                icon="download"
+                label="Read the desktop clipboard"
+                onPress={pullClipboard}
+                loading={busy === 'pull'}
+                disabled={!connected || !clips}
+              />
+              <IconButton
+                icon="upload"
+                label="Send the phone clipboard"
+                onPress={pushClipboard}
+                loading={busy === 'push'}
+                disabled={!connected || !clips}
+              />
+            </View>
+          }
         />
-        {notices('clipboard')}
-        {latest ? (
-          typeof latest.text === 'string' ? (
-            <ClipText
-              text={latest.text}
-              at={latest.at}
-              copied={copied === latest.text}
-              onCopy={() => copyEntry(latest.text as string)}
-            />
-          ) : (
-            // A copied picture, and the same tap as a text clip: the row puts
-            // the picture itself in the phone's paste buffer. Looking at it is
-            // the thumbnail in the inbox below, which is holding this very offer.
+        {notice('clipboard')}
+
+        {latestText !== null ? (
+          <>
+            <Pressable
+              onPress={() => copyEntry(latestText)}
+              accessibilityRole="button"
+              accessibilityLabel="Copy to phone"
+              style={({ pressed }) => ({ opacity: pressed ? 0.6 : 1 })}
+            >
+              <Code lines={CLIP_LINES}>{latestText.trim() || '(blank)'}</Code>
+            </Pressable>
+            <Buttons>
+              <Button
+                compact
+                icon={copied === latestText ? 'check' : 'smartphone'}
+                tone={copied === latestText ? palette.green : undefined}
+                label="Copy on phone"
+                onPress={() => copyEntry(latestText)}
+              />
+              {isLink(latestText) ? (
+                <Button compact icon="external-link" label="Open here" onPress={() => openHere(latestText.trim())} />
+              ) : null}
+            </Buttons>
+          </>
+        ) : latest ? (
+          // A copied picture, and the same tap as a text clip: the row puts the
+          // picture itself in the phone's paste buffer. Looking at it is the
+          // thumbnail in the inbox below, which is holding this very offer.
+          <>
             <FileRow
               title={latest.name || latest.mime || 'image'}
               subtitle={`${clock(latest.at)}${latest.size ? ` · ${bytes(latest.size)}` : ''}`}
               left={<Thumb uri={latest.token ? local[latest.token] : undefined} kind="image" />}
-              onPress={() =>
-                latest.token ? copyEntryPicture({ token: latest.token, name: latest.name || 'clipboard' }) : undefined
-              }
-              right={
-                <IconButton
-                  icon={copied === latest.token ? 'check' : 'copy'}
-                  tone={copied === latest.token ? palette.green : undefined}
-                  loading={busy === `copy:${latest.token}`}
-                  label="Copy to phone"
-                  onPress={() =>
-                    latest.token ? copyEntryPicture({ token: latest.token, name: latest.name || 'clipboard' }) : undefined
-                  }
-                />
-              }
+              onPress={() => latestPicture && copyEntryPicture(latestPicture)}
               last
             />
-          )
+            <Buttons>
+              <Button
+                compact
+                icon={copied === latest.token ? 'check' : 'smartphone'}
+                tone={copied === latest.token ? palette.green : undefined}
+                label="Copy on phone"
+                loading={busy === `copy:${latest.token}`}
+                onPress={() => latestPicture && copyEntryPicture(latestPicture)}
+              />
+            </Buttons>
+          </>
         ) : (
-          <Empty icon="clipboard" text="Nothing copied on the desktop yet" />
+          <Empty icon="clipboard" text="Nothing copied yet" />
         )}
+
+        <Divider />
+        <Field
+          icon="arrow-up"
+          value={draft}
+          onChange={setDraft}
+          placeholder="Send text to the desktop clipboard"
+          onSubmit={sendText}
+          right={
+            <IconButton
+              icon="send"
+              label={isLink(draft) ? 'Open on the desktop' : 'Copy on the desktop'}
+              onPress={sendText}
+              loading={busy === 'text'}
+              disabled={!connected || !clips || !draft.trim()}
+            />
+          }
+        />
 
         {earlier.length ? (
           <>
-            <Divider style={{ marginTop: space.sm }} />
+            <Divider />
             <Section
               title="Earlier"
               right={
@@ -663,7 +854,7 @@ export function ShareScreen({
               if (typeof entry.text === 'string') {
                 const text = entry.text
                 return (
-                  <ListRow
+                  <FileRow
                     key={`${text}-${entry.at}-${i}`}
                     title={preview(text)}
                     subtitle={clock(entry.at)}
@@ -682,7 +873,7 @@ export function ShareScreen({
               }
               const picture = entry.token ? { token: entry.token, name: entry.name || 'clipboard' } : null
               return (
-                <ListRow
+                <FileRow
                   key={`${entry.token}-${entry.at}-${i}`}
                   title={entry.name || entry.mime || 'image'}
                   subtitle={`${clock(entry.at)}${entry.size ? ` · ${bytes(entry.size)}` : ''}`}
@@ -704,96 +895,56 @@ export function ShareScreen({
           </>
         ) : null}
 
-        <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.md }}>
-          <Button
-            icon="download"
-            label="Pull"
-            onPress={pullClipboard}
-            loading={busy === 'pull'}
-            disabled={!connected}
-            compact
-            style={{ flex: 1 }}
-          />
-          <Button
-            icon="upload"
-            label="Push"
-            onPress={pushClipboard}
-            loading={busy === 'push'}
-            disabled={!connected}
-            compact
-            style={{ flex: 1 }}
-          />
-        </View>
-        {connected ? null : (
-          <Hint icon="wifi-off" style={{ marginTop: space.md }}>
-            Needs the desktop online
-          </Hint>
-        )}
+        {!connected ? (
+          <Hint icon="wifi-off">Needs the desktop online</Hint>
+        ) : !clips ? (
+          <Hint icon="alert-triangle">Needs wl-clipboard on the desktop</Hint>
+        ) : null}
       </Card>
 
       <Card>
         <CardHeader
-          icon="send"
-          title="Send"
-          tone={connected ? undefined : palette.muted}
-          subtitle={sending ? (busy === 'incoming' ? 'sending the share…' : 'sending…') : connected ? null : 'desktop offline'}
-        />
-        {notices('send')}
-        <TextArea value={draft} onChange={setDraft} placeholder="Text or link" label="Text or link to send" />
-        <Button
-          icon={isLink(draft) ? 'external-link' : 'clipboard'}
-          label={isLink(draft) ? 'Open on desktop' : 'Copy on desktop'}
-          onPress={sendText}
-          variant="solid"
-          loading={busy === 'text'}
-          disabled={!connected || !draft.trim()}
-        />
-        <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
-          <Button icon="file" label="File" onPress={pickDocument} loading={busy === 'file'} disabled={!connected} compact style={{ flex: 1 }} />
-          <Button icon="image" label="Photo" onPress={pickPhoto} loading={busy === 'photo'} disabled={!connected} compact style={{ flex: 1 }} />
-        </View>
-        {connected ? null : (
-          <Hint icon="wifi-off" style={{ marginTop: space.md }}>
-            Needs the desktop online
-          </Hint>
-        )}
-      </Card>
-
-      <Card>
-        <CardHeader
-          icon="inbox"
           title="Inbox"
           tone={!connected && inboxEmpty ? palette.muted : undefined}
           subtitle={
-            offers.length
-              ? `${offers.length} new`
-              : inbox.length
-                ? '~/Downloads/Omarchy Connect'
-                : !connected
-                  ? 'desktop offline'
-                  : inboxLoaded
-                    ? 'empty'
-                    : 'loading…'
+            !connected
+              ? 'desktop offline'
+              : offers.length
+                ? `${offers.length} new · ${inboxCount}`
+                : inboxLoaded
+                  ? inboxCount
+                  : 'loading…'
           }
           right={
             <IconButton
-              icon="refresh-cw"
-              label="Refresh"
-              onPress={() => {
-                void loadInbox()
-                void loadOffers()
-              }}
-              loading={refreshing}
+              icon="paperclip"
+              label="Send a file"
+              onPress={pickDocument}
+              loading={busy === 'file'}
               disabled={!connected}
             />
           }
         />
-        {notices('inbox')}
+        {notice('inbox')}
         <Notice
           error={inboxError}
           tone="warning"
           action={{ label: 'Try again', icon: 'refresh-cw', onPress: () => void loadInbox() }}
         />
+
+        {/* The paperclip is the file picker; the phone's own photos are a
+            different picker and the mock has no second button for them. */}
+        <Buttons>
+          <Button compact variant="ghost" icon="file" label="File" onPress={pickDocument} loading={busy === 'file'} disabled={!connected} />
+          <Button compact variant="ghost" icon="image" label="Photo" onPress={pickPhoto} loading={busy === 'photo'} disabled={!connected} />
+        </Buttons>
+
+        {sending ? (
+          <View style={{ gap: space.sm }}>
+            <FileRow title={sending.label} subtitle={`sending · ${sending.done} of ${sending.total}`} icon="upload" last />
+            {sending.total > 1 ? <Meter fraction={sending.done / sending.total} /> : <ActivityIndicator size="small" color={palette.accent} />}
+          </View>
+        ) : null}
 
         {offers.length ? (
           <>
@@ -818,14 +969,21 @@ export function ShareScreen({
 
         {inbox.length ? (
           <>
-            <Section title="On the desktop" right={<Caps>{inbox.length === 1 ? '1 file' : `${inbox.length} files`}</Caps>} />
+            <Section title="On the desktop" right={<Caps>{inboxCount}</Caps>} />
             {inbox.map((item, i) => (
-              <FileRow key={item.name} title={item.name} subtitle={`${bytes(item.size)} · ${clock(item.at)}`} last={i === inbox.length - 1} />
+              <FileRow
+                key={item.name}
+                icon={rowIcon(item.name)}
+                title={item.name}
+                subtitle={`${mine.has(item.name) ? 'from this phone' : 'from the desktop'} · ${when(item.at)}`}
+                right={<Label style={{ color: palette.muted }}>{bytes(item.size)}</Label>}
+                last={i === inbox.length - 1}
+              />
             ))}
           </>
         ) : null}
 
-        {inboxEmpty ? (
+        {inboxEmpty && !sending ? (
           !connected ? (
             <Hint icon="wifi-off">Needs the desktop online</Hint>
           ) : !inboxLoaded && inboxError == null ? (
@@ -833,7 +991,11 @@ export function ShareScreen({
               <ActivityIndicator color={palette.accent} />
             </View>
           ) : (
-            <Empty icon="inbox" text="Nothing yet · Send one with omarchy-connect send" />
+            <Empty
+              icon="inbox"
+              text="No files yet · Send one from the desktop with omarchy-connect send"
+              action={{ label: 'Send a file', icon: 'paperclip', onPress: pickDocument }}
+            />
           )
         ) : null}
       </Card>
@@ -888,21 +1050,24 @@ function OfferRow({
   return (
     <FileRow
       title={offer.name}
-      subtitle={`${bytes(offer.size)}${offer.at ? ` · ${clock(offer.at)}` : ''}`}
+      subtitle={`from the desktop · ${when(offer.at)}`}
       left={<Thumb uri={kind === 'image' ? uri : undefined} kind={kind} busy={busy === `open:${offer.token}`} />}
       onPress={onOpen}
       right={
-        gallery ? (
-          <IconButton
-            icon={saved ? 'check' : 'download'}
-            tone={saved ? palette.green : undefined}
-            loading={busy === `save:${offer.token}`}
-            label={saved ? 'In your gallery' : 'Save to gallery'}
-            onPress={onSave}
-          />
-        ) : (
-          <IconButton icon="share-2" loading={busy === `share:${offer.token}`} label="Share" onPress={onShare} />
-        )
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <Label style={{ color: palette.muted }}>{bytes(offer.size)}</Label>
+          {gallery ? (
+            <IconButton
+              icon={saved ? 'check' : 'download'}
+              tone={saved ? palette.green : undefined}
+              loading={busy === `save:${offer.token}`}
+              label={saved ? 'In your gallery' : 'Save to gallery'}
+              onPress={onSave}
+            />
+          ) : (
+            <IconButton icon="share-2" loading={busy === `share:${offer.token}`} label="Share" onPress={onShare} />
+          )}
+        </View>
       }
       last={last}
     />
@@ -919,11 +1084,13 @@ function OfferRow({
  * thumbnail and a button, where one line holds twenty-two. Two lines hold
  * it; a name longer still is cut in the middle so the extension survives,
  * because ".png" is the half that says what the thing is. Otherwise drawn
- * exactly as the kit's row is. Belongs in the kit as an option on `ListRow`.
+ * exactly as the kit's row is — same 48, same hairline, same bleed under the
+ * thumb. Belongs in the kit as an option on `ListRow`.
  */
 function FileRow({
   title,
   subtitle,
+  icon,
   left,
   right,
   onPress,
@@ -931,12 +1098,15 @@ function FileRow({
 }: {
   title: string
   subtitle?: string | null
+  icon?: IconName
   left?: React.ReactNode
   right?: React.ReactNode
   onPress?: () => void
   last?: boolean
 }) {
   const p = usePalette()
+  const { edge } = useSurface()
+  const bleed = space.lg - 2
   return (
     <Pressable
       onPress={onPress}
@@ -945,15 +1115,19 @@ function FileRow({
       style={({ pressed }) => ({
         flexDirection: 'row',
         alignItems: 'center',
-        minHeight: touch + 4,
-        paddingVertical: space.sm + 2,
+        gap: space.md,
+        minHeight: 48,
+        paddingVertical: space.xs,
+        marginHorizontal: onPress ? -bleed : 0,
+        paddingHorizontal: onPress ? bleed : 0,
         borderBottomWidth: last ? 0 : StyleSheet.hairlineWidth * 2,
-        borderBottomColor: p.lighter_background,
-        opacity: pressed ? 0.6 : 1,
+        borderBottomColor: edge,
+        backgroundColor: pressed && onPress ? alpha(p.selection, 0.7) : 'transparent',
       })}
     >
-      {left ? <View style={{ marginRight: space.md }}>{left}</View> : null}
-      <View style={{ flex: 1, marginRight: space.md, minWidth: 0 }}>
+      {icon ? <Feather name={icon} size={20} color={p.light_foreground} /> : null}
+      {left}
+      <View style={{ flex: 1, minWidth: 0 }}>
         <Mono
           style={{ color: p.bright_foreground, fontFamily: font.regular, fontSize: size.value, lineHeight: line.value }}
           numberOfLines={2}
@@ -962,7 +1136,10 @@ function FileRow({
           {title}
         </Mono>
         {subtitle ? (
-          <Mono style={{ color: p.muted, fontFamily: font.regular, fontSize: size.label, lineHeight: line.label, marginTop: 1 }} numberOfLines={1}>
+          <Mono
+            style={{ color: p.light_foreground, fontFamily: font.regular, fontSize: size.label, lineHeight: line.label }}
+            numberOfLines={1}
+          >
             {subtitle}
           </Mono>
         ) : null}
@@ -990,82 +1167,6 @@ function Thumb({ uri, kind, busy, size: box = THUMB }: { uri?: string; kind: Med
     <View style={[frame, { backgroundColor: p.darker_background, alignItems: 'center', justifyContent: 'center' }]}>
       {busy ? <ActivityIndicator size="small" color={p.accent} /> : <Feather name={iconFor(kind)} size={Math.round(box / 3)} color={p.muted} />}
     </View>
-  )
-}
-
-/**
- * The desktop's last text clip, as a paragraph rather than a row: three
- * lines of it, because a clipboard card that shows one flattened line of a
- * copied paragraph is a list entry, not a clipboard. The tap and the button
- * do the same thing — put it on the phone — and the tick says it happened.
- */
-function ClipText({ text, at, copied, onCopy }: { text: string; at: number; copied: boolean; onCopy: () => void }) {
-  const p = usePalette()
-  const shown = text.trim() || '(blank)'
-  return (
-    <Pressable
-      onPress={onCopy}
-      accessibilityRole="button"
-      accessibilityLabel="Copy to phone"
-      style={({ pressed }) => ({ flexDirection: 'row', alignItems: 'center', paddingVertical: space.sm, opacity: pressed ? 0.6 : 1 })}
-    >
-      <View style={{ flex: 1, marginRight: space.md, minWidth: 0 }}>
-        <Body numberOfLines={3} tone={p.bright_foreground}>
-          {shown}
-        </Body>
-        <Label style={{ marginTop: 2, color: p.muted }}>{clock(at)}</Label>
-      </View>
-      <IconButton icon={copied ? 'check' : 'copy'} tone={copied ? p.green : undefined} label="Copy to phone" onPress={onCopy} />
-    </Pressable>
-  )
-}
-
-/**
- * A multi-line `Field`: the same box, tall enough for a paragraph, without
- * the caps label over it — the card's title is the label here. Belongs in
- * the kit as `multiline` on `Field`.
- */
-function TextArea({
-  value,
-  onChange,
-  placeholder,
-  label,
-}: {
-  value: string
-  onChange: (v: string) => void
-  placeholder?: string
-  /** What a screen reader says. */
-  label: string
-}) {
-  const p = usePalette()
-  const [focused, setFocused] = useState(false)
-  return (
-    <TextInput
-      value={value}
-      onChangeText={onChange}
-      placeholder={placeholder}
-      placeholderTextColor={p.muted}
-      multiline
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      maxFontSizeMultiplier={MAX_FONT_SCALE}
-      accessibilityLabel={label}
-      style={{
-        minHeight: 72,
-        color: p.bright_foreground,
-        fontFamily: font.regular,
-        fontSize: size.value,
-        lineHeight: line.value,
-        backgroundColor: p.darker_background,
-        borderColor: focused ? p.foreground : p.lighter_background,
-        borderWidth: StyleSheet.hairlineWidth * 2,
-        borderRadius: radius.sm,
-        paddingHorizontal: space.md,
-        paddingVertical: space.sm + 2,
-        marginBottom: space.md,
-        textAlignVertical: 'top',
-      }}
-    />
   )
 }
 
