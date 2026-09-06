@@ -125,7 +125,7 @@ English, sentence case, no trailing full stop on a label or a hint. Buttons
 are a verb or verb-object: "Send", "Copy on desktop", "Pair", "Try again".
 Never "Click here", never a question as a button.
 
-Caps strings are nouns: `SESSION`, `2 WINDOWS`, `DNS PROVIDER`. A caps string
+Caps strings are nouns: `SESSION`, `2 WINDOWS`, `WAKE ON LAN`. A caps string
 over 28 characters wraps, so it is wrong.
 
 Cut anything that explains the product to its owner. The reader installed the
