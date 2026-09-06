@@ -38,6 +38,7 @@
     "test:hygiene": "node test/hygiene.mjs",
     "test:clipboard-image": "node test/clipboard-image.mjs",
     "test:config": "node test/config.mjs",
+    "test:cpu-temp": "node test/cpu-temp.mjs",
     "test:replay": "node test/replay.mjs",
     "test:mirror-dedupe": "node test/mirror-dedupe.mjs",
     "test:sms-reply": "node test/sms-reply.mjs",
