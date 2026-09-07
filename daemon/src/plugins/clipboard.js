@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
-import { run, has, spawn, wlCopy, capture } from '../lib/exec.js'
+import { run, has, spawn, wlCopy, wlCopyBytes, capture } from '../lib/exec.js'
 import { XDG_CACHE } from '../lib/paths.js'
 import { log } from '../lib/log.js'
 import { offerFile, resolveOffer } from './share.js'
@@ -184,6 +184,34 @@ export async function claim(text) {
   lastSeen = text
   await wlCopy(text)
   return { ok: true, bytes: Buffer.byteLength(text) }
+}
+
+/**
+ * Put bytes on the clipboard under their own type, without the echo.
+ *
+ * The same gate `claim` opens, held against the other half of the watcher.
+ * Text is recognised on its way back by its content, so `lastSeen` is enough;
+ * a picture is recognised by the token of the offer its bytes were spooled
+ * under, so the spooling is done here, up front, and the token claimed before
+ * the compositor has been told anything. When the watcher then fires on our
+ * own write, `offerBytes` hands back that same spooled offer — identical bytes
+ * keep their token — and the change is recognised as ours and dropped.
+ *
+ * Without it, a file copied off its own notification card would go straight
+ * back down the wire to the phone that had just sent it, announced as
+ * something the desktop copied.
+ */
+export async function claimBytes(bytes, mime) {
+  if (!has('wl-copy')) throw new Error('wl-copy not installed')
+  const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes))
+  // Trimmed, because that is the shape the watcher will read back: a
+  // `text/uri-list` ends in CRLF where the spec says it should, and
+  // `wl-paste --no-newline` hands it over without one. An untrimmed claim is
+  // a claim of text nobody will ever see, and the echo goes to the phone.
+  if (String(mime).startsWith('text/')) lastSeen = data.toString('utf8').trim()
+  else lastBinaryToken = offerBytes(data, mime).token
+  await wlCopyBytes(data, mime)
+  return { ok: true, bytes: data.length, mime }
 }
 
 export default {

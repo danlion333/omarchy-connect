@@ -7,6 +7,7 @@ import { handsfree, isRinging, isLive, isTalking } from '../lib/handsfree.js'
 import { ringtone } from '../lib/ringtone.js'
 import { talkTime } from '../lib/talktime.js'
 import { ancs } from '../lib/ancs.js'
+import { BUTTONLESS, CLOSED_BY_HAND, setDrawsButtons } from '../lib/cards.js'
 import { extractCode, explain as explainCode } from '../lib/otp.js'
 import { claim } from './clipboard.js'
 import { loadConfig, pairedDevice, saveConfig } from '../lib/config.js'
@@ -193,23 +194,14 @@ let locating = null
 let locateTimer = null
 
 /**
- * Notification servers that advertise `actions` and draw no buttons.
+ * Whether this desktop's notification server draws buttons for named actions.
  *
- * Every server on the bus claims the `actions` capability, including the ones
- * whose entire idea of an action is to run the one named `default` when the
- * notification is clicked — Omarchy's own shell among them. Nothing in the
- * spec tells the two apart, so the server is asked who it is and this short
- * list is consulted. Being wrong costs a line of text, never a button.
+ * The list of servers that do not, and why the question has to be asked at
+ * all, are in `lib/cards.js`. The answer is read once here — the plugin that
+ * cannot afford to wait on D-Bus while a phone is ringing — and published
+ * there for every other card on this desktop.
  */
-const BUTTONLESS = /quickshell/i
 let drawsButtons = true
-
-/**
- * The server's reason for taking a card off the screen, when the reason is a
- * person: 1 is its own timeout running out, 3 is a client asking for it, and 2
- * is somebody sweeping it away by hand.
- */
-const CLOSED_BY_HAND = 2
 
 /** The `gdbus monitor` reading what becomes of the ringing card, if any. */
 let cardWatch = null
@@ -231,6 +223,7 @@ async function readNotificationServer() {
   )
   if (!res.ok) return
   drawsButtons = !BUTTONLESS.test(res.stdout)
+  setDrawsButtons(drawsButtons)
   if (!drawsButtons) {
     log.info('notifications: this server draws no buttons — a ringing call answers on click')
   }
