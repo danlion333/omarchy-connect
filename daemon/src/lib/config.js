@@ -17,6 +17,14 @@ const DEFAULTS = {
   // shell. Nothing here is on until `omarchy-connect agent enable` says so.
   agents: { enabled: false, spawn: false },
   /**
+   * The shell on this desktop the phone can type into and read back.
+   *
+   * The same class of thing as writing to an agent — a prompt is arbitrary
+   * code execution — so it is off until `omarchy-connect terminal on` says
+   * otherwise, and that command is only reachable from the desktop.
+   */
+  terminal: { enabled: false },
+  /**
    * Whether the phone may reach this desktop from outside its own subnet,
    * over whatever overlay network the machine already runs.
    *

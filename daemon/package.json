@@ -22,6 +22,7 @@
     "test:locate": "node test/locate.mjs",
     "test:ios": "node test/ios.mjs",
     "test:agents": "node test/agents.mjs && node test/agent-status.mjs && node test/agent-draft.mjs && node test/agent-submit.mjs && node test/remote.mjs",
+    "test:terminal": "node test/terminal.mjs",
     "test:hostname": "node test/hostname.mjs",
     "test:announce": "node test/announce.mjs",
     "test:overlay": "node test/overlay.mjs",

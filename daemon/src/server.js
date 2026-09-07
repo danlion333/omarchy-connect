@@ -41,6 +41,7 @@ import {
   requestLocate,
   trackConnections,
 } from './plugins/phone.js'
+import { summary as terminalSummary, setEnabled as setTerminalEnabled } from './plugins/terminal.js'
 import {
   summary as agentsSummary,
   hook as agentHook,
@@ -70,7 +71,7 @@ export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
-export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'agent', 'endpoints']
+export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'agent', 'terminal', 'endpoints']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
 
@@ -870,6 +871,37 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           const agents = op === 'status' ? agentsSummary() : setAgentsEnabled(op === 'enable')
           publishState()
           json(res, 200, { ok: true, agents })
+        } catch (err) {
+          json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * Localhost only: the desktop's switch for the shell the phone types into.
+     *
+     * Its own endpoint rather than a corner of the agent one, because it is
+     * its own decision and the CLI, the panel and the log should all be able
+     * to say which of the two was flipped. Everything else about it is the
+     * agent switch's shape: loopback only, so no paired phone can grant
+     * itself a shell, and the daemon owns both halves so nothing restarts.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/terminal/control') {
+      if (!localOnly(req, res)) return undefined
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 4096) req.destroy()
+      })
+      req.on('end', () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          if (op !== 'enable' && op !== 'disable' && op !== 'status') {
+            return json(res, 400, { error: `unknown terminal action: ${op}` })
+          }
+          const terminal = op === 'status' ? terminalSummary() : setTerminalEnabled(op === 'enable')
+          json(res, 200, { ok: true, terminal })
         } catch (err) {
           json(res, 400, { error: err.message })
         }

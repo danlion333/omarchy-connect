@@ -1776,6 +1776,71 @@ async function cmdRemote(args) {
   }
 }
 
+/**
+ * The shell on this desktop the phone can type into.
+ *
+ * The same three words as `remote`, and the same road as `agent enable`
+ * underneath: the running daemon is asked first, so the switch lands without
+ * a restart and the phone keeps its link, and the config is written here only
+ * when there is no daemon to take it.
+ */
+async function cmdTerminal(args) {
+  const action = String(args._[0] || 'status').toLowerCase()
+  const cfg = loadConfig()
+
+  if (action === 'on' || action === 'off' || action === 'enable' || action === 'disable') {
+    const on = action === 'on' || action === 'enable'
+    const res = await daemonRequest('/api/terminal/control', { method: 'POST', body: { op: on ? 'enable' : 'disable' } })
+    const applied = res.ok === true
+    if (!applied && res.status && res.status !== 404) {
+      log.error(res.data?.error || `could not turn the desktop shell ${on ? 'on' : 'off'}`)
+      process.exit(1)
+    }
+    if (!applied) saveConfig({ ...cfg, terminal: { ...(cfg.terminal || {}), enabled: on } })
+
+    if (on) {
+      log.ok('desktop shell on')
+      console.log(
+        dim(
+          '\n  a paired phone can now open a shell on this desktop, type into it\n' +
+            '  and read what it prints. That is arbitrary code execution as you,\n' +
+            '  the same grant as writing to a coding agent. Pair only phones you\n' +
+            '  own.\n\n' +
+            '  omarchy-connect terminal off   to take it back\n',
+        ),
+      )
+      if (!agentTmux.available()) log.warn('tmux is not installed, so there is no shell for the phone to open')
+    } else {
+      log.ok('desktop shell off')
+      console.log(dim('\n  the session itself is left alone — nothing at the desk was closed\n'))
+    }
+    if (!applied && (state.read()?.running || res.status)) {
+      log.warn('the running daemon did not take it — restart it: systemctl --user restart omarchy-connect')
+    }
+    return
+  }
+
+  if (action !== 'status') {
+    log.error(`unknown terminal action: ${action}`)
+    console.log(dim('\n  omarchy-connect terminal [status|on|off]\n'))
+    process.exit(1)
+  }
+
+  console.log(
+    card('DESKTOP SHELL', [
+      ['state', cfg.terminal?.enabled === true ? 'on' : 'off'],
+      ['needs', agentTmux.available() ? 'tmux — present' : 'tmux — not installed'],
+      ['session', 'oc-term'],
+    ]),
+  )
+  console.log(
+    dim(
+      '\n  omarchy-connect terminal on   let the phone open a shell here, type\n' +
+        '                                into it and read what it prints\n',
+    ),
+  )
+}
+
 async function cmdAgent(args) {
   const action = args._[0] || 'status'
 
@@ -2058,6 +2123,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('mic gain')} [N|auto]           how much louder the desktop makes it
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
+  ${bold('terminal')} <status|on|off>    a shell here the phone can type into
   ${bold('remote')} <status|on|off>      let the phone in from off this network
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate
@@ -2083,6 +2149,7 @@ const commands = {
   locate: cmdLocate,
   mic: cmdMic,
   agent: cmdAgent,
+  terminal: cmdTerminal,
   remote: cmdRemote,
   config: cmdConfig,
   firewall: cmdFirewall,
