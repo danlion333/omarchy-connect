@@ -28,31 +28,80 @@ export const addBatteryLevelListener = () => ({ remove() {} })
 export const addBatteryStateListener = () => ({ remove() {} })
 export const addLowPowerModeListener = () => ({ remove() {} })
 
-/* expo-file-system */
+/*
+ * expo-file-system — a real file system, in a Map.
+ *
+ * It used to be four inert classes, which was enough for the modules that
+ * merely import it. The clipboard history is written to a file and read back
+ * on the next launch, and the only interesting question about it — does what
+ * this process wrote come back to the next one — is a question about bytes
+ * actually landing somewhere. So the stub keeps them, on `globalThis` where a
+ * suite can survive re-importing the module and pretend to be a fresh launch.
+ */
+const files = (globalThis.__files ??= new Map())
+const dirs = (globalThis.__dirs ??= new Set())
+
+const at = (...parts) =>
+  parts
+    .map((part) => (part && typeof part === 'object' && 'uri' in part ? part.uri : String(part)))
+    .join('/')
+    .replace(/(?<!:)\/{2,}/g, '/')
+
 export class File {
   constructor(...parts) {
-    this.uri = parts.join('/')
-    this.exists = false
-    this.size = 0
+    this.uri = at(...parts)
   }
-  create() {}
-  delete() {}
-  write() {}
-  text() {
-    return ''
+  get exists() {
+    return files.has(this.uri)
+  }
+  get size() {
+    return files.get(this.uri)?.length ?? 0
+  }
+  create() {
+    if (!files.has(this.uri)) files.set(this.uri, new Uint8Array(0))
+  }
+  write(content) {
+    files.set(this.uri, typeof content === 'string' ? new TextEncoder().encode(content) : new Uint8Array(content))
+  }
+  bytesSync() {
+    const bytes = files.get(this.uri)
+    if (!bytes) throw new Error(`no such file: ${this.uri}`)
+    return bytes
+  }
+  async bytes() {
+    return this.bytesSync()
+  }
+  textSync() {
+    return new TextDecoder().decode(this.bytesSync())
+  }
+  async text() {
+    return this.textSync()
+  }
+  delete() {
+    files.delete(this.uri)
   }
 }
+
 export class Directory {
   constructor(...parts) {
-    this.uri = parts.join('/')
-    this.exists = false
+    this.uri = at(...parts)
   }
-  create() {}
+  get exists() {
+    return dirs.has(this.uri)
+  }
+  create() {
+    dirs.add(this.uri)
+  }
+  delete() {
+    dirs.delete(this.uri)
+    for (const uri of [...files.keys()]) if (uri.startsWith(`${this.uri}/`)) files.delete(uri)
+  }
   list() {
-    return []
+    return [...files.keys()].filter((uri) => uri.startsWith(`${this.uri}/`)).map((uri) => new File(uri))
   }
 }
-export const Paths = { cache: '/tmp', document: '/tmp' }
+
+export const Paths = { cache: '/tmp/cache', document: '/tmp/document' }
 
 /* expo-media-library */
 export const Asset = { createAsync: nothing }
