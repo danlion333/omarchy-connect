@@ -33,8 +33,29 @@ Panel {
   property bool detailsOpen: false
   property bool settingsOpen: false
   // Letting a phone read the coding agents on this desktop is the widest door
-  // this panel can open, so the switch asks first. Nothing else here does.
+  // this panel can open, so the switch asks first. The shell switch beside it
+  // opens a door of the same size and asks the same way; nothing else here
+  // does.
   property bool agentConfirmOpen: false
+  property bool terminalConfirmOpen: false
+  // One question at a time, and the keyboard belongs to whichever is up.
+  readonly property bool confirmOpen: agentConfirmOpen || terminalConfirmOpen
+  function activeConfirm() {
+    if (agentConfirmOpen) return agentConfirm
+    if (terminalConfirmOpen) return terminalConfirm
+    return null
+  }
+  function closeConfirm() {
+    agentConfirmOpen = false
+    terminalConfirmOpen = false
+  }
+  // What the second click means, whichever question asked it.
+  function acceptConfirm() {
+    var wasAgents = agentConfirmOpen
+    closeConfirm()
+    if (wasAgents) bridge.enableAgents()
+    else bridge.enableTerminal()
+  }
 
   // Answering a mirrored message happens in the row that carried it: the
   // number of the message being answered, and the half-typed answer itself.
@@ -198,6 +219,23 @@ Panel {
     agentConfirmOpen = true
   }
 
+  /**
+   * The shell switch, which is the agent switch's twin and behaves like it for
+   * the same reason: turning it off is closing a door, and turning it on hands
+   * a phone a command line on this machine. The decision itself lives in the
+   * daemon's config — the panel only presses `omarchy-connect terminal on|off`,
+   * the same command a person would type at the desk.
+   */
+  function requestTerminal(on) {
+    if (!on) {
+      terminalConfirmOpen = false
+      bridge.disableTerminal()
+      return
+    }
+    terminalConfirm.selectedIndex = 0
+    terminalConfirmOpen = true
+  }
+
   // No confirmation behind this one. Letting a phone read the agents on this
   // desktop is handing it a shell; letting it reach the desktop from a
   // different room is not a decision of that size, and the telephony it would
@@ -255,6 +293,7 @@ Panel {
     list.push("details", "settings")
     if (settingsOpen) {
       if (bridge.agentsAvailable) list.push("agents")
+      if (bridge.terminalAvailable) list.push("terminal")
       if (bridge.remoteAvailable) list.push("remote")
       if (bridge.micAvailable) list.push("mic")
       list.push("autostart")
@@ -303,6 +342,7 @@ Panel {
     // Enter on the agent switch opens the question rather than answering it,
     // which is why the cursor is allowed here at all.
     else if (focusSection === "agents") requestAgents(!bridge.agentsEnabled)
+    else if (focusSection === "terminal") requestTerminal(!bridge.terminalEnabled)
     else if (focusSection === "remote") requestRemote(!bridge.remoteEnabled)
     else if (focusSection === "mic") requestMic(!bridge.micEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
@@ -406,7 +446,7 @@ Panel {
     // panel that was open at the time. Coming back to it later is a fresh
     // look at the phone rather than the tail of an old attempt.
     bridge.actionError = ""
-    agentConfirmOpen = false
+    closeConfirm()
     replyTo = ""
     replyDraft = ""
     replyFocused = false
@@ -527,29 +567,31 @@ Panel {
       // cursor, the letter keys and Esc all mean something about the question
       // rather than about the panel behind it.
       onMoveRequested: function (dx, dy) {
-        if (root.agentConfirmOpen) {
-          if (dx !== 0) agentConfirm.selectedIndex = agentConfirm.selectedIndex === 0 ? 1 : 0
+        if (root.confirmOpen) {
+          var dialog = root.activeConfirm()
+          if (dx !== 0 && dialog) dialog.selectedIndex = dialog.selectedIndex === 0 ? 1 : 0
           return
         }
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dx, dy)
       }
       onActivateRequested: {
-        if (root.agentConfirmOpen) {
-          if (agentConfirm.selectedIndex === 0) root.agentConfirmOpen = false
-          else { root.agentConfirmOpen = false; bridge.enableAgents() }
+        if (root.confirmOpen) {
+          var dialog = root.activeConfirm()
+          if (dialog && dialog.selectedIndex === 0) root.closeConfirm()
+          else root.acceptConfirm()
           return
         }
         if (root.cursorActive) root.activateCursor()
       }
       onCloseRequested: {
-        if (root.agentConfirmOpen) root.agentConfirmOpen = false
+        if (root.confirmOpen) root.closeConfirm()
         else root.close()
       }
-      onDeleteRequested: if (!root.agentConfirmOpen) root.deleteSelected()
+      onDeleteRequested: if (!root.confirmOpen) root.deleteSelected()
       onTabRequested: function (direction) { root.switchPanel(direction) }
       onTextKey: function (t) {
-        if (root.agentConfirmOpen) return
+        if (root.confirmOpen) return
         var key = String(t).toLowerCase()
         // Still `p` for pair. With a phone already paired the service answers
         // with why rather than doing anything — dropping a pairing is not
@@ -1332,6 +1374,26 @@ Panel {
               onClicked: root.requestAgents(!bridge.agentsEnabled)
             }
 
+            // The shell. Hidden on a desktop with no tmux to hold one, the
+            // same way the agent card is hidden where no agent is installed —
+            // and it stays once it is on, because the switch that opened a
+            // shell has to be the switch that closes it.
+            Toggle {
+              visible: bridge.terminalAvailable
+              width: parent.width
+              // Short enough to fit the card rather than elide: a switch
+              // whose label ends in an ellipsis names nothing.
+              label: bridge.terminalEnabled ? "The phone can type into a shell here" : "Let the phone type into a shell here"
+              description: (bridge.terminalEnabled ? "󰆍  " : "󰧾  ") + Model.terminalText(bridge.terminal, bridge.running)
+              checked: bridge.terminalEnabled
+              hasCursor: root.cursorActive && root.focusSection === "terminal"
+              onHovered: function (on) { if (on) root.setCursor("terminal") }
+              foreground: root.foreground
+              accent: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestTerminal(!bridge.terminalEnabled)
+            }
+
             // Hidden on a desktop with no tunnel to offer, for the same
             // reason: there is nothing here to switch on until the machine
             // has been put on one.
@@ -1487,6 +1549,25 @@ Panel {
         onConfirmed: {
           root.agentConfirmOpen = false
           bridge.enableAgents()
+        }
+      }
+
+      // The same question about the same size of door: a shell on this
+      // machine, opened from a handset, running as the person sitting here.
+      ConfirmDialog {
+        id: terminalConfirm
+        anchors.fill: parent
+        z: 10
+        opened: root.terminalConfirmOpen
+        message: "Let " + (bridge.device ? bridge.device.name : "the paired phone")
+          + " type into a shell on this desktop? Whatever it sends runs here as you — your files, your keys, your session — and it reads the screen back. That is a command line in somebody's pocket."
+        confirmText: "Open the shell"
+        foreground: root.foreground
+        fontFamily: root.fontFamily
+        onCanceled: root.terminalConfirmOpen = false
+        onConfirmed: {
+          root.terminalConfirmOpen = false
+          bridge.enableTerminal()
         }
       }
     }

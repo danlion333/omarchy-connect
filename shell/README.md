@@ -135,8 +135,8 @@ it is drawn.
   name while it is mirroring, *idle* when it is bonded but declining to share.
   A desktop paired to an Android phone never draws either row, because neither
   would be telling it anything about the phone it actually has.
-- **Settings** — the other collapsed row, holding the two switches that are
-  decided once and then left alone for months.
+- **Settings** — the other collapsed row, holding the switches that are decided
+  once and then left alone for months.
   - *Let the phone read and answer agents* — the one control on this panel that
     changes what the phone is allowed to see. Turning it **on** asks first,
     naming what the phone will be able to see — source, commands, the output of
@@ -147,6 +147,18 @@ it is drawn.
     switch stays hidden on a machine with no coding agent installed, where it
     would only be a question. It follows the daemon's own gate: reading is off
     until someone here turns it on.
+  - *Let the phone type into a shell here* — the agent switch's
+    twin, and the only other control here that widens what the phone can do.
+    Turning it **on** asks first, in the same words about the same size of
+    door: whatever the phone sends runs on this machine as the person sitting
+    at it, and the phone reads the screen back. Turning it off is immediate,
+    and it leaves the session at the desk standing — the switch is about what
+    the phone may reach, not about killing anybody's work. It is hidden on a
+    desktop with no tmux to hold a shell, unless the shell is already on, in
+    which case the switch that opened it has to stay reachable to close it.
+    The line under it says what the daemon's config says, so it is right even
+    with the daemon stopped, and it follows the same gate the CLI's
+    `omarchy-connect terminal on` flips.
   - *Start at login* — whether the daemon comes up with the session. Starting
     and stopping it *right now* is the hero's switch, which is a separate
     decision and stays where you can reach it without opening anything.
@@ -261,10 +273,11 @@ up, and the same key hushes it again for as long as it is ringing. Like the
 others it does nothing when there is no phone on the socket, because that is
 the one case where nothing on this desktop could reach it.
 
-The agent switch has no letter of its own, deliberately: every letter on this
-panel is one keystroke away from something, and widening what leaves this
-machine is not a thing to hand to a mistyped key. It is reached by opening
-Settings and walking to it. While its question is on screen it owns the
+Neither the agent switch nor the shell switch has a letter of its own,
+deliberately: every letter on this panel is one keystroke away from something,
+and widening what leaves this machine — or what a phone may run on it — is not
+a thing to hand to a mistyped key. Both are reached by opening Settings and
+walking to them. While either question is on screen it owns the
 keyboard — `h`/`l` move between the answers, Enter takes the highlighted one,
 Esc says no — and the panel behind it stays put.
 

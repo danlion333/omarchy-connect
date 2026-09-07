@@ -761,3 +761,48 @@ function agentStateGlyph(session) {
   if (session.state === "working") return "󰦖"
   return "󰒲"
 }
+
+/* ── the shell on this desktop ─────────────────────────────────────────── */
+
+/**
+ * The desktop-shell half of the status file, with every field defaulted.
+ *
+ * Same rule as `agents`, and for the same reason: a daemon old enough not to
+ * publish this key at all must read as "off, and nothing here to carry it"
+ * rather than break the panel on an undefined. A status file written before
+ * the switch existed is exactly that case, and it is the file the panel will
+ * be looking at for the second between an upgrade and the daemon's restart.
+ */
+function terminal(status) {
+  var value = isObject(status) && isObject(status.terminal) ? status.terminal : {}
+  return {
+    enabled: value.enabled === true,
+    // Whether this desktop has a multiplexer to hold a shell in. Without one
+    // there is no road at all, the same way there is no microphone switch on
+    // a machine with no sound server.
+    available: value.available === true,
+    session: typeof value.session === "string" ? value.session : "oc-term"
+  }
+}
+
+/**
+ * Is the switch worth drawing?
+ *
+ * The agents' rule: no switch for a thing this desktop cannot do — *unless* it
+ * is already on, because the switch that turned a shell on has to be the
+ * switch that turns it off, even on a machine that has since lost tmux.
+ */
+function terminalShown(value) {
+  return value.enabled || value.available
+}
+
+/** The one line under the switch: what the desktop shell is doing right now. */
+function terminalText(value, running) {
+  if (!value.enabled) {
+    if (!value.available) return "off · no tmux here to hold a shell"
+    return "off · the phone cannot type here"
+  }
+  if (!running) return "on · nothing is listening while the daemon is stopped"
+  if (!value.available) return "on · but tmux is gone, so there is no shell to reach"
+  return "on · the phone can type into \"" + value.session + "\""
+}

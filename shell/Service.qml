@@ -111,6 +111,16 @@ Item {
   // and the switch has to be reachable to be turned back off.
   readonly property bool agentsAvailable: agents.enabled || agents.adapters.length > 0
 
+  // The shell on this desktop the phone can type into — the agent switch's
+  // twin, and read the same way: a decision that lives in the config, so it is
+  // right here even with the daemon stopped, and one the daemon applies live,
+  // so the click costs the phone nothing.
+  readonly property var terminal: Model.terminal(status)
+  readonly property bool terminalEnabled: terminal.enabled
+  // Worth a switch at all: either this desktop has tmux to hold a shell, or
+  // the shell is already on and the switch has to be reachable to close it.
+  readonly property bool terminalAvailable: Model.terminalShown(terminal)
+
   // The phone's microphone, and whether this desktop is offering it as a
   // source the rest of the system can pick. Switchable from here for the same
   // reason the agent switch is: the daemon loads and unloads the source live,
@@ -539,6 +549,23 @@ Item {
 
   function disableAgents() {
     invoke(Model.command(root.status, ["agent", "disable"]), "Turning agent control off…")
+  }
+
+  /* ── the desktop shell ────────────────────────────────────────────── */
+
+  /**
+   * The other switch that widens what the phone can see, and so the other one
+   * worth waiting on: `terminal on` writes the config and tells the running
+   * daemon in one call, and a machine with no tmux answers with the sentence
+   * that says why — which belongs on screen rather than in a log nobody has
+   * open.
+   */
+  function enableTerminal() {
+    invoke(Model.command(root.status, ["terminal", "on"]), "Letting the phone type into this desktop…")
+  }
+
+  function disableTerminal() {
+    invoke(Model.command(root.status, ["terminal", "off"]), "Closing the desktop shell…")
   }
 
   /**
