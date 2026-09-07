@@ -37,7 +37,7 @@ import { foregroundBusy } from '../agents/proc.js'
  */
 
 /** The one session. Not a prefix: there is exactly one, on purpose. */
-const SESSION = 'oc-term'
+export const SESSION = 'oc-term'
 
 /**
  * How often the watcher looks, while a phone has the screen open.

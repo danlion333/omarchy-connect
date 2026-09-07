@@ -9,6 +9,8 @@ import { INBOX } from '../plugins/share.js'
 import { SOURCE_NAME, SOURCE_DESCRIPTION } from './pipesource.js'
 import { detected as detectedAgents } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
+import * as tmux from '../agents/tmux.js'
+import { SESSION as TERMINAL_SESSION } from '../plugins/terminal.js'
 
 /**
  * The desktop client's data file.
@@ -163,6 +165,18 @@ export function baseSnapshot({ version = null, port = null } = {}) {
       running: 0,
       waiting: 0,
       sessions: [],
+    },
+    // The shell the phone types into, which is the same kind of switch the
+    // panel draws for the agents and so needs the same honesty with the daemon
+    // down: the decision lives in the config and survives a restart, and
+    // whether this desktop has tmux to carry a shell at all is a `which` away,
+    // so both are answerable here. Nothing is being watched while the daemon
+    // is stopped, but nothing on the panel claims otherwise — the switch says
+    // what it will do when the daemon is back.
+    terminal: {
+      enabled: cfg.terminal?.enabled === true,
+      available: tmux.available(),
+      session: TERMINAL_SESSION,
     },
   }
 }

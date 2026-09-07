@@ -42,6 +42,7 @@ the desktop and the app repaints in the same palette.
 | **Coding agents** | Read the Claude Code session already open on the desktop from your phone, answer it — including tapping an option off a multiple-choice question — and send it a screenshot from your photos, your files or your clipboard. The phone tells you the moment one stops to ask you something, and the usual one-word answer can be typed straight into the notification. It carries the desktop's own status line with it: which model, how full the context is, which permission mode, which branch — and a **compact** button that appears once the conversation is running out of room. The row says what the agent is *working on* in its own words rather than which tool it last reached for, with the checklist behind it one tap away. A long answer arrives on the phone the way it arrives on the desktop — a few words at a time, read off the terminal while the agent is still writing, because the transcript it keeps does not record a message until the message is over. Every skill and slash command that desktop has is a searchable list one tap from the composer, so `/security-review` costs a thumb rather than a keyboard. How much of the plan is left sits above the session list, because that is the number that decides whether starting something long is a good idea. Off by default, and switched on from the desktop — the panel or the CLI. |
 | **Dictation** | Speak your answer instead of typing it, and let the desktop do the listening. The recording crosses to the machine you are already talking to, `voxtype` reads it there with a large Whisper model on the GPU — primed with the vocabulary these conversations are actually made of, so `hyprctl` and `cherry-pick` survive — and the words land in the composer for you to fix a name and press send. Nothing goes to a keyboard vendor, and nothing is kept: the audio is deleted the moment it has been read. |
 | **Agents you start** | Pick up any conversation that desktop has ever had — the CLI's own `--resume`, from a list with the titles it wrote for them — or send a new agent off with a prompt and no terminal at all, and read what it did later. A background agent's own running commentary ("exploring project state for commit + merge flow") is on the phone, and nowhere else: nothing on the desktop draws it. Behind a second switch, `omarchy-connect agent spawn on`, because starting a process is not the same decision as reading one. |
+| **The desktop shell** | A shell on the desktop the phone types into and reads back — the terminal workspace in the app is a window into a real tmux session here, not a log of what was sent. Off by default like the agents, and switched on from the same place: `omarchy-connect terminal on`, or the switch under **Settings** on the desktop panel, which asks before it opens. |
 | **Phone notifications** | One ongoing line saying whether this phone can currently see its desktop — the KDE Connect habit — with a reconnect button on it while it cannot. Then four things it will tell you about: an agent waiting on a question (with a reply box on the notification), an agent that finished something long, a file the desktop sent (with **Save** straight to the gallery), and whatever the desktop last copied (silent, with **Copy**). Each has its own switch. |
 | **Follows the desktop** | If the router hands the desktop a new address, the phone finds it again by its pinned key instead of asking you to re-pair. |
 | **From anywhere** | Off by default. Switched on, the desktop tells the phone the address its tunnel gave it — Tailscale, Headscale, WireGuard, ZeroTier, NetBird, whatever is already there — and the phone keeps that beside the home address and dials whichever one it can reach. No tunnel of ours, no relay, no account: the desktop reports what your own overlay handed it. Calls and messages stay at home — every telephony surface is switched off on a remote link, because hands-free is a radio link to a handset in this room and mirroring a text to a desktop the phone cannot see is carrying private mail somewhere nobody will read it. |
@@ -853,6 +854,26 @@ Not every session can be answered, and the app never pretends otherwise: a
 session in a terminal nothing on the desktop can reach says `reading only` and
 greys its composer out rather than offering a send that would silently do
 nothing. See `docs/AGENT-CONTROL.md`.
+
+### The desktop shell
+
+The same decision one step further out: not an agent's session but a shell of
+your own, in a tmux session called `oc-term`, that the phone types into and
+reads the screen back from.
+
+```bash
+omarchy-connect terminal on       # off by default, and it says why
+omarchy-connect terminal status
+omarchy-connect terminal off      # the session at the desk is left standing
+```
+
+That switch is on the desktop panel too, under **Settings**, beside the agents'
+one and behaving the same way: it asks before it opens — whatever the phone
+sends runs here as you — and turning it off takes effect at once. The panel is
+pressing the CLI, so the two are never out of step, and the switch shows the
+right state with the daemon stopped because the decision lives in the config
+rather than in the running process. A desktop with no tmux draws no switch,
+because there is nothing there to hold a shell.
 
 ## Run the app
 

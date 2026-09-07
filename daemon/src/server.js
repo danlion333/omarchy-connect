@@ -233,6 +233,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // so it is safe on a snapshot that is rebuilt on every connection.
       audio: audioSummary(),
       agents: agentsSummary(),
+      // The shell the phone types into. On the panel this sits beside the
+      // agent switch and is the same class of decision, so the panel needs the
+      // same two answers here: whether it is on, and whether this desktop has
+      // a multiplexer to carry it at all.
+      terminal: terminalSummary(),
     }
   }
 
@@ -901,6 +906,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
             return json(res, 400, { error: `unknown terminal action: ${op}` })
           }
           const terminal = op === 'status' ? terminalSummary() : setTerminalEnabled(op === 'enable')
+          publishState()
           json(res, 200, { ok: true, terminal })
         } catch (err) {
           json(res, 400, { error: err.message })
