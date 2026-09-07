@@ -230,9 +230,9 @@ wins the moment it has one.
 ### Events
 
 ```jsonc
-{ "t": "sub", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "endpoints"] }
+{ "t": "sub", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "terminal", "endpoints"] }
 { "t": "unsub", "events": ["stats"] }
-{ "t": "sub.ok", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "endpoints"] }
+{ "t": "sub.ok", "events": ["clipboard", "notification", "theme", "file", "phone", "audio", "agent", "terminal", "endpoints"] }
 { "t": "ev", "event": "stats", "data": { … } }
 ```
 
@@ -261,6 +261,7 @@ itself without waiting for the next tick.
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`) or to say where it is (`action: "locate"`). |
 | `audio` | The desktop is asking the phone to open its microphone (`action: "start"`) or to close it (`action: "stop"`). See **Live audio** below. |
 | `agent` | A coding agent appeared, changed state, or said something new. |
+| `terminal` | The desktop shell the phone opened printed something, moved directory, started or finished a command (`kind: "screen"`), was exited out of (`kind: "gone"`), or was switched on or off at the desktop (`kind: "control"`). |
 | `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
 
 A binary clipboard — a screenshot, above all — does not travel on the event
@@ -1336,6 +1337,55 @@ Writes are serialised per session, so two sends cannot interleave halfway
 through a paste. Nothing serialises the phone against the person at the
 keyboard — nothing can.
 
+### terminal
+
+A shell on the desktop the phone can type into and read back — one tmux
+session, `oc-term`, running the user's login shell in their home directory.
+Off by default; see **Security model**, because a prompt is a shell in the
+plainest sense there is.
+
+| Method | Params | Returns |
+| --- | --- | --- |
+| `terminal.open` | `{ cols, rows }` | `{ screen, cwd, running, cols, rows }` — makes the session if there is none, comes back to it if there is, and starts pushing `terminal` events. |
+| `terminal.close` | — | `{ ok }` — the phone left the screen; the desktop stops reading the pane. The session stays up. |
+| `terminal.type` | `{ text }` | `{ ok }` — literal text, up to 4096 characters. Nothing is submitted; `Enter` does that. |
+| `terminal.key` | `{ key }` | `{ ok }` — one key from `capabilities.terminal.keys`. |
+| `terminal.attach` | — | `{ ok, session, pane }` — opens the same session in a terminal on the desktop. |
+
+`cols` and `rows` are the handset's, and they are the point: `ls` and
+`git status` wrap to the phone rather than to somebody's eighty columns. A
+size that arrives for a session that already exists resizes it, so a phone
+that was turned sideways is not looking at a window it has outgrown.
+
+`running` is read from the kernel, not guessed from a format string: a tty has
+one foreground process group at a time, and the shell's own `tpgid` is which
+group that is. At a prompt it is the shell's; while `sleep 3` is in the
+foreground it is the child's. `#{pane_current_command}` is not used, for the
+reason `agents/tmux.js` gives — a pane verified to be running `cat` reports
+`bash`.
+
+**The screen is pushed, never polled.** A terminal is quiet for minutes and
+then says forty lines in a tenth of a second, so the phone subscribes to
+`terminal` and the desktop sends a whole new `{ screen, cwd, running }`
+whenever any of the three changes — within a quarter of a second of the pane
+printing — and sends nothing at all while it does not. The producer runs only
+while a phone has `terminal.open` outstanding *and* something is subscribed:
+`capture-pane` is a read of somebody's terminal, and it is not made when
+nobody is looking. `terminal.open` also answers with the current screen, so a
+phone has something to draw before the first push and can ask what the shell
+is doing during a command that prints nothing.
+
+Exiting the shell ends the session; the daemon says so with `kind: "gone"` and
+the next `terminal.open` starts a new one rather than failing. `terminal.attach`
+runs `omarchy-launch-terminal tmux attach -t oc-term`, so what was started from
+the sofa is picked up at the keyboard mid-command with its scrollback — and it
+hands the window size back to the real client on the way, because a session
+pinned to a handset's 48 columns is not one anybody wants to sit in at a desk.
+
+`input.text` and `input.key` are untouched by all this and mean what they
+always did: keys pushed at whatever window the compositor is focusing, with
+nothing coming back.
+
 ### input
 
 Pointer, buttons and keys are injected through Hyprland's own dispatchers over
@@ -1434,7 +1484,8 @@ machine with.
 Loopback is not on its own a boundary, though: every process the user runs
 shares it, and a page in a browser can make the machine send a `no-cors` form
 POST to it. These routes send an SMS from the paired phone, mint a pairing
-code, unpair it and flip the remote and agent switches, so each of them asks
+code, unpair it and flip the remote, agent and terminal switches, so each of
+them asks
 for four things and answers `403 { error: "localhost only" }` — the same
 sentence whichever one is missing — otherwise:
 
@@ -1464,6 +1515,7 @@ deliberately open.
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
+| `POST /api/terminal/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for the shell the phone types into. Answers `{ ok, terminal }`. |
 | `POST /api/remote/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for being reachable from off its own network. Answers `{ ok, remote }`. |
 
 `POST /api/agent/hook` is the bridge between a coding agent and this daemon:
@@ -1982,6 +2034,18 @@ typed at a prompt as a bare word.)
   sequences, and a message is capped at 4096 characters. Neither bound makes
   the grant smaller — it is still a shell — they only keep the surface itself
   small enough to reason about.
+- **A shell is a shell.** `terminal.*` opens a tmux session running the user's
+  login shell and lets the phone type into it, which is the same grant as
+  writing to a coding agent said without the agent in the middle: whatever the
+  person at this desktop can run, the phone can run. So it has its own switch,
+  `terminal.enabled`, defaulting to **false** and flipped only from the
+  desktop — `omarchy-connect terminal on`, or `POST /api/terminal/control`,
+  which answers on loopback only. There is no method a phone can call to grant
+  itself one. What bounds exist bound the surface rather than the grant:
+  `terminal.key` takes a whitelist rather than forwarding key sequences and
+  text is capped at 4096 characters a call, neither of which makes a shell
+  anything less than a shell. Turning it off stops the phone at once and
+  leaves the session standing, because it may be one somebody is sitting in.
 - Every method call requires a paired token. There is no anonymous access.
 - One phone is paired at a time, so exactly one token is live; pairing a
   different phone means unpairing this one first.

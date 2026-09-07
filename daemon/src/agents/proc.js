@@ -62,6 +62,27 @@ export function hasTty(pid) {
 }
 
 /**
+ * Is the shell in this pane running something, or sitting at its prompt?
+ *
+ * The kernel already knows, and it knows exactly: a tty has one foreground
+ * process group at a time, and `tpgid` in the shell's own stat line is which
+ * group that currently is. While the shell waits at its prompt that is the
+ * shell's own group; the moment it forks `sleep 3` into the foreground the
+ * number becomes the child's, and it goes back when the child is reaped.
+ *
+ * This is the answer `#{pane_current_command}` only guesses at — that format
+ * reports a pane running `cat` as `bash` (see `tmux.js`) — and it costs one
+ * file read rather than a walk of anybody's process tree.
+ */
+export function foregroundBusy(pid) {
+  const fields = statFields(pid)
+  if (!fields) return false
+  const pgrp = Number(fields[2]) || 0
+  const tpgid = Number(fields[5]) || 0
+  return pgrp > 0 && tpgid > 0 && tpgid !== pgrp
+}
+
+/**
  * When the machine booted, in unix milliseconds.
  *
  * `/proc/<pid>/stat` dates a process in ticks since boot, which is only
