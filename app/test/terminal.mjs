@@ -90,8 +90,13 @@ check('the desk can be handed the same session', screen.includes("'terminal.atta
 check('the screen arrives as an event', screen.includes("client.on('ev:terminal'"))
 check('and nothing polls for it', !/setInterval/.test(screen))
 check('the subscription is held while it is held at all', screen.includes('client.subscribe([EVENT])') && screen.includes('client.unsubscribe([EVENT])'))
-check('being in the foreground is half of whether it is held', screen.includes("AppState.addEventListener('change'") && screen.includes('&& active &&'))
-check('and being the workspace on screen is the other half', screen.includes('visible &&'))
+check('the app being in front is half of whether it is held', screen.includes("AppState.addEventListener('change'"))
+check('and this workspace being the one on screen is the other half', screen.includes('connected && visible && active'))
+// The one subscription a switched-off screen still needs: `kind: "control"`
+// arrives on the feed itself, so a phone that waited to be allowed before it
+// listened would never learn that it had been.
+check('the feed is held even while the shell is off', /looking\b[\s\S]{0,200}client\.subscribe\(\[EVENT\]\)/.test(screen))
+check('and the pane is only read when there is one to read', /watching = looking && enabled && available/.test(screen))
 check('the off state says the one command that fixes it', screen.includes('omarchy-connect terminal on'))
 check('no tmux is one hint and not an empty card', /no tmux[\s\S]{0,400}<\/Screen>/.test(screen))
 check('Ctrl+C knows whether there is anything to interrupt', screen.includes("active={running}"))

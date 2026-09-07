@@ -74,20 +74,40 @@ export function TerminalScreen({ visible = true }: { visible?: boolean }) {
   const rows = fitRows(pane.height, line.micro)
 
   /**
-   * Open the shell and start listening, for exactly as long as somebody is
-   * looking at it.
+   * The `terminal` feed, held for exactly as long as somebody is looking at
+   * this workspace and no longer — not while the app is behind another one,
+   * and not while the phone is in a pocket with the workspace still mounted
+   * (every workspace stays mounted once visited).
    *
-   * Both halves matter and they are different: the subscription is what the
-   * desktop sends, and `terminal.open`/`terminal.close` is whether it reads the
-   * pane at all. A size change re-runs this, which is how a phone that was
-   * turned sideways resizes the session it is already in — `terminal.open` on
-   * an existing session is a resize and a read, not a new shell.
+   * Held even when the shell is switched off, which is the one case worth
+   * spelling out: `kind: "control"` is how the desktop says it has just been
+   * switched **on**, and it goes to the subscribers of this very feed. A phone
+   * that only subscribed once it was already allowed would never hear it, and
+   * this screen would sit there telling its owner to run a command they ran a
+   * minute ago. It costs nothing to hold: with no `terminal.open` outstanding
+   * the desktop does not read the pane at all, so an off — or merely unwatched
+   * — shell sends nothing.
    */
-  const watching = connected && enabled && available && visible && active && cols > 0 && rows > 0
+  const looking = connected && visible && active
+  useEffect(() => {
+    if (!client || !looking) return
+    client.subscribe([EVENT])
+    return () => client.unsubscribe([EVENT])
+  }, [client, looking])
+
+  /**
+   * Open the shell, and give it up again when nobody is looking.
+   *
+   * This is the other half and it is a different question: the subscription is
+   * what the desktop sends, `terminal.open`/`terminal.close` is whether it
+   * reads the pane at all. A size change re-runs it, which is how a phone that
+   * was turned sideways resizes the session it is already in — `terminal.open`
+   * on an existing session is a resize and a read, not a new shell.
+   */
+  const watching = looking && enabled && available && cols > 0 && rows > 0
   useEffect(() => {
     if (!client || !watching) return
     let live = true
-    client.subscribe([EVENT])
     call<Shot>('terminal.open', { cols, rows })
       .then((res) => {
         if (!live) return
@@ -98,7 +118,6 @@ export function TerminalScreen({ visible = true }: { visible?: boolean }) {
       .catch((err) => live && setError(err))
     return () => {
       live = false
-      client.unsubscribe([EVENT])
       // The socket may already be gone, in which case the desktop stopped
       // reading the pane when it lost the subscriber and there is nothing here
       // worth reporting.
