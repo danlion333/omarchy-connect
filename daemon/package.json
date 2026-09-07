@@ -37,6 +37,7 @@
     "test:upload-names": "node test/upload-names.mjs",
     "test:local-auth": "node test/local-auth.mjs",
     "test:hygiene": "node test/hygiene.mjs",
+    "test:nautilus": "node test/nautilus.mjs",
     "test:clipboard-image": "node test/clipboard-image.mjs",
     "test:config": "node test/config.mjs",
     "test:cpu-temp": "node test/cpu-temp.mjs",

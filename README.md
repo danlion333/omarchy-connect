@@ -103,6 +103,7 @@ omarchy-connect tls <status|enable|…>       serve https + wss with a pinned ce
 omarchy-connect config [key] [value]        read or change configuration
 omarchy-connect firewall                    check the port is reachable
 omarchy-connect panel <status|install|remove>  the Omarchy bar client
+omarchy-connect nautilus <status|install|remove>  "Send to phone" in the file manager
 omarchy-connect install-service             write a systemd user unit
 ```
 
@@ -111,6 +112,15 @@ expires, which is why the desktop client drives it from a floating terminal.
 `send --pick` opens the GTK file chooser instead of taking a path. The bar
 widget takes a path the shortest way there is: drop a file on the icon and it
 runs `send <file>` once per file dropped.
+
+`omarchy-connect nautilus install` adds a third door, in the file manager where
+the file already is: right-click → Scripts → **Send to phone**. It writes one
+`sh` script into `~/.local/share/nautilus/scripts/` and nothing else — Nautilus
+watches that directory, so there is nothing to restart, and `nautilus remove`
+takes the same file back out. Several selected files are sent one at a time,
+duplicates folded, exactly as a drop on the bar icon is. It is Nautilus only:
+a portable `.desktop` claiming every MIME type does not work, because
+`update-desktop-database` refuses `all/all` and never expands `text/*`.
 
 Configuration lives in `~/.config/omarchy-connect/config.json` (mode 0600 —
 it holds the device tokens). More than one process writes it — the long-lived
