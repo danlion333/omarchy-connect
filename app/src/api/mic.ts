@@ -83,6 +83,58 @@ export const NO_MIC: MicState = {
   busy: false,
 }
 
+/**
+ * The microphone, borrowed by something else in this app.
+ *
+ * Every hold is given back exactly once. While one is out, an input that
+ * Android takes away is a gap in the live stream rather than the end of it —
+ * see `borrowMicrophone` below.
+ */
+export type MicHold = { release: () => void }
+
+/** A hold over nothing: no socket, no live stream, nothing to give back. */
+const NO_HOLD: MicHold = { release: () => {} }
+
+/**
+ * The one live stream in this process, for the parts of the app that are
+ * nowhere near the socket.
+ *
+ * Dictation is the case this exists for. It runs from a screen, opens the
+ * same one hardware input through `expo-audio`, and knew nothing whatsoever
+ * about the stream the desktop is listening to — so a tap on the dictate
+ * button opened a second recorder over the first, Android handed the input to
+ * whichever it felt like, and the desktop was left with a source that was
+ * still in every microphone list on the machine and had silence in it.
+ *
+ * The responder belongs to the socket and outlives every screen, so it is the
+ * only thing that can hold this. One at a time, by construction: `link`
+ * starts exactly one responder per socket and stops it before starting the
+ * next.
+ */
+let holder: { borrow: () => MicHold } | null = null
+
+/**
+ * Take the microphone for something that is not the live stream, and say so
+ * if that cannot be done.
+ *
+ * Optimistic on purpose. Measured on a OnePlus 9 Pro on Android 14, the two
+ * recorders simply coexist — `AudioRecord` at `VOICE_RECOGNITION` keeps
+ * delivering chunks the whole time an `expo-audio` `MediaRecorder` is writing
+ * its own `.m4a`, in either order, and the desktop hears the room throughout.
+ * Refusing dictation on that handset would be taking a working thing away.
+ *
+ * So the first dictation over a live stream is allowed and watched. If the
+ * input does get taken — `onMicStopped` while a hold is out — the stream is
+ * put back the moment the hold is given back, and this handset is written
+ * down as one that cannot do both. From then on the button says so rather
+ * than costing the desktop its microphone a second time. That memory lives
+ * for the life of the socket, like every other fact in this file: a fresh
+ * connection is a fresh phone as far as anything here knows.
+ */
+export function borrowMicrophone(): MicHold {
+  return holder ? holder.borrow() : NO_HOLD
+}
+
 /** The microphone as a person can work it, from the screen. */
 export type MicResponder = {
   stop: () => void
@@ -109,6 +161,17 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
   const native = linkService()
   /** The stream number the desktop handed out, or null when not recording. */
   let stream: number | null = null
+  /** The chunk length the desktop asked for, kept for a stream put back. */
+  let chunkMs = CHUNK_MS
+  /** How many holds are out — dictation, and anything that follows it. */
+  let lent = 0
+  /** The input was taken while a hold was out, and owes the stream back. */
+  let interrupted = false
+  /**
+   * This handset will not run two recorders at once, learned the only way it
+   * can be: by one of them taking the input from the other.
+   */
+  let exclusive = false
 
   let state: MicState = NO_MIC
   const publish = (changes: Partial<MicState>) => {
@@ -131,11 +194,74 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
   const halt = (error?: string) => {
     const ending = stream
     stream = null
+    interrupted = false
     stopMic()
     publish({ listening: false, stream: null, since: null, path: null, ...(error ? { error } : {}) })
     if (ending === null) return
     client.call('audio.stopped', { stream: ending, ...(error ? { error } : {}) }).catch(() => {})
   }
+
+  /**
+   * Open the input again for a stream that is still the desktop's.
+   *
+   * The other half of `halt`, and the half that was missing. Nothing here
+   * decides to record: the desktop asked for this stream, it has never been
+   * told the stream ended, and its file is still open — so putting the input
+   * back is finishing what it asked for rather than the phone starting
+   * something. `seq` begins again at zero, which the desktop's recorder reads
+   * as a chunk that did not skip (`daemon/src/lib/mic.js`), and the gap is
+   * however long the other recorder had it.
+   *
+   * A restart that fails is the real end, and only then does the desktop hear
+   * about it.
+   */
+  const restore = () => {
+    if (!interrupted || stream === null) return
+    interrupted = false
+    try {
+      if (!hasMicPermission()) throw new Error('microphone access is no longer granted on the phone')
+      startMic(chunkMs)
+      publish({ listening: true, error: null })
+    } catch (err) {
+      halt(sentence(err))
+    }
+  }
+
+  /**
+   * Something in this app took the input while the desktop was listening.
+   *
+   * Deliberately silent towards the desktop: it is still listening, its file
+   * is still open, and an `audio.stopped` here would close a recording that
+   * is about to have sound in it again. The card is left saying `listening`
+   * for the same reason — it is the desktop's stream that is being asked
+   * about, and that has not ended.
+   */
+  const interrupt = () => {
+    exclusive = true
+    interrupted = true
+    stopMic()
+  }
+
+  /** One borrower, and the input back when the last of them lets go. */
+  const borrow = (): MicHold => {
+    if (stream !== null && exclusive) {
+      throw new Error(
+        'the desktop is listening through this phone’s microphone, and this phone will only run one recorder at a time — turn the microphone off on the desktop, or on the microphone card, and dictate then',
+      )
+    }
+    lent += 1
+    let given = false
+    return {
+      release: () => {
+        if (given) return
+        given = true
+        lent = Math.max(0, lent - 1)
+        if (lent === 0) restore()
+      },
+    }
+  }
+  const api = { borrow }
+  holder = api
 
   const off = client.on('ev:audio', async (data: any) => {
     if (data?.action === 'stop') {
@@ -143,6 +269,7 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
       // closed its own file before sending this, and an answer would only
       // race the next `start`.
       stream = null
+      interrupted = false
       stopMic()
       publish({ listening: false, stream: null, since: null, path: null })
       return
@@ -170,7 +297,8 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
       if (!hasMicPermission()) {
         throw new Error('microphone access is not granted on the phone — open the app and allow it while using the app')
       }
-      startMic(Number(data.chunkMs) || CHUNK_MS)
+      chunkMs = Number(data.chunkMs) || CHUNK_MS
+      startMic(chunkMs)
       stream = Number(data.stream)
       publish({ listening: true, stream, since: Date.now(), error: null })
       await client.call('audio.started', { id: data.id, ok: true })
@@ -205,8 +333,18 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
     }
   })
 
-  /** Android took the input back, or the permission was revoked mid-stream. */
+  /**
+   * Android took the input back, or the permission was revoked mid-stream.
+   *
+   * Which of those it is matters now. With a hold out, something in this app
+   * asked for the microphone a moment ago and this is Android answering it —
+   * a gap in the desktop's stream, not the end of one, and the input comes
+   * back when the borrower lets go. With no hold out it is what it always
+   * was: another app, or a permission that is gone, and there is nothing to
+   * wait for.
+   */
   const stoppedOff = native?.addListener('onMicStopped', ({ error }) => {
+    if (lent > 0 && stream !== null) return interrupt()
     halt(error || 'the phone stopped recording')
   })
 
@@ -219,6 +357,7 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
   const statusOff = client.on('status', ({ status }: { status: string }) => {
     if (status === 'connected') return
     stream = null
+    interrupted = false
     stopMic()
     // The card goes with it, error and all: a sentence about a desktop this
     // phone is no longer talking to is a sentence about nothing.
@@ -301,6 +440,8 @@ export function startMicResponder(client: ConnectClient, report: (state: MicStat
     stop: () => {
       // Whatever else is being torn down, the microphone goes back first.
       stream = null
+      interrupted = false
+      if (holder === api) holder = null
       stopMic()
       off()
       statusOff()

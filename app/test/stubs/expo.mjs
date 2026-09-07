@@ -71,7 +71,29 @@ export const requestMediaLibraryPermissionsAsync = async () => ({ granted: false
 export const requestCameraPermissionsAsync = async () => ({ granted: false })
 export const MediaTypeOptions = { All: 'All', Images: 'Images', Videos: 'Videos' }
 
-/* expo-audio */
-export const AudioModule = { requestRecordingPermissionsAsync: async () => ({ granted: false }) }
+/*
+ * expo-audio — the dictation recorder, as a switch and a count.
+ *
+ * `globalThis.__audio` is what a suite sets to describe the handset (whether
+ * the recording permission is granted) and reads to find out what the
+ * dictation road actually did: how often it asked, and what audio session it
+ * left behind.
+ */
+const audio = (globalThis.__audio = { granted: false, asked: 0, modes: [] })
+
+export const AudioModule = {
+  requestRecordingPermissionsAsync: async () => {
+    audio.asked += 1
+    return { granted: audio.granted }
+  },
+}
 export const RecordingPresets = { HIGH_QUALITY: {} }
-export const setAudioModeAsync = nothing
+export const setAudioModeAsync = async (mode) => {
+  audio.modes.push(mode)
+}
+export const useAudioRecorder = () => ({
+  prepareToRecordAsync: async () => {},
+  record() {},
+  async stop() {},
+  uri: null,
+})
