@@ -14,7 +14,7 @@ import {
 import { fitCols, fitRows, rememberCommand, screenLines, shortPath, type Shot, type TerminalCaps } from '../lib/terminal'
 import { useConnection, usePalette } from '../state/ConnectionContext'
 import { alpha, font, line, radius, size, space } from '../theme'
-import { Card, CardHeader, Chip, ChipRow, Field, Hint, IconButton, Mono, Notice, Screen, ScreenHeader, useToast } from '../ui/kit'
+import { Card, CardHeader, Chip, ChipRow, Chips, Field, Hint, IconButton, Mono, Notice, Screen, ScreenHeader, useToast } from '../ui/kit'
 
 /**
  * Workspace 3: the desktop's shell, on the phone.
@@ -359,13 +359,17 @@ export function TerminalScreen({ visible = true }: { visible?: boolean }) {
             omarchy-connect` is not a thing anybody wants to type twice. */}
         {history.length ? (
           <ChipRow style={{ marginBottom: space.xs }}>
-            {history.map((command) => (
+            {history.slice(0, VISIBLE_HISTORY).map((command) => (
               <Chip key={command} label={command} icon="corner-up-left" onPress={() => setDraft(command)} />
             ))}
           </ChipRow>
         ) : null}
 
-        <ChipRow style={{ marginBottom: space.sm }}>
+        {/* Wrapped rather than a scrolling row, and that is not a detail: the
+            pager under this screen takes a horizontal drag before a chip row
+            inside it does, so a key past the right-hand edge is a key nobody
+            can reach. Ten keys over two lines are all one tap away. */}
+        <Chips style={{ marginBottom: space.sm }}>
           {/* First in the row and lit while there is something to interrupt:
               the one key you reach for in a hurry is not one to hunt for. */}
           <Chip
@@ -379,7 +383,7 @@ export function TerminalScreen({ visible = true }: { visible?: boolean }) {
           {KEYS.map((key) => (
             <Chip key={key.key} label={key.label} onPress={() => void press(key.key)} disabled={!connected} />
           ))}
-        </ChipRow>
+        </Chips>
 
         <Field
           value={draft}
@@ -403,6 +407,16 @@ export function TerminalScreen({ visible = true }: { visible?: boolean }) {
 }
 
 /* ── the pure parts ───────────────────────────────────────────────────── */
+
+/**
+ * How many of the remembered commands are drawn.
+ *
+ * The row scrolls in principle and not in practice — the pager takes the drag
+ * first — so what is drawn is what can be reached, and the ones worth reaching
+ * are the last few. The rest stay in the history behind `Up`, which is the
+ * shell's own and better at this.
+ */
+const VISIBLE_HISTORY = 6
 
 /** The event this screen holds a subscription to while it is being looked at. */
 const EVENT = 'terminal'
