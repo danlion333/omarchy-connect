@@ -333,7 +333,7 @@ function Workspaces({
       <ErrorBoundary resetKey={key}>
         {key === 'home' ? <HomeScreen /> : null}
         {key === 'agents' ? <AgentsScreen open={opening} onOpened={onOpened} /> : null}
-        {key === 'terminal' ? <TerminalScreen /> : null}
+        {key === 'terminal' ? <TerminalScreen visible={key === current} /> : null}
         {key === 'share' ? <ShareScreen incoming={shared} onIncomingTaken={onSharedTaken} /> : null}
         {key === 'setup' ? <SettingsScreen /> : null}
       </ErrorBoundary>
