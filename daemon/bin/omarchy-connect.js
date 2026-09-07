@@ -14,6 +14,7 @@ import { identity, fingerprint } from '../src/lib/crypto.js'
 import * as firewall from '../src/lib/firewall.js'
 import * as state from '../src/lib/state.js'
 import * as panel from '../src/lib/panel.js'
+import * as nautilus from '../src/lib/nautilus.js'
 import * as tls from '../src/lib/tls.js'
 import { run, has, spawn, spawnDetached, notifyArgs } from '../src/lib/exec.js'
 import { log } from '../src/lib/log.js'
@@ -373,6 +374,40 @@ async function cmdUnpair(args) {
   log.ok(`unpaired ${removed.name}`)
 }
 
+/**
+ * A card on the desktop for a command nobody is watching.
+ *
+ * The bar's drop target and the file manager's menu item both start this CLI
+ * with no terminal attached, so everything it prints goes to a pipe the user
+ * will never read. Whatever those two roads have to say has to be said here
+ * instead — and it is said only when there is no terminal, so a person at a
+ * prompt is not also handed a popup of what is already on their screen.
+ */
+function announce(summary, body = null, flags = ['-a', 'Omarchy Connect']) {
+  if (process.stdout.isTTY || !has('notify-send')) return false
+  spawnDetached('notify-send', notifyArgs(flags, summary, body))
+  return true
+}
+
+/**
+ * One file offered to whichever phones are listening.
+ *
+ * The seam every door to `send` comes through — the terminal, the bar, the
+ * Nautilus menu — so that a daemon that is not running looks the same from all
+ * three. `down` is that case named separately, because it is the one worth
+ * saying out loud: from a menu item, a silent exit 1 is indistinguishable from
+ * a menu item that does nothing at all.
+ */
+async function offerFile(abs) {
+  const res = await daemonRequest('/api/offer', { method: 'POST', body: { path: abs } })
+  if (!res.status) {
+    return { ok: false, down: true, error: 'daemon is not running — start it with `omarchy-connect start`' }
+  }
+  const body = res.data || {}
+  if (!res.ok) return { ok: false, down: false, error: body.error || 'could not offer the file' }
+  return { ok: true, down: false, body }
+}
+
 async function cmdSend(args) {
   const file = args.pick ? await pickFile() : args._[0]
   if (!file) {
@@ -383,18 +418,17 @@ async function cmdSend(args) {
   const abs = path.resolve(file)
   if (!fs.existsSync(abs)) {
     log.error(`no such file: ${abs}`)
+    announce('Could not send to phone', `No such file: ${path.basename(abs)}`)
     process.exit(1)
   }
-  const res = await daemonRequest('/api/offer', { method: 'POST', body: { path: abs } })
-  if (!res.status) {
-    log.error('daemon is not running — start it with `omarchy-connect start`')
+  const offered = await offerFile(abs)
+  if (!offered.ok) {
+    log.error(offered.error)
+    if (offered.down) announce('Omarchy Connect is not running', `${path.basename(abs)} was not sent`)
+    else announce('Could not send to phone', offered.error)
     process.exit(1)
   }
-  const body = res.data || {}
-  if (!res.ok) {
-    log.error(body.error || 'could not offer the file')
-    process.exit(1)
-  }
+  const body = offered.body
   console.log(
     card('SENT TO PHONE', [
       ['file', body.name],
@@ -406,10 +440,8 @@ async function cmdSend(args) {
   if (body.recipients === 0) log.warn('no phone is connected right now — it will not see the offer')
   // The desktop client runs this with no terminal attached, so the card above
   // lands nowhere. Say it again where it can be seen.
-  if (!process.stdout.isTTY && has('notify-send')) {
-    const missed = body.recipients === 0 ? ' — no phone is connected' : ''
-    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'Sent to phone', `${body.name}${missed}`))
-  }
+  const missed = body.recipients === 0 ? ' — no phone is connected' : ''
+  announce('Sent to phone', `${body.name}${missed}`)
 }
 
 /**
@@ -1361,6 +1393,93 @@ async function cmdPanel(args) {
 }
 
 /**
+ * "Send to phone" in the Nautilus context menu.
+ *
+ * Three actions a person types and one the menu item types. `send` is the
+ * item's whole body: Nautilus starts the script with the selection in
+ * `NAUTILUS_SCRIPT_SELECTED_URIS`, the script hands over to this, and this
+ * offers the files one at a time — the same one-file-per-run shape the bar's
+ * drop queue already uses, because `send <file>` is the only shape the CLI
+ * has and a menu item is not the place to invent a second one.
+ */
+async function cmdNautilus(args) {
+  const action = args._[0] || 'status'
+
+  if (action === 'status') {
+    console.log(
+      card('NAUTILUS MENU', [
+        ['item', nautilus.SCRIPT_NAME],
+        ['installed', nautilus.installed() ? nautilus.SCRIPT_FILE.replace(os.homedir(), '~') : 'no'],
+        ['nautilus', has('nautilus') ? 'found' : 'not found'],
+      ]),
+    )
+    if (!nautilus.installed()) console.log(dim('\n  omarchy-connect nautilus install\n'))
+    else console.log(dim('\n  right-click a file → Scripts → Send to phone\n'))
+    return
+  }
+
+  if (action === 'install') {
+    const file = nautilus.install()
+    log.ok(`wrote ${file.replace(os.homedir(), '~')}`)
+    if (!has('nautilus')) log.warn('nautilus is not installed here — the item will appear if it ever is')
+    // Nautilus watches this directory and rebuilds the submenu when it
+    // changes, so unlike `panel install` there is nothing to restart. Said
+    // out loud because the opposite would be the surprising part.
+    console.log(dim('\n  right-click a file → Scripts → Send to phone\n'))
+    return
+  }
+
+  if (action === 'remove') {
+    if (nautilus.remove()) log.ok('removed from the Nautilus menu')
+    else log.warn('there was nothing installed')
+    return
+  }
+
+  if (action === 'send') {
+    const paths = nautilus.uriPaths(process.env.NAUTILUS_SCRIPT_SELECTED_URIS)
+    if (paths.length === 0) {
+      log.error('nothing selected')
+      announce('Nothing to send', 'No file was selected')
+      process.exit(1)
+    }
+    let sent = 0
+    let recipients = 0
+    for (const file of paths) {
+      if (!fs.existsSync(file)) {
+        log.error(`no such file: ${file}`)
+        announce('Could not send to phone', `No such file: ${path.basename(file)}`)
+        continue
+      }
+      const offered = await offerFile(file)
+      if (offered.down) {
+        // The daemon is not coming back between one file and the next: say it
+        // once and stop, rather than raising the same card per selected file.
+        log.error(offered.error)
+        announce('Omarchy Connect is not running', paths.length === 1
+          ? `${path.basename(paths[0])} was not sent`
+          : `${paths.length} files were not sent`)
+        process.exit(1)
+      }
+      if (!offered.ok) {
+        log.error(`${path.basename(file)}: ${offered.error}`)
+        announce('Could not send to phone', `${path.basename(file)}: ${offered.error}`)
+        continue
+      }
+      sent += 1
+      recipients = Math.max(recipients, offered.body.recipients)
+      console.log(`sent ${offered.body.name}`)
+    }
+    if (sent === 0) process.exit(1)
+    const missed = recipients === 0 ? ' — no phone is connected' : ''
+    announce('Sent to phone', sent === 1 ? `${path.basename(paths[0])}${missed}` : `${sent} files${missed}`)
+    return
+  }
+
+  log.error('usage: omarchy-connect nautilus <status|install|remove>')
+  process.exit(1)
+}
+
+/**
  * TLS is a two-sided switch: the desktop has to serve it and the phone has to
  * trust it. This command owns the desktop half and hands over what the phone
  * half needs — the pin for a QR, or the certificate itself for an Android
@@ -2128,6 +2247,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('firewall')}                    check whether the port is reachable
   ${bold('tls')} <status|enable|…>       serve https + wss with a pinned certificate
   ${bold('panel')} <status|install|remove>  the Omarchy bar client
+  ${bold('nautilus')} <status|install|remove>  "Send to phone" in the file manager
   ${bold('install-service')}             write a systemd user unit
 `
 
@@ -2155,6 +2275,7 @@ const commands = {
   firewall: cmdFirewall,
   tls: cmdTls,
   panel: cmdPanel,
+  nautilus: cmdNautilus,
   'install-service': cmdInstallService,
   help: () => console.log(USAGE),
 }
