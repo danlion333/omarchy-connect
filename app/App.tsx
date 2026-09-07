@@ -13,7 +13,6 @@ import {
 import { StatusBar } from 'expo-status-bar'
 import * as Linking from 'expo-linking'
 import { SafeAreaProvider, useSafeAreaInsets } from 'react-native-safe-area-context'
-import { Feather } from '@expo/vector-icons'
 import { useFonts, JetBrainsMono_400Regular, JetBrainsMono_500Medium, JetBrainsMono_700Bold } from '@expo-google-fonts/jetbrains-mono'
 
 import { ConnectionProvider, useAgents, useConnection } from './src/state/ConnectionContext'
@@ -24,9 +23,8 @@ import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { ErrorBoundary } from './src/ui/ErrorBoundary'
-import { FeedbackProvider, Notice, StatusDot, Wallpaper } from './src/ui/kit'
+import { FeedbackProvider, Notice, Wallpaper } from './src/ui/kit'
 import { LookProvider, SetupAsksProvider, useSetupAsks } from './src/ui/look'
-import { useToggles } from './src/lib/toggles'
 import { FALLBACK_PALETTE, alpha, font, radius, size, space } from './src/theme'
 import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
 import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
@@ -299,44 +297,21 @@ function useRequestedRoute(): { tab: TabKey; agent?: string } | null {
   }, [url])
 }
 
-/** The clock in the tray, to the minute — the bar's, not a stopwatch. */
-function useClock(): string {
-  const [now, setNow] = useState(() => new Date())
-  useEffect(() => {
-    // Line up with the wall clock's own minute rather than drifting a second
-    // further from it on every tick.
-    let timer: ReturnType<typeof setTimeout>
-    const schedule = () => {
-      const date = new Date()
-      timer = setTimeout(() => {
-        setNow(new Date())
-        schedule()
-      }, 60000 - (date.getSeconds() * 1000 + date.getMilliseconds()))
-    }
-    schedule()
-    return () => clearTimeout(timer)
-  }, [])
-  return `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`
-}
-
 /**
  * The Omarchy bar, at the bottom, where it is on the desktop.
  *
- * Five numbered workspaces — the active one says its name and wears an accent
- * underline — badges for what is waiting (an agent's permission prompt, a
- * permission Android never granted), and a tray on the right with the link,
- * the network, notification silencing and the clock. Tapping the tray goes to
- * Setup, which is where every one of those is changed.
+ * Five numbered workspaces and nothing else — the active one says its name and
+ * wears an accent underline — with badges for what is waiting (an agent's
+ * permission prompt, a permission Android never granted). The link, the
+ * network, notification silencing and the clock used to sit in a tray on the
+ * right; they were either dead glyphs or a second copy of what the screens and
+ * the phone's own status bar already show, so the bar is only the workspaces.
  */
 function OmarchyBar({ current, onChange }: { current: TabKey; onChange: (tab: TabKey) => void }) {
-  const { palette, status } = useConnection()
+  const { palette } = useConnection()
   const { agentsWaiting } = useAgents()
   const asks = useSetupAsks()
-  const { toggles } = useToggles()
   const insets = useSafeAreaInsets()
-  const clock = useClock()
-
-  const link = status === 'connected' ? palette.green : status === 'error' ? palette.muted : palette.orange
 
   return (
     <View
@@ -417,38 +392,6 @@ function OmarchyBar({ current, onChange }: { current: TabKey; onChange: (tab: Ta
           </Pressable>
         )
       })}
-      <Pressable
-        onPress={() => onChange('setup')}
-        accessibilityRole="button"
-        accessibilityLabel="Link and clock, jump to Setup"
-        style={({ pressed }) => ({
-          marginLeft: 'auto',
-          height: 34,
-          paddingHorizontal: space.sm,
-          borderRadius: radius.sm,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 7,
-          backgroundColor: pressed ? palette.selection : 'transparent',
-        })}
-      >
-        <StatusDot tone={link} size={6} />
-        <Feather name="wifi" size={16} color={palette.light_foreground} />
-        {/* The desktop's own notification silencing, read from `system.toggles`:
-            a struck-through bell while it is silencing, a plain one otherwise,
-            and a plain one too on a desktop that cannot be asked. */}
-        <Feather
-          name={toggles?.silencing?.on ? 'bell-off' : 'bell'}
-          size={16}
-          color={palette.light_foreground}
-        />
-        <Text
-          maxFontSizeMultiplier={1.2}
-          style={{ color: palette.bright_foreground, fontFamily: font.regular, fontSize: size.label, fontVariant: ['tabular-nums'] }}
-        >
-          {clock}
-        </Text>
-      </Pressable>
     </View>
   )
 }

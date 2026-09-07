@@ -20,11 +20,12 @@ like a debug console.
 `App.tsx` owns the shell and nothing else: the workspaces side by side in one
 paging `ScrollView` (a page mounts on first visit and stays mounted, each in
 its own `ErrorBoundary`), the `Wallpaper` behind them, and the **Omarchy bar** —
-five numbered buttons, the active one saying its name over an accent underline,
-orange badges for agents waiting and for permissions not yet granted, and a
-tray on the right with the link dot, wifi, notification silencing and the clock.
-The tray goes to Setup. A screen never draws navigation, never draws the bar,
-and never assumes it is the only thing on the phone.
+five numbered buttons and nothing else, the active one saying its name over an
+accent underline, with orange badges for agents waiting and for permissions not
+yet granted. The right side is empty: the link state belongs to the screens,
+notification silencing to Home, and the clock and the network to the phone's own
+status bar half a screen above. A screen never draws navigation, never draws the
+bar, and never assumes it is the only thing on the phone.
 
 Swiping moves between workspaces. A control with a horizontal gesture of its
 own — `ChipRow`, `LevelBar`, a field — keeps it: the inner scroller and the
