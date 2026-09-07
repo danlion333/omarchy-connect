@@ -204,7 +204,11 @@ export async function claim(text) {
 export async function claimBytes(bytes, mime) {
   if (!has('wl-copy')) throw new Error('wl-copy not installed')
   const data = Buffer.isBuffer(bytes) ? bytes : Buffer.from(String(bytes))
-  if (String(mime).startsWith('text/')) lastSeen = data.toString('utf8')
+  // Trimmed, because that is the shape the watcher will read back: a
+  // `text/uri-list` ends in CRLF where the spec says it should, and
+  // `wl-paste --no-newline` hands it over without one. An untrimmed claim is
+  // a claim of text nobody will ever see, and the echo goes to the phone.
+  if (String(mime).startsWith('text/')) lastSeen = data.toString('utf8').trim()
   else lastBinaryToken = offerBytes(data, mime).token
   await wlCopyBytes(data, mime)
   return { ok: true, bytes: data.length, mime }

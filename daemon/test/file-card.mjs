@@ -247,6 +247,18 @@ check(
   JSON.stringify(published.map((p) => p.name)),
 )
 
+// A document takes the other road out — `text/uri-list`, recognised on its
+// way back by its content rather than by a token — so it needs its own check.
+const secondPdf = path.join(inbox, 'report (2).pdf')
+fs.writeFileSync(secondPdf, '%PDF-1.4 another report\n')
+await copied(secondPdf)
+await wait(800)
+check(
+  'a document copied off its own card is not republished either',
+  published.length === 0,
+  JSON.stringify(published.map((p) => p.data?.text)),
+)
+
 // The same watcher, with somebody else's copy: the silence above has to be the
 // gate doing its work, not a watcher that was never running.
 fs.writeFileSync(typesFile, 'image/png\n')
