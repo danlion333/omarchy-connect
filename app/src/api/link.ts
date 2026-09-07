@@ -451,6 +451,21 @@ class Link {
         if (data.kind === 'jobs') return this.patch({ agentJobs: data.jobs || [] })
         this.setAgents(reduceAgents(this.state.agents, data))
       }),
+      /**
+       * The desktop shell switched on or off at the keyboard. Only the switch
+       * is handled here: the screen itself is a subscription the Terminal
+       * workspace holds while somebody is looking at it, and nothing outside
+       * that screen has any use for a pane.
+       *
+       * The switch is different, and for the same reason the agents' one is —
+       * `enabled` came in `hello`, nothing is about to say hello again, and a
+       * screen that kept telling its owner to run a command they have just run
+       * would be wrong until the next reconnect.
+       */
+      client.on('ev:terminal', (data: { kind?: string; enabled?: boolean; available?: boolean }) => {
+        if (data?.kind !== 'control') return
+        this.terminalSwitched(data.enabled === true, data.available === true)
+      }),
       client.on('ev:clipboard', (data: ClipboardEvent) => {
         // A picture with nothing fetchable behind it is the desktop saying
         // it is holding one it will not carry; there is nothing the phone
@@ -514,6 +529,22 @@ class Link {
       this.setAgents([])
       this.patch({ agentLimits: null, agentJobs: [] })
     }
+  }
+
+  /**
+   * The desktop shell was switched on or off while this phone was linked.
+   *
+   * Nothing is fetched either way: the Terminal workspace opens the shell
+   * itself, and it opens it the moment this patch tells it that it may. Off,
+   * there is nothing to drop here — the screen it was drawing is state of that
+   * screen, and it stops asking for a new one on the same patch.
+   */
+  private terminalSwitched(enabled: boolean, available: boolean) {
+    const hello = this.state.hello
+    if (!hello) return
+    const capabilities = { ...(hello.capabilities || {}) } as Record<string, any>
+    capabilities.terminal = { ...(capabilities.terminal || {}), enabled, available }
+    this.patch({ hello: { ...hello, capabilities } as Hello })
   }
 
   private attachGlobalListeners() {
