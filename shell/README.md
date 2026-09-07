@@ -147,7 +147,7 @@ it is drawn.
     switch stays hidden on a machine with no coding agent installed, where it
     would only be a question. It follows the daemon's own gate: reading is off
     until someone here turns it on.
-  - *Let the phone type into a shell on this desktop* — the agent switch's
+  - *Let the phone type into a shell here* — the agent switch's
     twin, and the only other control here that widens what the phone can do.
     Turning it **on** asks first, in the same words about the same size of
     door: whatever the phone sends runs on this machine as the person sitting

@@ -1381,7 +1381,9 @@ Panel {
             Toggle {
               visible: bridge.terminalAvailable
               width: parent.width
-              label: bridge.terminalEnabled ? "The phone can type into a shell on this desktop" : "Let the phone type into a shell on this desktop"
+              // Short enough to fit the card rather than elide: a switch
+              // whose label ends in an ellipsis names nothing.
+              label: bridge.terminalEnabled ? "The phone can type into a shell here" : "Let the phone type into a shell here"
               description: (bridge.terminalEnabled ? "󰆍  " : "󰧾  ") + Model.terminalText(bridge.terminal, bridge.running)
               checked: bridge.terminalEnabled
               hasCursor: root.cursorActive && root.focusSection === "terminal"
