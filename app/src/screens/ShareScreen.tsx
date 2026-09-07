@@ -535,7 +535,11 @@ export function ShareScreen({
           setLocal((prev) => ({ ...prev, [token]: here }))
           return here
         }
-        if (!client) throw new Error('this file is not on the phone yet — it needs the desktop')
+        // `client` outlives the socket it dials, so being offline has to be
+        // asked about rather than inferred from it: without this the call
+        // below reaches `downloadPass` and fails with the socket's own "not
+        // connected", which says nothing about this file being absent.
+        if (!client || !connected) throw new Error('this file is not on the phone yet — it needs the desktop')
         const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadPass())
         setLocal((prev) => ({ ...prev, [token]: uri }))
         return uri
@@ -545,7 +549,7 @@ export function ShareScreen({
       fetching.current.set(token, job)
       return job
     },
-    [client],
+    [client, connected],
   )
 
   /**
@@ -1080,12 +1084,16 @@ function OfferRow({
   // A row that outlived the app has to say which kind it is. `uri` is the
   // bytes on this phone; without them and without a desktop to ask, the row
   // says the file is not here rather than offering a tap that can only fail.
+  // Said instead of "from the desktop" rather than after it: one line of
+  // subtitle holds about twenty characters beside a thumbnail and a button,
+  // and appended to the provenance and the clock this was cut off the end
+  // on the phone — which is precisely the row that had something to say.
   const where = uri ? 'on this phone' : offline ? 'not on this phone' : null
 
   return (
     <FileRow
       title={offer.name}
-      subtitle={['from the desktop', when(offer.at), where].filter(Boolean).join(' · ')}
+      subtitle={[where ?? 'from the desktop', when(offer.at)].filter(Boolean).join(' · ')}
       left={<Thumb uri={kind === 'image' ? uri : undefined} kind={kind} busy={busy === `open:${offer.token}`} />}
       onPress={onOpen}
       right={
