@@ -39,20 +39,30 @@ export async function run(bin, args = [], opts = {}) {
 }
 
 /**
- * Write text to the Wayland clipboard. `wl-copy` forks a background process
- * that owns the selection and inherits stdio, so exec-style helpers hang
- * waiting for EOF — hand it the text on stdin and discard its output instead.
+ * Put bytes on the Wayland clipboard under one MIME type.
+ *
+ * `wl-copy` forks a background process that owns the selection and inherits
+ * stdio, so exec-style helpers hang waiting for EOF — hand it the content on
+ * stdin and discard its output instead.
+ *
+ * The type is not decoration. A file put on the clipboard has to arrive as
+ * the thing it is: a picture under `image/png` so an editor pastes the
+ * picture, and `text/uri-list` so a file manager pastes the *file* rather
+ * than a line of text that happens to spell its path.
  */
-export function wlCopy(text) {
+export function wlCopyBytes(data, mime) {
   return new Promise((resolve, reject) => {
-    const child = spawn('wl-copy', ['--type', 'text/plain;charset=utf-8'], {
-      stdio: ['pipe', 'ignore', 'ignore'],
-    })
+    const child = spawn('wl-copy', ['--type', mime], { stdio: ['pipe', 'ignore', 'ignore'] })
     child.on('error', reject)
     child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`wl-copy exited with ${code}`))))
     child.stdin.on('error', reject)
-    child.stdin.end(text)
+    child.stdin.end(data)
   })
+}
+
+/** Write text to the Wayland clipboard, as plain text. */
+export function wlCopy(text) {
+  return wlCopyBytes(text, 'text/plain;charset=utf-8')
 }
 
 /**

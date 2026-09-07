@@ -45,7 +45,8 @@
     "test:mirror-dedupe": "node test/mirror-dedupe.mjs",
     "test:sms-reply": "node test/sms-reply.mjs",
     "test:hello-write": "node test/hello-write.mjs",
-    "test:file-crypto": "node test/file-crypto.mjs"
+    "test:file-crypto": "node test/file-crypto.mjs",
+    "test:file-card": "node test/file-card.mjs"
   },
   "dependencies": {
     "ws": "^8.18.3"

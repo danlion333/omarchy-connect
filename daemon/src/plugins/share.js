@@ -2,7 +2,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { XDG_DOWNLOAD } from '../lib/paths.js'
-import { has, spawnDetached, wlCopy, notifyArgs } from '../lib/exec.js'
+import { pathToFileURL } from 'node:url'
+import { has, spawn, spawnDetached, wlCopy, notifyArgs } from '../lib/exec.js'
+import { drawsButtons, watchSweep } from '../lib/cards.js'
+import { claimBytes } from './clipboard.js'
 import { newKey, SCHEME } from '../lib/filecrypt.js'
 import { log } from '../lib/log.js'
 
@@ -138,11 +141,147 @@ export function inboxPathFor(name) {
   return uniquePath(INBOX, name)
 }
 
-export function announceReceivedFile(filePath, { open = false } = {}) {
-  const name = path.basename(filePath)
-  if (has('notify-send')) {
-    spawnDetached('notify-send', notifyArgs(['-a', 'Omarchy Connect'], 'File received', name))
+/**
+ * How large a received file may be before the clipboard stops carrying its
+ * bytes. The same 32 MiB a copied picture is carried under in the other
+ * direction (`plugins/clipboard.js`); above it the file is offered as a
+ * `text/uri-list` like any non-picture, which pastes the file itself and
+ * costs nothing to hold.
+ */
+const COPY_MAX_BYTES = 32 * 1024 * 1024
+
+/**
+ * Pictures the clipboard can hand over as bytes.
+ *
+ * Only pictures, and only by extension. What an editor or a chat window means
+ * by "paste an image" is the decoded picture, and it asks the clipboard for it
+ * by MIME type — so a `.png` has to arrive as `image/png` or it arrives as
+ * nothing. Everything else is better as the file: a PDF pasted into a chat
+ * should be the attachment, not a screenful of bytes.
+ */
+const IMAGE_TYPES = {
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.webp': 'image/webp',
+  '.bmp': 'image/bmp',
+  '.tiff': 'image/tiff',
+  '.tif': 'image/tiff',
+  '.svg': 'image/svg+xml',
+}
+
+/** The picture type of a file, or null if it is not one we hand over as bytes. */
+function imageTypeOf(filePath) {
+  return IMAGE_TYPES[path.extname(filePath).toLowerCase()] || null
+}
+
+/**
+ * Put the file itself on the clipboard — the file, not its path.
+ *
+ * A picture goes as its own bytes under its own type, so it pastes into an
+ * editor or a chat window as the picture. Everything else goes as
+ * `text/uri-list` holding one `file://` URL, which is what a file manager,
+ * a mail client and a browser upload field all read as "this file" — pasting
+ * it into Nautilus copies the file, not a line of text.
+ *
+ * Through `claimBytes` rather than `wl-copy` because the clipboard plugin is
+ * watching: an unclaimed write is republished as a fresh desktop copy, and the
+ * file would go straight back to the phone that had just sent it.
+ */
+export async function copyReceivedFile(filePath) {
+  const mime = imageTypeOf(filePath)
+  let stat = null
+  try {
+    stat = fs.statSync(filePath)
+  } catch (err) {
+    log.warn(`could not copy the received file: ${err.message}`)
+    return null
   }
+  if (mime && stat.size <= COPY_MAX_BYTES) {
+    try {
+      await claimBytes(fs.readFileSync(filePath), mime)
+      log.ok('copied to the clipboard:', path.basename(filePath), `(${mime})`)
+      return mime
+    } catch (err) {
+      log.warn(`could not copy the picture: ${err.message}`)
+      return null
+    }
+  }
+  try {
+    await claimBytes(Buffer.from(`${pathToFileURL(filePath).href}\r\n`, 'utf8'), 'text/uri-list')
+    log.ok('copied to the clipboard:', path.basename(filePath), '(text/uri-list)')
+    return 'text/uri-list'
+  } catch (err) {
+    log.warn(`could not copy the received file: ${err.message}`)
+    return null
+  }
+}
+
+/**
+ * The card a file arrives on, and the two things it can now do.
+ *
+ * A file that has just come off a phone is wanted in the next five seconds —
+ * opened, or pasted into whatever window is already in front of you — and
+ * until now the card announcing it could do neither: the only ways to the file
+ * were the inbox button in the panel and `openFilesOnReceive`, which opens
+ * every file whether you wanted this one or not. So the card becomes the
+ * remote control the ringing call's card already is: `notify-send -A` holds
+ * the notification open and prints the name of whatever was clicked.
+ *
+ * `default` is registered alongside the named pair because some servers draw
+ * no buttons and only run the action a click invokes; on those the body says
+ * what the two gestures are, and the right mouse button — which libnotify
+ * never reports — is read off the bus as a sweep (`lib/cards.js`).
+ *
+ * When `openFilesOnReceive` has already opened the file, Open is not offered:
+ * the card would be inviting you to do the thing that has just been done.
+ */
+function raiseFileCard(filePath, { opened }) {
+  const name = path.basename(filePath)
+  const buttons = drawsButtons()
+  const actions = opened
+    ? ['-A', 'default=Copy', '-A', 'copy=Copy']
+    : ['-A', 'default=Open', '-A', 'open=Open', '-A', 'copy=Copy']
+  // Only where there are no buttons to press, and only where there is
+  // something for the sweep to mean.
+  const watch = buttons ? null : watchSweep(() => void copyReceivedFile(filePath))
+  const gestures = watch ? (opened ? 'click to copy' : 'click to open, right-click to copy') : null
+  const child = spawn(
+    'notify-send',
+    notifyArgs(['-a', 'Omarchy Connect', '-p', ...actions], 'File received', gestures ? `${name} · ${gestures}` : name),
+    { stdio: ['ignore', 'pipe', 'ignore'] },
+  )
+  child.on('error', () => watch?.stop())
+  child.stdout.setEncoding('utf8')
+  let printed = ''
+  child.stdout.on('data', (chunk) => {
+    printed += chunk
+    // `-p` prints the server's id first; the clicked action, if there is one,
+    // follows on a later line. The id is what lets the sweep watch know which
+    // card on this desktop is ours.
+    const first = printed.split('\n', 1)[0].trim()
+    if (/^\d+$/.test(first)) watch?.card(Number(first))
+  })
+  child.on('exit', () => {
+    watch?.stop()
+    const clicked = printed
+      .split('\n')
+      .map((line) => line.trim())
+      .find((line) => line === 'default' || line === 'open' || line === 'copy')
+    if (!clicked) return
+    if (clicked === 'copy' || (opened && clicked === 'default')) {
+      void copyReceivedFile(filePath)
+      return
+    }
+    if (has('xdg-open')) spawnDetached('xdg-open', [filePath])
+  })
+  // A card waiting for a click is not a reason for the daemon to stay up.
+  child.unref()
+}
+
+export function announceReceivedFile(filePath, { open = false } = {}) {
+  if (has('notify-send')) raiseFileCard(filePath, { opened: open && has('xdg-open') })
   if (open && has('xdg-open')) spawnDetached('xdg-open', [filePath])
   log.ok('received file:', filePath)
 }
