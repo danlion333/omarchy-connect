@@ -27,6 +27,16 @@ notification silencing to Home, and the clock and the network to the phone's own
 status bar half a screen above. A screen never draws navigation, never draws the
 bar, and never assumes it is the only thing on the phone.
 
+When the link has been down long enough to stop being a blip (`SHADE_AFTER_MS`
+in `lib/offline`, read off the backoff ladder), a **shade** covers the pager —
+"Not connected", the reason in the second line, `Reconnect`, and one door into
+Share. Nothing in the app invalidates `hello`, `stats` or the agent list when
+the socket dies, so the alternative is five workspaces quietly presenting
+yesterday's desktop as the present. The shade stops at the bar: the bar is the
+desktop's own bar and the desktop is still the one this phone is paired to.
+Which reason is shown is decided in `lib/offline.offlineShade`, never in the
+shell, and there is no state where it says only "Not connected".
+
 Swiping moves between workspaces. A control with a horizontal gesture of its
 own — `ChipRow`, `LevelBar`, a field — keeps it: the inner scroller and the
 responder system take the drag before the pager sees it. Anything new with a
