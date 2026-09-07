@@ -245,5 +245,13 @@ const threw = await answered(() => {
 check('and a caller that could not tell does not become a yes',
   !threw.includes('yes'), JSON.stringify(threw))
 
-fs.rmSync(sandbox, { recursive: true, force: true })
+/**
+ * Retried, because the last stand-in above is a shell sitting in `read` and
+ * `helper.stop()` only asks it to go. On a quiet machine it is gone before
+ * this line; inside a full suite run it is not, and a stub that writes one
+ * more line into the sandbox between the unlink and the rmdir turns a passing
+ * suite into `ENOTEMPTY` — a crash, in the runner's report, of a suite whose
+ * every check had already passed.
+ */
+fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 done('argument and consent hygiene checks')
