@@ -1737,6 +1737,13 @@ function Composer({
   const [hearing, setHearing] = useState(false)
   const [held, setHeld] = useState(0)
 
+  /**
+   * A composer that goes away in the middle of a recording still owes the
+   * live microphone stream its input back — the desktop may be listening
+   * through this same phone, and `dictate.ready` borrowed from it.
+   */
+  useEffect(() => () => dictate.release(), [])
+
   const needsWarning = session.writable === 'wtype' && !acknowledged
   const canAttach = (hello?.capabilities?.agents as { attach?: boolean } | undefined)?.attach === true
   const ready = shots.filter((shot) => shot.path)
