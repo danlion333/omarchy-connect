@@ -47,7 +47,7 @@ import {
 } from '../ui/kit'
 import { bytes, clock } from '../lib/format'
 import { copyPicture } from '../lib/copyimage'
-import { downloadOffer } from '../lib/download'
+import { cachedOffer, downloadOffer } from '../lib/download'
 import { uploadFile } from '../lib/transfer'
 import { saveToGallery } from '../lib/gallery'
 import { iconFor, mediaKind, type MediaKind } from '../lib/media'
@@ -528,7 +528,18 @@ export function ShareScreen({
       const running = fetching.current.get(token)
       if (running) return running
       const job = (async () => {
-        if (!client) throw new Error('not connected')
+        // Bytes this phone already has beat a download, and are the only
+        // answer available at all with the desktop gone.
+        const here = cachedOffer(token, name)
+        if (here) {
+          setLocal((prev) => ({ ...prev, [token]: here }))
+          return here
+        }
+        // `client` outlives the socket it dials, so being offline has to be
+        // asked about rather than inferred from it: without this the call
+        // below reaches `downloadPass` and fails with the socket's own "not
+        // connected", which says nothing about this file being absent.
+        if (!client || !connected) throw new Error('this file is not on the phone yet — it needs the desktop')
         const uri = await downloadOffer(client.downloadUrl(token), token, name, await client.downloadPass())
         setLocal((prev) => ({ ...prev, [token]: uri }))
         return uri
@@ -538,8 +549,29 @@ export function ShareScreen({
       fetching.current.set(token, job)
       return job
     },
-    [client],
+    [client, connected],
   )
+
+  /**
+   * What of the list is already on this phone.
+   *
+   * The rows survive a restart, so the bytes behind them have to be found
+   * again rather than remembered: the map they were in died with the process
+   * and the files did not. Also what tells a row it can say the file is gone
+   * — an offer that is neither cached nor reachable is a row with nothing
+   * behind it, and it must say so rather than look like the others.
+   */
+  useEffect(() => {
+    setLocal((prev) => {
+      let next = prev
+      for (const offer of offers) {
+        if (next[offer.token]) continue
+        const here = cachedOffer(offer.token, offer.name)
+        if (here) next = next === prev ? { ...prev, [offer.token]: here } : { ...next, [offer.token]: here }
+      }
+      return next
+    })
+  }, [offers])
 
   // Pictures fetch themselves, so the card can show what it is holding rather
   // than a filename. Anything too large waits to be asked for.
@@ -956,6 +988,7 @@ export function ShareScreen({
                 uri={local[offer.token]}
                 saved={!!saved[offer.token]}
                 busy={busy}
+                offline={!connected}
                 onOpen={() => openOffer(offer)}
                 onSave={() => saveOffer(offer)}
                 onShare={() => shareOffer(offer)}
@@ -1029,6 +1062,7 @@ function OfferRow({
   uri,
   saved,
   busy,
+  offline,
   onOpen,
   onSave,
   onShare,
@@ -1038,6 +1072,7 @@ function OfferRow({
   uri?: string
   saved: boolean
   busy: string | null
+  offline?: boolean
   onOpen: () => void
   onSave: () => void
   onShare: () => void
@@ -1046,11 +1081,19 @@ function OfferRow({
   const palette = usePalette()
   const kind = mediaKind(offer.name)
   const gallery = kind !== 'file'
+  // A row that outlived the app has to say which kind it is. `uri` is the
+  // bytes on this phone; without them and without a desktop to ask, the row
+  // says the file is not here rather than offering a tap that can only fail.
+  // Said instead of "from the desktop" rather than after it: one line of
+  // subtitle holds about twenty characters beside a thumbnail and a button,
+  // and appended to the provenance and the clock this was cut off the end
+  // on the phone — which is precisely the row that had something to say.
+  const where = uri ? 'on this phone' : offline ? 'not on this phone' : null
 
   return (
     <FileRow
       title={offer.name}
-      subtitle={`from the desktop · ${when(offer.at)}`}
+      subtitle={[where ?? 'from the desktop', when(offer.at)].filter(Boolean).join(' · ')}
       left={<Thumb uri={kind === 'image' ? uri : undefined} kind={kind} busy={busy === `open:${offer.token}`} />}
       onPress={onOpen}
       right={

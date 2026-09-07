@@ -1,9 +1,13 @@
+import { Directory, File, Paths } from 'expo-file-system'
 import * as SecureStore from 'expo-secure-store'
 
 import { DEFAULT_ALERTS, type AlertPrefs } from './alerts'
 import { migrateEndpoints, type Endpoint } from '../lib/endpoints'
+import { NONCE_BYTES, NO_HISTORY, openHistory, sealHistory, type History } from '../lib/history'
+import { randomBytes, toHex } from './crypto'
 
 export { MAX_ENDPOINTS, mergeEndpoints, migrateEndpoints } from '../lib/endpoints'
+export type { History } from '../lib/history'
 export type { Endpoint, EndpointKind } from '../lib/endpoints'
 
 const KEY = 'omarchy-connect.desktop'
@@ -143,4 +147,113 @@ export async function loadLook(): Promise<LookPrefs> {
 
 export async function saveLook(prefs: LookPrefs): Promise<void> {
   await SecureStore.setItemAsync(LOOK_KEY, JSON.stringify(prefs))
+}
+
+/* ── what arrived, kept across a restart ─────────────────────────────── */
+
+/**
+ * The clipboard history and the file list, on the disk.
+ *
+ * Not in the keychain: `expo-secure-store` warns past 2048 bytes and twenty
+ * clipboard entries go through that on their own — so what goes in the
+ * keychain is a 32-byte key, and the history is a file sealed under it. The
+ * reasoning for sealing it at all is in `lib/history`; what is here is only
+ * the plumbing.
+ *
+ * In the *document* directory rather than the cache, because the cache is
+ * exactly the thing Android throws away when it wants space back, and the
+ * history is what the phone has left when the desktop is unreachable. The
+ * downloaded bytes those rows point at do live in the cache and can go — a
+ * row whose file has been reclaimed says so on the screen.
+ */
+const HISTORY_KEY = 'omarchy-connect.history-key'
+const HISTORY_DIR = 'omarchy-connect'
+const HISTORY_FILE = 'history.och'
+
+/** Read once per launch: the keychain can be slow, and this is on the copy path. */
+let historyKeyHex: string | null = null
+
+async function historyKey(create: boolean): Promise<string | null> {
+  if (historyKeyHex) return historyKeyHex
+  const existing = await SecureStore.getItemAsync(HISTORY_KEY)
+  if (existing) return (historyKeyHex = existing)
+  if (!create) return null
+  const fresh = toHex(randomBytes(32))
+  await SecureStore.setItemAsync(HISTORY_KEY, fresh)
+  return (historyKeyHex = fresh)
+}
+
+function historyFile(): File {
+  const dir = new Directory(Paths.document, HISTORY_DIR)
+  if (!dir.exists) dir.create({ intermediates: true })
+  return new File(dir, HISTORY_FILE)
+}
+
+/**
+ * What was on the phone when it was last killed.
+ *
+ * Answers with an empty history for every way this can fail — no key yet, no
+ * file yet, a file that will not open — because a launch must not depend on
+ * it and an empty Share screen is what the app did before any of this.
+ */
+export async function loadHistory(): Promise<History> {
+  try {
+    const key = await historyKey(false)
+    if (!key) return { ...NO_HISTORY }
+    const file = historyFile()
+    if (!file.exists) return { ...NO_HISTORY }
+    return openHistory(key, await file.bytes())
+  } catch {
+    return { ...NO_HISTORY }
+  }
+}
+
+/**
+ * Writes it down, one writer at a time.
+ *
+ * Serialised through a promise chain because the events that trigger it
+ * arrive off a socket and can overlap: two writes racing on one path is how
+ * a file ends up half of one history and half of another, and this one is
+ * read at a moment — the next launch — when nothing can go back and ask the
+ * desktop what it should have said.
+ */
+let writing: Promise<void> = Promise.resolve()
+
+export function saveHistory(history: History): Promise<void> {
+  writing = writing.then(async () => {
+    try {
+      const key = await historyKey(true)
+      if (!key) return
+      const file = historyFile()
+      // Created first rather than left to `write`: the directory is new on a
+      // phone that has never copied anything, and this is the one write whose
+      // failure nobody would see until the next launch came back empty.
+      if (!file.exists) file.create({ intermediates: true })
+      file.write(sealHistory(key, history, randomBytes(NONCE_BYTES)))
+    } catch {
+      /* a phone that cannot write its history still has a working link */
+    }
+  })
+  return writing
+}
+
+/**
+ * Unpairing takes the history with it — and takes the key first, which is
+ * what makes any copy of the file that outlives the delete unreadable rather
+ * than merely deleted.
+ */
+export async function forgetHistory(): Promise<void> {
+  await writing.catch(() => {})
+  historyKeyHex = null
+  try {
+    await SecureStore.deleteItemAsync(HISTORY_KEY)
+  } catch {
+    /* nothing to lose the key from */
+  }
+  try {
+    const file = historyFile()
+    if (file.exists) file.delete()
+  } catch {
+    /* nothing to delete */
+  }
 }

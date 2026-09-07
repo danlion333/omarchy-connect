@@ -26,8 +26,35 @@ import { openFile } from './transfer'
  * too old to seal hands us an empty key and the download is what it always
  * was.
  */
+/** Where an offer's bytes land. One directory per offer — see `downloadOffer`. */
+function offerDir(token: string): Directory {
+  return new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
+}
+
+/**
+ * The offer's bytes, if this phone still has them.
+ *
+ * The rows on the Share screen outlive the process now, and the files they
+ * point at outlive it too — right up until Android reclaims the cache, which
+ * it may do at any time and without telling anybody. So the screen asks the
+ * disk rather than remembering: an answer here is a thumbnail, a viewer and
+ * a Save that work with the desktop switched off, and `null` is a row that
+ * has to say the bytes are gone instead of spinning on a download that
+ * cannot start.
+ */
+export function cachedOffer(token: string, name: string): string | null {
+  try {
+    const dir = offerDir(token)
+    if (!dir.exists) return null
+    const file = new File(fileUriIn(dir.uri, name))
+    return file.exists ? file.uri : null
+  } catch {
+    return null
+  }
+}
+
 export async function downloadOffer(url: string, token: string, name: string, pass: TransferPass): Promise<string> {
-  const dir = new Directory(Paths.cache, 'omarchy-connect', token.slice(0, 12))
+  const dir = offerDir(token)
   if (!dir.exists) dir.create({ intermediates: true })
   // Built as a finished URI rather than as `new File(dir, name)`: the join
   // `File` would do leaves `[` and its kind unescaped, and the platform's URI

@@ -14,10 +14,13 @@ import {
 import {
   deviceId,
   forgetDesktop,
+  forgetHistory,
   loadAlertPrefs,
   loadDesktop,
+  loadHistory,
   mergeEndpoints,
   saveDesktop,
+  saveHistory,
   type SavedDesktop,
 } from './storage'
 import { findDesktopByKey, probeHost, type PairingTarget } from './discovery'
@@ -25,6 +28,7 @@ import { orderCandidates } from '../lib/retry'
 import { shouldRedial } from '../lib/announce'
 import { reduceAgents } from '../lib/agents'
 import { remember } from '../lib/clipboard'
+import { rememberFile } from '../lib/history'
 import { merged } from '../lib/state'
 import { errorLine } from '../lib/errors.ts'
 import { startReporting } from './telemetry'
@@ -154,7 +158,6 @@ export type LinkState = {
   client: ConnectClient | null
 }
 
-const MAX_FILE_EVENTS = 30
 /** After this many failed retries we stop trusting the stored address. */
 const RELOCATE_AFTER = 3
 /** The one subscription that is held by a screen rather than by the socket. */
@@ -261,9 +264,13 @@ class Link {
     // interrupted must not be interrupted by the reconnect itself.
     setAlertPrefs(await loadAlertPrefs())
     const saved = await loadDesktop()
+    // What arrived while a previous process was alive. Only for a phone that
+    // is still paired: the history belongs to the pairing, and an unpaired
+    // phone has nothing it is entitled to show.
+    const history = saved ? await loadHistory() : null
     if (this.started) return
     this.started = true
-    this.patch({ desktop: saved, ready: true })
+    this.patch({ desktop: saved, ready: true, ...(history ?? {}) })
     if (!saved) return
 
     const id = await deviceId()
@@ -450,6 +457,7 @@ class Link {
         // could show for it and nothing it could fetch, so it is dropped.
         if (data.kind === 'binary' && !data.token) return
         this.patch({ clipboard: remember(this.state.clipboard, data) })
+        this.writeHistory()
         // Text and picture are the same one card in the shade — the desktop
         // clipboard holds one thing — but they reach it differently: the text
         // is already here, while the picture is a standing offer whose bytes
@@ -458,7 +466,8 @@ class Link {
         else if (data.token) void this.announceClipboardImage(data.token, data.name || 'a picture', data.size)
       }),
       client.on('ev:file', (data: FileEvent) => {
-        this.patch({ files: [data, ...this.state.files].slice(0, MAX_FILE_EVENTS) })
+        this.patch({ files: rememberFile(this.state.files, data) })
+        this.writeHistory()
         // `out` is out of the desktop, which is the only direction that is
         // news here — a file this phone sent is a file its owner just watched
         // leave. The token is what makes it fetchable; without one there is
@@ -812,6 +821,10 @@ class Link {
     this.client?.close()
     this.client = null
     await forgetDesktop()
+    // The history goes with the pairing, key first — see `forgetHistory`.
+    // Awaited rather than fired off, so a screen that redraws on the empty
+    // state cannot be showing rows a still-running write is about to save.
+    await forgetHistory()
     this.patch({ ...INITIAL, ready: true })
   }
 
@@ -825,6 +838,21 @@ class Link {
    */
   reconnectNow() {
     this.client?.reconnectNow(true)
+  }
+
+  /**
+   * Puts what arrived on the disk, so it is still there after the process is
+   * killed.
+   *
+   * Called from the two events that change it and nowhere else, and never
+   * awaited: an event is delivered to the screen first and written down
+   * second, because the socket must not wait on a file system, and a copy
+   * that reaches the screen and not the disk is worth more than the reverse.
+   * `saveHistory` serialises the writes itself.
+   */
+  private writeHistory() {
+    if (!this.state.desktop) return
+    void saveHistory({ clipboard: this.state.clipboard, files: this.state.files })
   }
 
   /** The user has read the desktop's complaint; the banner can go. */

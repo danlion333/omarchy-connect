@@ -29,7 +29,13 @@ export function setRandomSource(source: RandomSource) {
   randomSource = source
 }
 
-function randomBytes(length: number): Uint8Array {
+/**
+ * Exported because the handshake is no longer the only thing that needs
+ * unguessable bytes: the sealed clipboard history wants a key and a fresh
+ * nonce, and it should ask the module that already knows where this phone's
+ * randomness comes from rather than reach for a second source of its own.
+ */
+export function randomBytes(length: number): Uint8Array {
   if (randomSource) return randomSource(length)
   const webCrypto = (globalThis as { crypto?: Crypto }).crypto
   if (webCrypto?.getRandomValues) return webCrypto.getRandomValues(new Uint8Array(length))
