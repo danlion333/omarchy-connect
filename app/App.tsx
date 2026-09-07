@@ -23,11 +23,13 @@ import { AgentsScreen } from './src/screens/AgentsScreen'
 import { SettingsScreen } from './src/screens/SettingsScreen'
 import { PairScreen } from './src/screens/PairScreen'
 import { ErrorBoundary } from './src/ui/ErrorBoundary'
-import { FeedbackProvider, Notice, Wallpaper } from './src/ui/kit'
+import { Body, Button, Buttons, FeedbackProvider, Hero, Notice, Wallpaper } from './src/ui/kit'
 import { LookProvider, SetupAsksProvider, useSetupAsks } from './src/ui/look'
-import { FALLBACK_PALETTE, alpha, font, radius, size, space } from './src/theme'
+import { FALLBACK_PALETTE, alpha, font, line, radius, size, space } from './src/theme'
 import { onSharedIntent, takeSharedIntent } from './modules/omarchy-link'
 import { isEmptyShare, shareBlocked, type SharePayload } from './src/lib/share'
+import { SHADE_AFTER_MS, offlineShade, type Shade } from './src/lib/offline'
+import type { ConnectionStatus } from './src/api/client'
 
 /**
  * The five workspaces, in the order the Omarchy bar numbers them. They are
@@ -76,8 +78,13 @@ function Splash() {
 }
 
 function Shell() {
-  const { desktop, ready, palette, serverError, dismissServerError } = useConnection()
+  const { desktop, ready, palette, serverError, dismissServerError, status, error, client, reconnect } = useConnection()
   const [tab, setTab] = useState<TabKey>('home')
+  // Whether the user has stepped out of the shade into Share. Kept apart from
+  // `tab` on purpose: the workspace they were on when the link died is the one
+  // they get back when it returns, and a look at the clipboard in between must
+  // not overwrite it.
+  const [peeking, setPeeking] = useState(false)
   const route = useRequestedRoute()
   const [opening, setOpening] = useState<string | null>(null)
   const [shared, setShared] = useState<SharePayload | null>(null)
@@ -98,6 +105,28 @@ function Shell() {
     if (shared) setTab('share')
   }, [shared])
 
+  // Everything the shade needs: the state, how long it has held, and the
+  // sentence that belongs to it. `parkedNote` is a getter on the client rather
+  // than a field of the state, which is why it is read here and not selected.
+  const down = useLinkDowntime(status)
+  const shade = offlineShade({ status, error, parkedNote: client?.parkedNote ?? null, downForMs: down })
+
+  useEffect(() => {
+    if (!shade) setPeeking(false)
+  }, [Boolean(shade)])
+
+  // While the shade stands the bar still answers, but only Share opens: the
+  // other four would be drawing yesterday's desktop, which is the whole thing
+  // this change exists to stop. Tapping one of them puts the shade back.
+  const showing = shade && peeking ? 'share' : tab
+  const choose = useCallback(
+    (next: TabKey) => {
+      if (shade) return setPeeking(next === 'share')
+      setTab(next)
+    },
+    [shade],
+  )
+
   if (!ready) return <Splash />
   // A share that arrives before there is anywhere to send it must not vanish
   // into a pairing screen without a word: the whole point of the share sheet
@@ -115,14 +144,26 @@ function Shell() {
   return (
     <View style={{ flex: 1, backgroundColor: palette.background }}>
       <Wallpaper />
-      <Workspaces
-        current={tab}
-        onChange={setTab}
-        opening={opening}
-        onOpened={() => setOpening(null)}
-        shared={shared}
-        onSharedTaken={() => setShared(null)}
-      />
+      {/*
+        The pager and the shade share this box so that the shade covers the
+        workspaces and stops at the bar: the bar is the desktop's own bar, and
+        a desktop that is unreachable is still the desktop this phone is paired
+        to. Over the pager rather than instead of it, because a page is mounted
+        on its first visit and never unmounted — replacing it would throw away
+        the clipboard history the shade's one door leads to.
+      */}
+      <View style={{ flex: 1 }}>
+        <Workspaces
+          current={showing}
+          onChange={choose}
+          locked={Boolean(shade)}
+          opening={opening}
+          onOpened={() => setOpening(null)}
+          shared={shared}
+          onSharedTaken={() => setShared(null)}
+        />
+        {shade && !peeking ? <OfflineShade shade={shade} onReconnect={reconnect} onShare={() => setPeeking(true)} /> : null}
+      </View>
       {/*
         The desktop's own complaints. They belong to no screen — the request
         that drew one may have been sent from a workspace the user has since
@@ -134,7 +175,91 @@ function Shell() {
           <Notice error={serverError} tone="warning" onDismiss={dismissServerError} />
         </View>
       ) : null}
-      <OmarchyBar current={tab} onChange={setTab} />
+      <OmarchyBar current={showing} onChange={choose} />
+    </View>
+  )
+}
+
+/**
+ * How long the link has been out of `connected`, in milliseconds.
+ *
+ * A duration rather than a flag because the difference between a blip and an
+ * outage is entirely a matter of time, and nothing else in the app measures
+ * it: the status moves from `connecting` to `reconnecting` and then sits
+ * there, saying the same word one second in and ten minutes in.
+ *
+ * The one timer here is the alarm that makes the shade appear on its own. The
+ * value is only ever read against `SHADE_AFTER_MS`, so there is nothing to
+ * gain from ticking it every second, and a re-render a second of the entire
+ * shell is exactly what `lib/state` was written to avoid.
+ */
+function useLinkDowntime(status: ConnectionStatus): number {
+  const [since, setSince] = useState<number | null>(status === 'connected' ? null : Date.now())
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    if (status === 'connected') return setSince(null)
+    // `??` and not an assignment: `connecting` giving way to `reconnecting` is
+    // the same outage continuing, and restarting the clock on it would mean a
+    // shade that never arrives while the ladder keeps changing the word.
+    setSince((was) => was ?? Date.now())
+  }, [status])
+
+  useEffect(() => {
+    if (since === null) return
+    const left = SHADE_AFTER_MS - (Date.now() - since)
+    if (left <= 0) return setNow(Date.now())
+    const timer = setTimeout(() => setNow(Date.now()), left + 50)
+    return () => clearTimeout(timer)
+  }, [since])
+
+  return since === null ? 0 : Math.max(0, now - since)
+}
+
+/**
+ * The desktop is not there, said over the whole of the app.
+ *
+ * A shade rather than a banner on each screen because the problem is not with
+ * one card: every number on Home, every session in Agents and every line in
+ * Terminal is a snapshot of a desktop this phone can no longer see, and a
+ * warning beside them still leaves them to be read. `TerminalScreen` already
+ * dims its whole screen behind one `wifi-off` `Hint` for exactly this reason;
+ * this is that, for the app.
+ *
+ * One door leads out of it, into Share, because the clipboard and the file
+ * history already in this process are the only things on the phone that are
+ * still true with the desktop gone.
+ */
+function OfflineShade({ shade, onReconnect, onShare }: { shade: Shade; onReconnect: () => void; onShare: () => void }) {
+  const { palette } = useConnection()
+
+  return (
+    <View
+      accessibilityRole="alert"
+      accessibilityLabel={`${shade.title}. ${shade.reason}`}
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        // Nearly opaque, not opaque: the wallpaper still shows through, so the
+        // app reads as waiting rather than as having crashed into a dialog.
+        backgroundColor: alpha(palette.background, 0.94),
+        alignItems: 'center',
+        justifyContent: 'center',
+        paddingHorizontal: space.xl,
+        gap: space.sm,
+      }}
+    >
+      <Hero tone={palette.bright_foreground}>{shade.title}</Hero>
+      <Body tone={palette.muted} numberOfLines={3} style={{ textAlign: 'center', lineHeight: line.body }}>
+        {shade.reason}
+      </Body>
+      <Buttons style={{ marginTop: space.md }}>
+        <Button label="Reconnect" icon="refresh-cw" variant="primary" onPress={onReconnect} disabled={!shade.canRetry} />
+        <Button label="Share" icon="clipboard" onPress={onShare} />
+      </Buttons>
     </View>
   )
 }
@@ -150,6 +275,7 @@ function Shell() {
 function Workspaces({
   current,
   onChange,
+  locked,
   opening,
   onOpened,
   shared,
@@ -157,6 +283,8 @@ function Workspaces({
 }: {
   current: TabKey
   onChange: (tab: TabKey) => void
+  /** The shade is up: the pager holds still and only what it is told to show. */
+  locked: boolean
   opening: string | null
   onOpened: () => void
   shared: SharePayload | null
@@ -217,6 +345,8 @@ function Workspaces({
       ref={scroller}
       horizontal
       pagingEnabled
+      // A swipe under the shade would slide a workspace out from behind it.
+      scrollEnabled={!locked}
       // A drag that starts on a chip row, a slider or a text field belongs to
       // that control: the inner horizontal scroller takes the gesture first,
       // and the responder system hands a slider its drag before this view sees
