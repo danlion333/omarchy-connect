@@ -666,6 +666,76 @@ async function cmdMic(args) {
 }
 
 /**
+ * Watch through the phone's camera from here.
+ *
+ * `camera` asks and holds the terminal until the handset answers, so a
+ * success means a lens is open rather than that an instruction went into the
+ * dark. The pictures land as an MJPEG file in `~/.cache/omarchy-connect/
+ * video/` — a cache and not a keepsake, swept like the recordings — and the
+ * path is printed because the one thing anybody does with it next is play it:
+ * `mpv`, `ffplay` and `ffprobe` all read a bare stream of JPEGs.
+ *
+ * `camera stop` is what ends it. So is closing the app, losing the network or
+ * ten minutes going by; all four leave a file whose every finished frame still
+ * decodes, because MJPEG has no header to patch.
+ *
+ * `--front` picks the other lens, and `--width`, `--height` and `--fps` are
+ * the request. All of them are clamped rather than refused: a phone asked for
+ * something its camera has never heard of gets the nearest thing it can do.
+ */
+async function cmdCamera(args) {
+  const [action = 'status'] = args._
+  const op = ['start', 'on', 'watch'].includes(action)
+    ? 'start'
+    : ['stop', 'off'].includes(action)
+      ? 'stop'
+      : action === 'status'
+        ? 'status'
+        : null
+  if (!op) {
+    log.error('usage: omarchy-connect camera <start|stop|status> [--front] [--width N] [--height N] [--fps N]')
+    process.exit(1)
+  }
+  const value = {
+    camera: args.front ? 'front' : args.back ? 'back' : 'back',
+    ...(args.width ? { width: Number(args.width) } : {}),
+    ...(args.height ? { height: Number(args.height) } : {}),
+    ...(args.fps ? { fps: Number(args.fps) } : {}),
+  }
+  const res = await daemonRequest('/api/camera', { method: 'POST', body: { op, value }, timeout: 30_000 })
+  if (!res.status) {
+    log.error(
+      res.timeout
+        ? 'the phone did not answer — it may be off, asleep or off this network'
+        : 'daemon is not running — start it with `omarchy-connect start`',
+    )
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the phone could not be reached')
+    process.exit(1)
+  }
+  const video = res.data?.video || {}
+  if (op === 'status') {
+    if (!video.streaming) return log.info('the phone is not streaming its camera')
+    return log.ok(
+      `watching the ${video.camera} camera — ${video.frames} frames in ${video.seconds}s ` +
+        `(${video.fps} fps, ${video.gaps} the phone never sent) into ${video.path}`,
+    )
+  }
+  if (op === 'start') {
+    return log.ok(
+      `the phone is filming — ${video.width}\u00d7${video.height} at ${video.fps} fps into ${video.path}\n` +
+        '  play it with `mpv --demuxer=mjpeg` or count it with `ffprobe -f mjpeg`\n' +
+        '  stop it with `omarchy-connect camera stop`',
+    )
+  }
+  const lost = video.dropped ? `, ${video.dropped} frames dropped to keep up` : ''
+  const holes = video.gaps ? `, ${video.gaps} the phone never sent` : ''
+  log.ok(`the phone has stopped — ${video.frames} frames in ${video.seconds}s (${video.fps} fps) in ${video.path}${lost}${holes}`)
+}
+
+/**
  * How loud the phone is here.
  *
  * With no argument it reports; with a number it pins that number and stops
@@ -2240,6 +2310,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('mic')} <start|stop|status>     stream the phone's microphone to this desktop
   ${bold('mic input')} <on|off|status>  offer the phone as an input every app can pick
   ${bold('mic gain')} [N|auto]           how much louder the desktop makes it
+  ${bold('camera')} <start|stop|status>  stream the phone's camera to this desktop
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('terminal')} <status|on|off>    a shell here the phone can type into
@@ -2268,6 +2339,7 @@ const commands = {
   phone: cmdPhone,
   locate: cmdLocate,
   mic: cmdMic,
+  camera: cmdCamera,
   agent: cmdAgent,
   terminal: cmdTerminal,
   remote: cmdRemote,

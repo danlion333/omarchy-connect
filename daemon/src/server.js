@@ -56,7 +56,14 @@ import {
   summary as audioSummary,
   setGain as setAudioGain,
 } from './plugins/audio.js'
+import {
+  requestVideo,
+  feed as feedVideo,
+  hangUp as hangUpVideo,
+  summary as videoSummary,
+} from './plugins/video.js'
 import { isAudioFrame } from './lib/mic.js'
+import { isVideoFrame } from './lib/video.js'
 import * as agentDrops from './agents/drops.js'
 import { handsfree } from './lib/handsfree.js'
 import { ancs } from './lib/ancs.js'
@@ -71,7 +78,7 @@ export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
-export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'agent', 'terminal', 'endpoints']
+export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'video', 'agent', 'terminal', 'endpoints']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
 
@@ -232,6 +239,10 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // per process and answers from a cache afterwards (`lib/pipesource.js`),
       // so it is safe on a snapshot that is rebuilt on every connection.
       audio: audioSummary(),
+      // And the phone's camera, for the same reason: a lens that is open with
+      // nothing on the screen saying so is the one state a person should not
+      // have to remember they asked for.
+      video: videoSummary(),
       agents: agentsSummary(),
       // The shell the phone types into. On the panel this sits beside the
       // agent switch and is the same class of decision, so the panel needs the
@@ -734,6 +745,36 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       return undefined
     }
 
+    /**
+     * The desktop asking the phone for its camera, and asking for it back.
+     *
+     * Held open the way `/api/mic` is: the answer comes back when the handset
+     * has actually opened the lens, so `omarchy-connect camera` says the phone
+     * is filming rather than that a message went into the dark. `value` is the
+     * request — which lens, and how big and how fast — and everything in it is
+     * clamped rather than refused (`lib/video.js`).
+     */
+    if (req.method === 'POST' && url.pathname === '/api/camera') {
+      if (!localOnly(req, res)) return undefined
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'status', value = {} } = JSON.parse(body || '{}')
+          if (op === 'status') return json(res, 200, { ok: true, video: videoSummary() })
+          const { outcome } = requestVideo({ op, ...(value && typeof value === 'object' ? value : {}) })
+          const result = await outcome
+          return json(res, 200, { ok: true, video: { ...videoSummary(), ...result } })
+        } catch (err) {
+          return json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/locate') {
       if (!localOnly(req, res)) return undefined
       let body = ''
@@ -1191,6 +1232,16 @@ export function createServer({ port, version = '0.1.0' } = {}) {
         return undefined
       }
 
+      // Pictures, on the same terms. Fifteen a second and tens of kilobytes
+      // each, which is the only thing about this branch that is not identical
+      // to the one above — `lib/video.js` is the format and the reason it is a
+      // second magic rather than a field inside the first.
+      if (isVideoFrame(plain)) {
+        if (!client.device) return send(client, { t: 'error', error: 'not authenticated' })
+        feedVideo(client.id, plain)
+        return undefined
+      }
+
       let msg
       try {
         msg = JSON.parse(plain.toString())
@@ -1257,6 +1308,7 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // Within the tick, so a socket that died mid-stream leaves a finished
       // file rather than a recorder waiting for bytes that will never come.
       hangUpAudio(client.id)
+      hangUpVideo(client.id)
       bus.unsubscribe([...client.events])
       clients.delete(client)
       if (client.device) {
@@ -1440,6 +1492,8 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   // was loaded or unloaded. None of that goes through the socket bookkeeping
   // above, and the panel's only window on it is the status file.
   bus.on('audio.state', publishState)
+  // The camera moved: a capture started or ended. Same road, same reason.
+  bus.on('video.state', publishState)
 
   bus.on('event', (event, data) => {
     if (event === 'notification') counters.notifications += 1
@@ -1462,6 +1516,9 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // one whose room the person at this desktop has no business listening to,
       // whatever the pairing says.
       if (event === 'audio' && client.via === 'remote') continue
+      // And a camera even less. Everything the microphone's fence is for, with
+      // the picture as well as the sound.
+      if (event === 'video' && client.via === 'remote') continue
       send(client, message)
     }
   })
