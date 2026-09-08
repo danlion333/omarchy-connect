@@ -123,6 +123,20 @@ check('but the wire is kept, because a VPN may well be the road into it',
   away.some((e) => e.kind === 'lan'), away.map((e) => e.kind).join(' → '))
 check('and the name is still last', away[away.length - 1].kind === 'dns')
 
+// Somebody else's Wi-Fi, with the tunnel up. Android says `lan` for any
+// Wi-Fi and will not say which one without a location permission, so this
+// reads exactly like home and the wire is offered first — deliberately, since
+// dropping it would park a phone that really is at home. What matters is that
+// the tunnels are all still on the list behind it: they are what `client`'s
+// probes race against the hanging dial, and what it moves to when one answers.
+const FOREIGN_WIFI = { online: true, lan: true, vpn: true }
+const foreign = orderCandidates(all, FOREIGN_WIFI)
+check('a foreign Wi-Fi is indistinguishable from home, so the wire still leads',
+  foreign[0].kind === 'lan', foreign.map((e) => e.kind).join(' → '))
+check('but every tunnel is offered behind it, for the race to find the desktop on',
+  ['tailscale', 'wireguard', 'dns'].every((kind) => foreign.some((e) => e.kind === kind)),
+  foreign.map((e) => e.kind).join(' → '))
+
 const remembered = orderCandidates(all, CELL_VPN, wg.host)
 check('what worked last is tried first among the tunnels', remembered[0].host === wg.host,
   remembered.map((e) => e.host).join(' → '))
