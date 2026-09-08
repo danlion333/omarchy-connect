@@ -171,6 +171,65 @@ export function writeSpeaker(pcm) {
   speaker.written.push(Array.from(pcm))
 }
 
+/* ── the headset ────────────────────────────────────────────────────── */
+
+/**
+ * The duplex mode, as a switch and the facts it answers with.
+ *
+ * `globalThis.__headset` is what a suite sets to describe the handset it wants
+ * — a build too old to have the mode, a phone with no echo canceller, one that
+ * refuses the mode outright — and what it reads to find out whether the mode
+ * was actually entered and, the fact that matters most, whether it was ever
+ * left again.
+ */
+const headset = (globalThis.__headset = {
+  supported: true,
+  on: false,
+  starts: 0,
+  stops: 0,
+  /** What `AcousticEchoCanceler` answers on this pretend handset. */
+  aecAvailable: true,
+  /** Set to a message to make `startHeadset` throw it. */
+  refuse: null,
+})
+
+export function headsetSupported() {
+  return headset.supported
+}
+
+export function startHeadset() {
+  if (headset.refuse) throw new Error(headset.refuse)
+  headset.starts += 1
+  headset.on = true
+}
+
+export function stopHeadset() {
+  if (headset.on) headset.stops += 1
+  headset.on = false
+}
+
+export function headsetFacts() {
+  return {
+    on: headset.on,
+    session: headset.on ? 42 : 0,
+    aecAvailable: headset.aecAvailable,
+    // A canceller exists only over a session, which is the real handset's rule
+    // too: `bind` is called from the microphone and not from the mode.
+    aecEnabled: headset.on && headset.aecAvailable,
+    recording: mic.running,
+    playing: speaker.running,
+  }
+}
+
+export const NO_HEADSET_FACTS = {
+  on: false,
+  session: 0,
+  aecAvailable: false,
+  aecEnabled: false,
+  recording: false,
+  playing: false,
+}
+
 /**
  * The native event emitter, reduced to what the responders subscribe to. A
  * suite fires one with `globalThis.__mic.listeners.onMicStopped({ error })`,

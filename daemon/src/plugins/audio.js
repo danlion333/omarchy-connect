@@ -86,6 +86,19 @@ import {
  *   - a socket that dies takes the sink down with it, where a dead socket
  *     leaves the microphone's source loaded and silent.
  *
+ * ## Both at once
+ *
+ * And then the pair of them together, which is not the sum of the two
+ * switches: a phone playing the desktop through its loudspeaker while
+ * recording the same room two centimetres away sends the desktop its own voice
+ * back. `requestHeadset` is that case, and what it really is is an *order* —
+ * both directions down, a mode set on the handset, the microphone opened, and
+ * only then the track — because everything Android will do about the loop
+ * (`AcousticEchoCanceler` on one shared audio session, the communication
+ * source, the routing) is fixed at the moment the recorder and the track are
+ * constructed. `app/modules/omarchy-link/.../Headset.kt` argues the phone's
+ * half; this file's job is the order and the honesty about what came back.
+ *
  * ## Who presses the button
  *
  * Both ends can. The desktop asking is the original road and the reason the
@@ -139,6 +152,19 @@ let askedToPlay = null
 /** Handed out ascending, so a chunk of a finished run is recognisable. */
 let nextPlayStream = 1
 
+/**
+ * The headset, when the phone is being one: both directions at once, in the
+ * one state on the handset that keeps them from howling at each other.
+ *
+ * `startedMic` and `startedPlay` are this mode's version of
+ * `startedTheStream`: the mode may have found one direction already running —
+ * somebody had the speaker on and then asked for a headset — and turning the
+ * mode off must not take away a switch it did not flip.
+ */
+let headset = null
+/** The `headset` instruction that has gone out and not been answered yet. */
+let askedHeadset = null
+
 const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunkMs: CHUNK_MS })
 
 /** The other direction's format. The same wire, the same numbers, going out. */
@@ -161,7 +187,7 @@ const playFormat = () => ({
 const changed = () => bus?.emit('audio.state')
 
 export function summary() {
-  const desktop = { input: inputSummary(), output: outputSummary() }
+  const desktop = { input: inputSummary(), output: outputSummary(), headset: headsetSummary() }
   if (!live) return { streaming: false, gain: currentGain(), auto: currentAuto(), ...desktop }
   return {
     streaming: true,
@@ -323,6 +349,9 @@ function hushPhone(why, { tell = true } = {}) {
   playing = null
   log.info(`the phone stopped being this desktop's speaker (${why}): ${current.sent} chunks sent`)
   if (tell) bus?.emit('event', 'audio', { action: 'hush', stream: current.stream })
+  // The other half of the same rule `finish` keeps: a mode neither direction
+  // is left in is a mode the phone should not still be sitting in.
+  maybeLeaveHeadset()
   return current
 }
 
@@ -522,6 +551,221 @@ export async function requestInput(op = 'status') {
   }
 }
 
+/* ── the phone as a headset ──────────────────────────────────────────── */
+
+/** How long the desktop waits for the handset to say it is a headset. */
+const HEADSET_TTL_MS = 15_000
+
+/**
+ * What the duplex is, and what the phone could actually do about the echo.
+ *
+ * `available` is this desktop's half — a headset needs both a source and a
+ * sink, so a machine with no pipewire-pulse cannot offer one — and everything
+ * else is the handset's own answer, kept verbatim rather than reduced to a
+ * boolean. A phone with no `AcousticEchoCanceler` is still a working duplex
+ * for one person talking at a time, and the honest thing to do with that fact
+ * is print it, not hide it behind an `on: true`.
+ */
+export function headsetSummary() {
+  const available = pipeAvailable() && sinkAvailable()
+  if (!headset) return { available, on: false }
+  return {
+    available,
+    on: true,
+    since: headset.since,
+    echoCancellation: Boolean(headset.aec?.enabled),
+    aec: headset.aec || null,
+    listening: Boolean(live),
+    playing: Boolean(playing),
+  }
+}
+
+/** Is this desktop running the phone as a headset right now? */
+export const headsetOn = () => Boolean(headset)
+
+/**
+ * Tell the handset to enter the mode, or leave it, and hold the answer.
+ *
+ * `askPhoneToPlay`'s shape, and for its reason: a success has to mean the
+ * phone is actually in the mode — one session, the communication source, a
+ * canceller if it has one — rather than that a message went into the dark,
+ * because the two things that follow it depend on the phone being in it
+ * before they open anything.
+ */
+function askPhoneHeadset(on) {
+  if (!bus) throw new Error('daemon is not running')
+  if (askedHeadset) throw new Error('the phone has already been asked and has not answered yet')
+  const id = crypto.randomUUID()
+  const outcome = new Promise((resolve, reject) => {
+    askedHeadset = {
+      id,
+      on,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        askedHeadset = null
+        reject(new Error('the phone did not answer — it may be off, asleep or off this network'))
+      }, HEADSET_TTL_MS),
+    }
+    askedHeadset.timer.unref?.()
+  })
+  bus.emit('event', 'audio', { action: 'headset', id, on })
+  return { id, outcome }
+}
+
+/**
+ * Put the phone back out of the mode, and forget it here.
+ *
+ * Always safe to call, which matters because five things end a headset — the
+ * switch, either direction ending on its own, the socket, the daemon stopping
+ * — and they race. `tell` is false when there is nobody left to tell: the
+ * phone leaves the mode by itself when its socket goes, which is the half of
+ * this that a dead link cannot be trusted to deliver.
+ */
+function leaveHeadset(why, { tell = true } = {}) {
+  if (askedHeadset) {
+    clearTimeout(askedHeadset.timer)
+    askedHeadset.reject(new Error(why))
+    askedHeadset = null
+  }
+  const current = headset
+  if (!current) return null
+  headset = null
+  log.info(`the phone is no longer a headset for this desktop (${why})`)
+  if (tell) bus?.emit('event', 'audio', { action: 'headset', id: crypto.randomUUID(), on: false })
+  changed()
+  return current
+}
+
+/**
+ * Both directions have ended, so the mode has nothing left to be about.
+ *
+ * This is the answer to the one failure a person would feel *outside* this
+ * app: a handset left in `MODE_IN_COMMUNICATION` with its communication device
+ * forced to the loudspeaker plays its own calls and its own music wrong
+ * afterwards, and nothing on its screen says why. So the mode does not outlive
+ * the last of the two things it was for — whichever of them ended last, and
+ * whatever ended it.
+ */
+function maybeLeaveHeadset() {
+  if (!headset || live || playing) return
+  leaveHeadset('nothing is left of either direction')
+}
+
+/**
+ * The phone as a headset: the microphone and the speaker at once, in the mode
+ * that keeps the one from hearing the other.
+ *
+ * `requestInput` and `requestOutput` are the two halves and this is not a
+ * third road beside them — it is those two, in an order that matters, around
+ * an instruction that changes what the handset opens them as. The order is the
+ * whole reason this exists as a function rather than as advice in the README:
+ *
+ *   1. **Both directions down first.** A microphone already streaming was
+ *      opened at `VOICE_RECOGNITION` on a session of its own, and neither can
+ *      be changed on a running `AudioRecord`. The same is true of a track
+ *      already playing. So anything running is stopped and started again
+ *      inside the mode rather than left as a half-duplex that quietly does not
+ *      cancel anything.
+ *   2. **The mode, before either end opens.** The source, the session and the
+ *      canceller are fixed when the phone constructs its recorder and its
+ *      track.
+ *   3. **The microphone before the speaker.** The canceller hangs on the
+ *      *record* session, and the track has to join a session that exists.
+ *
+ * A phone that cannot answer leaves the sink and the source loaded and says
+ * so, exactly as `requestOutput` does: a desktop with a working, silent pair
+ * of devices and a sentence is in a better place than one with an error and no
+ * devices.
+ */
+export async function requestHeadset(op = 'status') {
+  const action = String(op || 'status').toLowerCase()
+  if (action === 'status') return headsetSummary()
+  if (!['on', 'off', 'start', 'stop', 'enable', 'disable'].includes(action)) {
+    throw new Error(`unknown headset action: ${op}`)
+  }
+
+  if (['off', 'stop', 'disable'].includes(action)) {
+    const was = headset
+    // Told first, so the phone is out of the mode before either direction is
+    // taken away under it. Told even when this desktop thinks the mode is
+    // already off, because the state that matters is the handset's and this is
+    // the one instruction that can put a stuck phone right.
+    await askPhoneHeadset(false).outcome.catch(() => null)
+    leaveHeadset('the desktop switched the headset off', { tell: false })
+    if (was?.startedMic && live) await requestMic({ op: 'stop' }).outcome.catch(() => null)
+    if (was?.startedPlay && output) {
+      try {
+        setOutput(false)
+      } catch (err) {
+        log.warn(`could not take the phone output down: ${err.message}`)
+      }
+    }
+    return headsetSummary()
+  }
+
+  if (!pipeAvailable() || !sinkAvailable()) {
+    throw new Error('this desktop has no pipewire-pulse, so it cannot use the phone as a headset')
+  }
+  if (headset) return headsetSummary()
+
+  // Whatever was running was opened in the wrong state for a duplex. Both go
+  // back, and both come up again below inside the mode.
+  if (live) await requestMic({ op: 'stop' }).outcome.catch(() => null)
+  if (playing) hushPhone('the headset is taking the track back')
+
+  // The devices first, for `requestInput`'s reason: a program picks its input
+  // and its output before anybody speaks, and a pair that exists and is silent
+  // beats an error and no pair at all.
+  setInput(true)
+  setOutput(true)
+
+  let aec = null
+  try {
+    const answer = await askPhoneHeadset(true).outcome
+    aec = answer?.aec || null
+  } catch (err) {
+    return { ...headsetSummary(), phone: err.message }
+  }
+
+  headset = { since: Date.now(), aec, startedMic: false, startedPlay: false }
+  log.ok(
+    aec?.enabled
+      ? 'the phone is a headset for this desktop, with its own echo canceller'
+      : 'the phone is a headset for this desktop — it has no echo canceller, so expect to hear yourself',
+  )
+
+  // The microphone before the track, because the canceller hangs on the
+  // record session and the track joins it. A refusal on either is reported
+  // beside a mode that is nonetheless on: the person can wake the phone and
+  // ask again without losing the state that was set up for them.
+  const trouble = []
+  if (!live) {
+    try {
+      await requestMic({ op: 'start' }).outcome
+      headset.startedMic = true
+    } catch (err) {
+      trouble.push(err.message)
+    }
+  } else {
+    // Still streaming after being asked to stop: whatever this is, it is not
+    // a stream this mode opened, so it is not one this mode may close.
+    headset.startedMic = false
+  }
+  if (!playing) {
+    try {
+      await askPhoneToPlay().outcome
+      headset.startedPlay = true
+    } catch (err) {
+      trouble.push(err.message)
+    }
+  } else {
+    headset.startedPlay = false
+  }
+  changed()
+  return { ...headsetSummary(), ...(trouble.length ? { phone: trouble.join('; ') } : {}) }
+}
+
 /** Live chunks, for anything on this desktop that wants to hear them. */
 export function onChunk(fn) {
   listeners.add(fn)
@@ -544,6 +788,11 @@ async function finish(why, { tell = true } = {}) {
       (result.dropped ? `, ${result.dropped} bytes dropped` : ''),
   )
   if (tell) bus?.emit('event', 'audio', { action: 'stop', stream: current.stream })
+  // A headset with no microphone left in it is half a headset, and the half
+  // that is left costs the handset its own audio routing until somebody says
+  // otherwise. Checked here rather than only in the switch, because most of
+  // the ways a stream ends are not switches.
+  maybeLeaveHeadset()
   changed()
   return { ...result, why }
 }
@@ -669,6 +918,11 @@ export default {
 
   stop() {
     startedTheStream = false
+    // First, and without telling anybody: the socket is going with this
+    // process, so the instruction would not arrive — and the phone leaves the
+    // mode by itself when the socket dies, which is the half of it that has to
+    // be reliable.
+    leaveHeadset('the daemon is stopping', { tell: false })
     if (live) void finish('the daemon is stopping', { tell: false })
     // The speaker first, because it is the one whose absence is silent: a
     // `module-pipe-sink` left loaded by a daemon on its way out is an output
@@ -718,6 +972,10 @@ export default {
       // The format the desktop will send when it does. Advertised so an app
       // can build its track before the first chunk lands rather than after.
       play: playFormat(),
+      // And whether the two can be had at once. False wherever `input` and
+      // `output` are false, because a headset is those two and not a third
+      // thing — the app draws one switch for it, or none.
+      headset: headsetSummary(),
     }
   },
 
@@ -892,6 +1150,43 @@ export default {
     async 'audio.input'({ op = 'status' } = {}, ctx = {}) {
       remoteRefused(ctx)
       return requestInput(op)
+    },
+
+    /**
+     * The handset's answer to being asked to be a headset.
+     *
+     * `audio.started` and `audio.playing`'s twin, with one difference that is
+     * the point of the whole road: `ok: true` is not the end of the answer.
+     * The phone also says what it *got* — whether this handset has an
+     * `AcousticEchoCanceler` at all, and whether one was created and enabled
+     * for the session it is about to record into — because a duplex without
+     * one works and howls, and the desktop is the end that can tell somebody
+     * that before they start a call rather than during it.
+     */
+    'audio.wearing'({ id, ok = true, error, aec } = {}) {
+      const pending = askedHeadset
+      if (!pending || pending.id !== id) throw new Error('nothing is waiting on that headset request')
+      clearTimeout(pending.timer)
+      askedHeadset = null
+      if (!ok) {
+        pending.reject(new Error(error || 'the phone could not be a headset'))
+        return { ok: false }
+      }
+      pending.resolve({ ok: true, on: pending.on, aec: aec || null })
+      return { ok: true }
+    },
+
+    /**
+     * The phone flipping the headset on or off.
+     *
+     * Here as well as in the CLI for the reason `audio.speaker` and
+     * `audio.input` are: both halves of a headset are in somebody's hand, and
+     * the switch for them was on a machine in another room. Refused down a
+     * tunnel like everything else on this channel — it turns a microphone on.
+     */
+    async 'audio.headset'({ op = 'status' } = {}, ctx = {}) {
+      remoteRefused(ctx)
+      return requestHeadset(op)
     },
   },
 }

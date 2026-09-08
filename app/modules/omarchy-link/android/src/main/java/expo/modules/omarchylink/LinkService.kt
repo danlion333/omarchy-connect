@@ -313,33 +313,47 @@ class LinkService : Service() {
   }
 
   private fun goForeground() {
-    // Built up rather than chosen from a list of pairs: there are two optional
-    // claims now and a phone can be recording and filming at once, so an `if`
-    // ladder over every combination would be four branches that mean one rule.
+    // Built up rather than chosen from a list of pairs: there are three
+    // optional claims now — a phone in headset mode is recording and playing
+    // at once, and it can be filming while it does — so an `if` ladder over
+    // every combination would be eight branches that mean one rule.
     var types = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) 0 else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       if (microphone && Mic.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
       if (camera && Camera.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
       // No permission to gate this one on: playing needs none. What gates it
       // is Android's own rule that the type may only be claimed from a
-      // service that is eligible for it, which the `catch` below answers.
-      if (playback && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-      }
+      // service that is eligible for it, which the retry below answers.
+      if (playback) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
     }
     try {
       ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this), types)
       Trace.detail("service.foreground", "ok" to true, "mic" to microphone, "cam" to camera, "play" to playback)
+      return
     } catch (error: Exception) {
-      // The microphone and camera types are the ones the system refuses on
-      // its own terms — a service that came up from the background is not
-      // eligible for either — and the link is worth far more than the claim.
-      // Drop both and go back to the type that has always worked; whatever
-      // asked for them hears about it when the capture is cut short.
-      if (types != ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      // The optional types are the ones the system refuses on its own terms —
+      // a service that came up from the background is not eligible for the
+      // capture ones — and the link is worth far more than any of the claims.
+      //
+      // Android does not say which claim it refused, so they are shed one rung
+      // at a time and the capture pair goes first: that is the pair the system
+      // has an explicit rule against — a service started from the background
+      // is not eligible for `microphone` or `camera` — where `mediaPlayback`
+      // has no such rule and is the likelier survivor. The rungs matter more
+      // than they look: this used to drop the two capture claims and re-enter
+      // unconditionally, which with a *third* claim in the mask meant a
+      // refused `mediaPlayback` re-entering forever with nothing left to
+      // drop — a stack overflow in the one path whose whole job is to keep
+      // the link alive through a refusal.
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && (microphone || camera)) {
         Trace.fail("service.foreground.capture.refused", error)
         microphone = false
         camera = false
+        return goForeground()
+      }
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && playback) {
+        Trace.fail("service.foreground.playback.refused", error)
+        playback = false
         return goForeground()
       }
       // Android 12 forbids starting a foreground service from the background

@@ -263,7 +263,7 @@ itself without waiting for the next tick.
 | `theme` | The active Omarchy theme changes. |
 | `file` | A file arrived from a phone, or the desktop offered one. |
 | `phone` | A mirrored SMS or call arrived (`action: "received"`), or the desktop is asking the phone to send one (`action: "send"`) or to say where it is (`action: "locate"`). |
-| `audio` | The desktop is asking the phone to open its microphone (`action: "start"`) or to close it (`action: "stop"`). See **Live audio** below. |
+| `audio` | The desktop is asking the phone to open its microphone (`action: "start"`) or to close it (`action: "stop"`), to open its speaker (`action: "play"`) or to close it (`action: "hush"`), or to be a headset — both at once — (`action: "headset"`, with `on`). See **Live audio** below. |
 | `agent` | A coding agent appeared, changed state, or said something new. |
 | `terminal` | The desktop shell the phone opened printed something, moved directory, started or finished a command (`kind: "screen"`), was exited out of (`kind: "gone"`), or was switched on or off at the desktop (`kind: "control"`). |
 | `endpoints` | The set of addresses this desktop can be dialled on changed — a tunnel came up or went down, the lease moved, or remote access was switched. Carries the whole list, not a delta. |
@@ -356,6 +356,8 @@ false on a desktop without `voxtype` or `ffmpeg`.
 | `audio.playing` | `{ id, ok, error }` | `{ ok, stream }` — the phone's answer to being asked to become this desktop's speaker. |
 | `audio.hushed` | `{ stream, error }` | `{ ok }` — the phone saying it has stopped playing. The sink stays loaded; it is the desktop's device, not the handset's. |
 | `audio.speaker` | `{ op }` | `on`, `off` or `status`. Offers the phone as an *output* the whole desktop can see, and answers with `{ available, name, description, enabled, playing, … }`. Refused on a `remote` socket. See **The phone as a desktop output**. |
+| `audio.wearing` | `{ id, ok, on, aec, error }` | The phone's answer to being asked to be a headset. `aec` is `{ available, enabled }` — whether this handset has an `AcousticEchoCanceler` at all, and whether one was fitted to the session it is recording into. Both travel to the desktop because they are different sentences. |
+| `audio.headset` | `{ op }` | `on`, `off` or `status`. Both directions at once, in the order the handset needs to cancel its own echo, and answers with `{ available, on, echoCancellation, aec, listening, playing }`. Refused on a `remote` socket. See **The phone as a headset**. |
 
 The capability is
 `{ receive, encoding, rate, channels, chunkMs, maxSeconds, input }` and says
@@ -1543,6 +1545,7 @@ deliberately open.
 | `POST /api/otp` | `{ op, value? }` | `op` is `status`, `copy` (`value` `on`/`off`), `auto` (`value` `on`/`off`) or `test` (`value` is a message to read). Answers `{ ok, otp }`, and `test` adds `{ code, why }`. |
 | `POST /api/locate` | `{ op, seconds? }` | `op` is `start` or `stop`. Rings the paired phone until somebody finds it. Answers `{ ok, locate }`. |
 | `POST /api/mic` | `{ op, value? }` | `op` is `status`, `start`, `stop`, `input` or `gain`. Opens or closes the phone's microphone into a WAV on this desktop — see **Live audio**. `start` answers when the handset is actually recording; `stop` answers with the finished recording. `input` takes `value: "on" | "off" | "status"` and switches the PipeWire source every other app can pick. `gain` takes a number and is how loud the phone is here — see **How loud it is**. Answers `{ ok, audio }`. |
+| `POST /api/headset` | `{ op }` | `op` is `status`, `on` or `off`. Raises both directions at once — the source, the sink, the mode on the handset, then its microphone and then its track — and answers `{ ok, audio }` with `audio.headset` carrying what the phone could do about the echo. See **The phone as a headset**. |
 | `POST /api/ios` | `{ op, seconds? }` | `op` is `status`, `pair` or `stop`. Answers `{ ok, ios }`. |
 | `POST /api/agent/hook` | a hook payload | A coding agent's lifecycle event. Answers `{ ok, id, state }`. |
 | `POST /api/agent/control` | `{ op }` | `op` is `status`, `enable` or `disable` — the desktop's switch for reading and answering agents. Answers `{ ok, agents }`. |
@@ -2047,6 +2050,80 @@ with the screen off needs the foreground service to declare
 `foregroundServiceType="mediaPlayback"`, so `LinkService` claims that type
 alongside `connectedDevice` while — and only while — a track is open. No
 permission is asked for anywhere: Android needs none to play.
+
+## The phone as a headset
+
+Both of the roads above at once, which is not the sum of the two switches:
+
+```
+omarchy-connect headset on          # and `off`, and `status`
+```
+
+A phone playing the desktop's sound out of its loudspeaker while recording the
+same room two centimetres away sends the desktop its own voice back a fifth of
+a second late. That is not something a gain can be tuned away from — it is the
+reason speakerphones have echo cancellation — and everything Android will do
+about it has to be decided *before* either end is opened:
+
+  - an `AcousticEchoCanceler` is attached to a **record session** and subtracts
+    what the platform knows is playing into that same session, so the track has
+    to join the recorder's session (`AudioTrack.Builder.setSessionId`) rather
+    than get one of its own;
+  - the record source has to be `VOICE_COMMUNICATION` rather than the
+    unprocessed `VOICE_RECOGNITION` the microphone uses on its own, because on
+    most handsets the hardware canceller is only fitted to the communication
+    path;
+  - and the audio manager has to be in `MODE_IN_COMMUNICATION`, with the
+    built-in speaker selected as the communication device — the default there
+    is the earpiece, and nobody holds a phone to their ear to hear their
+    laptop.
+
+None of those can be changed on a running `AudioRecord` or `AudioTrack`. So
+this is a **mode**, and the whole of what `/api/headset` does is an order:
+
+```jsonc
+// desktop → phone, before either end is opened
+{ "t": "ev", "event": "audio", "data": { "action": "headset", "id": "<uuid>", "on": true } }
+
+// phone → desktop, with what it actually got
+{ "t": "req", "id": 9, "method": "audio.wearing",
+  "params": { "id": "<uuid>", "ok": true, "on": true,
+              "aec": { "available": true, "enabled": true } } }
+```
+
+and then the two roads exactly as they are documented above, in this order and
+no other: anything already running is stopped first (a microphone already
+streaming was opened at `VOICE_RECOGNITION` on a session of its own, and cannot
+be moved), the source and the sink are loaded, the mode is set, the
+**microphone** is opened, and then the track — because the canceller hangs on
+the record session and the track has to join a session that exists.
+
+**What comes back is what the handset got, not a promise.**
+`AcousticEchoCanceler.isAvailable()` is a per-handset answer and some phones say
+no. Such a phone is still a working duplex for one person talking at a time, so
+the mode goes on and `echoCancellation: false` goes with it, and
+`omarchy-connect headset` prints the warning rather than the desktop pretending.
+The alternative — an echo canceller written in Node or in Kotlin, in front of a
+loudspeaker neither of them can measure — would be a worse one in the wrong
+place.
+
+**One switch off leaves the other running.** `omarchy-connect mic stop` under a
+headset leaves the phone playing, and `omarchy-connect speaker off` leaves it
+streaming; the mode is still on, because half of it still is.
+
+**And the mode never outlives both.** When the last direction ends — whichever
+one, and whatever ended it, including a socket that died — the phone is told to
+leave, and a phone whose socket died leaves on its own. This is the one piece of
+state in the app that is felt in *other* apps: a handset left in
+`MODE_IN_COMMUNICATION` with its communication device forced to the loudspeaker
+gets its own calls and its own music wrong afterwards, with nothing on its
+screen to explain it.
+
+**Three foreground service types at once.** `microphone` and `mediaPlayback`
+are held together for as long as the mode is (`camera` makes a third if the
+phone is filming too), and a system that refuses one of them sheds the claims a
+rung at a time rather than losing the link — the capture pair first, since that
+is the pair Android has an explicit rule against, and playback after it.
 
 ## Live video
 
