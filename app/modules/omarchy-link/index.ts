@@ -62,6 +62,23 @@ type Events = {
    * `error` is empty when it was this app's own `stopMic` that did it.
    */
   onMicStopped: (info: { error: string }) => void
+  /**
+   * One picture from the camera, on its way to the desktop.
+   *
+   * `jpeg` is base64 for the reason `pcm` is, and it is far more of it —
+   * tens of kilobytes fifteen times a second rather than hundreds of bytes
+   * fifty times. `seq` is the capture's own count, and a number that skipped
+   * is a frame that was meant to go and could not: a frame the phone chose
+   * not to send, because the rate asked for is lower than the camera's, does
+   * not move it.
+   */
+  onCameraFrame: (frame: { jpeg: string; seq: number }) => void
+  /**
+   * Filming ended without the app asking. The camera permission was revoked,
+   * another app took the lens, or Android stopped the capture. `error` is
+   * empty when it was this app's own `stopCamera` that did it.
+   */
+  onCameraStopped: (info: { error: string }) => void
 }
 
 /**
@@ -115,6 +132,11 @@ declare class OmarchyLink extends NativeModule<Events> {
   isMicRunning(): boolean
   hasMicPermission(): boolean
   requestMicPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
+  startCamera(facing: string, width: number, height: number, fps: number, quality: number): boolean
+  stopCamera(): void
+  isCameraRunning(): boolean
+  hasCameraPermission(): boolean
+  requestCameraPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
   takeShareIntent(): Promise<SharePayload | null>
 }
 
@@ -502,6 +524,80 @@ export function stopMic(): void {
 export function isMicRunning(): boolean {
   try {
     return linkService()?.isMicRunning() ?? false
+  } catch {
+    return false
+  }
+}
+
+/* ── the camera ─────────────────────────────────────────────────────── */
+
+/**
+ * Whether this build can stream its camera at all.
+ *
+ * The same three noes `micSupported` answers, and the same reason the function
+ * rather than only the module is checked: an installed build older than this
+ * feature has the module and has never heard of `startCamera`, and a desktop
+ * that asks it for a lens deserves a sentence rather than a timeout.
+ */
+export function cameraSupported(): boolean {
+  const native = linkService()
+  return typeof (native as unknown as { startCamera?: unknown } | null)?.startCamera === 'function'
+}
+
+/** Whether CAMERA has been granted, without asking for it. */
+export function hasCameraPermission(): boolean {
+  try {
+    return linkService()?.hasCameraPermission() ?? false
+  } catch {
+    return false
+  }
+}
+
+/** Ask for it. Resolves false rather than throwing when there is no module. */
+export async function requestCameraPermission(): Promise<boolean> {
+  const native = linkService()
+  if (!native) return false
+  try {
+    return (await native.requestCameraPermissionAsync()).granted
+  } catch {
+    return false
+  }
+}
+
+/** What the desktop asked this phone to film. */
+export type CameraRequest = {
+  camera: 'front' | 'back'
+  width: number
+  height: number
+  fps: number
+  quality: number
+}
+
+/**
+ * Open the camera and start emitting `onCameraFrame`.
+ *
+ * Throws rather than returning false when it cannot, because every reason it
+ * cannot is a sentence the desktop is waiting to be told: no module, no
+ * permission, no such lens, a device another app is holding.
+ */
+export function startCamera({ camera, width, height, fps, quality }: CameraRequest): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot open its camera')
+  if (!native.startCamera(camera, width, height, fps, quality)) throw new Error('the phone would not open its camera')
+}
+
+/** Stop, and give the camera back. Safe when nothing is filming. */
+export function stopCamera(): void {
+  try {
+    linkService()?.stopCamera()
+  } catch {
+    /* nothing was filming, or the module went away with the runtime */
+  }
+}
+
+export function isCameraRunning(): boolean {
+  try {
+    return linkService()?.isCameraRunning() ?? false
   } catch {
     return false
   }

@@ -31,6 +31,17 @@
     recording: `LinkService.holdMicrophone` says why at length.
   -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+  <!--
+    The phone as a camera the desktop can switch on — see `Camera`.
+
+    `CAMERA` itself is declared by the app (the pairing QR scanner has always
+    needed it); what is declared here is the right to go on filming once
+    nobody is looking at the screen. The Android 14 rule is the microphone's
+    rule one rung up, and the same reasoning applies to claiming the type on
+    the service that already exists rather than on a second one, and only
+    while something is actually filming: `LinkService.holdCamera`.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
   <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -65,7 +76,7 @@
     <service
       android:name=".LinkService"
       android:exported="false"
-      android:foregroundServiceType="connectedDevice|microphone"
+      android:foregroundServiceType="connectedDevice|microphone|camera"
       android:stopWithTask="false" />
 
     <!--
