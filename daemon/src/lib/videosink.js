@@ -121,6 +121,22 @@ export const MODULE = 'v4l2loopback'
 export const INSTALL_HINT = `sudo pacman -S ${MODULE}-dkms`
 export const LOAD_HINT = `sudo modprobe ${MODULE} exclusive_caps=1 card_label="${CARD_LABEL}"`
 
+/**
+ * One value inside `gst-launch-1.0`'s `stream-properties` structure, spelled
+ * so that both parsers in front of it agree on where it ends.
+ *
+ * There are two, and this took a broken node on a real desktop to notice.
+ * `gst-launch-1.0` lexes its own argument first, splitting on unescaped
+ * whitespace and treating `(`…`)` as a type cast; only then does GstStructure
+ * parse what is left, where a value containing a space has to be quoted. So a
+ * description of *Omarchy Connect (phone)* needs the quotes **and** a
+ * backslash in front of every space, bracket and quote — anything less and the
+ * pipeline dies at run time with `erroneous pipeline: could not set property`,
+ * which is a camera that never appears and a switch that turns itself back
+ * off a second later.
+ */
+export const gstValue = (text) => `\\"${String(text).replace(/[\\"'()\s,;=]/g, (c) => `\\${c}`)}\\"`
+
 /** How often the last picture is sent again while the phone says nothing. */
 export const KEEPALIVE_MS = 1000
 
@@ -460,7 +476,8 @@ export class VideoSink {
           // `provide` is the mode that publishes a node other programs can
           // connect to, rather than playing into one that already exists.
           'mode=provide',
-          `stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=${NODE_NAME},node.description=${DESCRIPTION}`,
+          `stream-properties=props,media.class=Video/Source,media.role=Camera,node.name=${NODE_NAME},` +
+            `node.description=${gstValue(DESCRIPTION)}`,
         ],
         { env, stdio: ['pipe', 'ignore', 'pipe'] },
       )

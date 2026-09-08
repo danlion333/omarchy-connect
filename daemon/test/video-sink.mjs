@@ -36,18 +36,31 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import vm from 'node:vm'
 
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
 import { buildFrame } from '../src/lib/video.js'
-import { CARD_LABEL, DESCRIPTION, KEEPALIVE_MS, MARK, NODE_NAME } from '../src/lib/videosink.js'
+import { CARD_LABEL, DESCRIPTION, KEEPALIVE_MS, MARK, NODE_NAME, gstValue } from '../src/lib/videosink.js'
 
-const PORT = Number(process.env.PORT || 8829)
+const PORT = Number(process.env.PORT || 8837)
 const SECOND_PORT = PORT + 1
 const BLIND_PORT = PORT + 2
 const base = `http://127.0.0.1:${PORT}`
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)))
+const repo = path.dirname(root)
+
+/**
+ * The bar panel's own reading of all this, loaded the way `audio-panel.mjs`
+ * loads it. The panel has one window on the daemon — `status.json` — and a
+ * switch that can only be as honest as the sentence under it, and the
+ * sentence that matters here is the one nothing else on the desktop says: a
+ * camera that only PipeWire-aware programs can see.
+ */
+const modelSource = fs.readFileSync(path.join(repo, 'shell', 'Model.js'), 'utf8').replace(/^\.pragma .*$/m, '')
+const Model = vm.createContext({})
+vm.runInContext(modelSource, Model, { filename: 'shell/Model.js' })
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-video-sink-'))
 const local = () => localHeaders(path.join(sandbox, 'state'))
@@ -325,7 +338,16 @@ check(
 check(
   'under a name a person can find, and one a program can match on',
   new RegExp(`node\\.name=${NODE_NAME}`).test(args(gstLog)[0]) &&
-    args(gstLog)[0].includes(`node.description=${DESCRIPTION}`),
+    args(gstLog)[0].includes(`node.description=${gstValue(DESCRIPTION)}`),
+  args(gstLog)[0],
+)
+// The check that exists because the first desktop this ran on published
+// nothing at all: `gst-launch-1.0` lexes the argument before GstStructure
+// parses it, so an unescaped space in the description is a pipeline that dies
+// with "erroneous pipeline" and a switch that turns itself back off.
+check(
+  'with its spaces and brackets escaped, or gst-launch never gets as far as the structure',
+  args(gstLog)[0].includes(String.raw`node.description=\"Omarchy\ Connect\ \(phone\)\"`),
   args(gstLog)[0],
 )
 check(
@@ -392,6 +414,41 @@ check('and leaves nothing of ours running', marked().length === 0, marked().join
 const stopped = fs.statSync(node).size
 await wait(KEEPALIVE_MS + 300)
 check('so nothing is still being written where a camera used to be', fs.statSync(node).size === stopped, `${fs.statSync(node).size} vs ${stopped}`)
+
+/* ── what the bar panel makes of it ────────────────────────────────────── */
+
+const snapshot = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+check(
+  'the panel snapshot carries the camera switch at all',
+  Model.camera(snapshot).device.available === true && Model.cameraShown(Model.camera(snapshot)) === true,
+  JSON.stringify(Model.camera(snapshot).device),
+)
+check(
+  'and says, under a camera nobody would otherwise question, that half the desktop cannot see it',
+  /v4l2loopback/.test(Model.cameraText(Model.camera(snapshot), true)),
+  Model.cameraText(Model.camera(snapshot), true),
+)
+check(
+  'a stopped daemon is not a camera that is off, it is a daemon that is stopped',
+  Model.cameraText(Model.camera({}), false) === 'the daemon is stopped',
+  Model.cameraText(Model.camera({}), false),
+)
+check(
+  'a desktop with no ffmpeg draws no switch at all',
+  Model.cameraShown(Model.camera({ video: { device: { available: false, enabled: false } } })) === false,
+  Model.cameraText(Model.camera({ video: { device: { available: false, enabled: false } } }), true),
+)
+check(
+  'a loopback device is named in the line rather than described',
+  Model.cameraText(
+    Model.camera({ video: { streaming: true, device: { available: true, enabled: true, mode: 'v4l2', module: 'loaded', device: '/dev/video9' } } }),
+    true,
+  ) === 'on \u00b7 /dev/video9 \u00b7 the phone is filming',
+  Model.cameraText(
+    Model.camera({ video: { streaming: true, device: { available: true, enabled: true, mode: 'v4l2', module: 'loaded', device: '/dev/video9' } } }),
+    true,
+  ),
+)
 
 /* ── a daemon killed hard leaves an orphan; the next one clears it ─────── */
 

@@ -53,10 +53,23 @@ const typesFile = path.join(sandbox, 'types')
 fs.writeFileSync(clipFile, '')
 fs.writeFileSync(typesFile, 'text/plain\n')
 
-/** What the desktop copies, as far as the daemon can tell. */
+/**
+ * What the desktop copies, as far as the daemon can tell.
+ *
+ * Written beside and renamed into place, never written in place. A real
+ * clipboard hands over a whole selection or none of it; a file being filled
+ * with 33 MB can be read halfway through by the watcher polling every tenth of
+ * a second, and what the daemon then sees is a picture that is genuinely
+ * shorter than the one that was copied. That is not the behaviour under test —
+ * it made this suite fail one run in every few, under load, on a check about
+ * the spool — and `rename(2)` inside one directory is what makes the change
+ * happen all at once.
+ */
 function copy(content, types = 'text/plain\n') {
+  const staged = `${clipFile}.staged`
   fs.writeFileSync(typesFile, types)
-  fs.writeFileSync(clipFile, content)
+  fs.writeFileSync(staged, content)
+  fs.renameSync(staged, clipFile)
 }
 
 // `wl-copy` is the desktop copying text — it puts the clipboard back to text,
@@ -100,7 +113,8 @@ fs.writeFileSync(
 let daemon = null
 process.on('exit', () => {
   if (daemon && !daemon.killed) daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  // The daemon may still be finishing a write in there as it goes down.
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 daemon = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'start', '--port', String(PORT)], {
