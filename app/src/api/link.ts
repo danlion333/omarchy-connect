@@ -35,6 +35,7 @@ import { startReporting } from './telemetry'
 import { startPhoneMirror } from './phone'
 import { startLocateResponder } from './locate'
 import { NO_MIC, startMicResponder, type MicResponder, type MicState } from './mic'
+import { NO_VIDEO, startVideoResponder, type VideoResponder, type VideoState } from './video'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -155,6 +156,12 @@ export type LinkState = {
    * because a recording outlives the screen that started it.
    */
   mic: MicState
+  /**
+   * Whether the desktop is watching through this phone's camera, and why the
+   * last press did not do what it said. Kept here for the same reason `mic`
+   * is: a capture outlives the screen that started it.
+   */
+  video: VideoState
   client: ConnectClient | null
 }
 
@@ -181,6 +188,7 @@ const INITIAL: LinkState = {
   latencyMs: null,
   relocating: false,
   mic: NO_MIC,
+  video: NO_VIDEO,
   client: null,
 }
 
@@ -194,6 +202,8 @@ class Link {
   private unwire: (() => void) | null = null
   /** The live microphone responder, while there is a socket to offer down. */
   private microphone: MicResponder | null = null
+  /** The live camera responder, while there is a socket to offer down. */
+  private camera: VideoResponder | null = null
   private starting: Promise<void> | null = null
   private started = false
   private relocatingNow = false
@@ -399,6 +409,16 @@ class Link {
       microphone.stop()
       this.patch({ mic: NO_MIC })
     }
+    // The camera is the microphone's road with a lens on it, and it is started
+    // here for the same reason: the responder outlives every screen, so what it
+    // reports is what a card draws when somebody comes back to it.
+    const camera = startVideoResponder(client, (video) => this.patch({ video }))
+    this.camera = camera
+    const stopCamera = () => {
+      if (this.camera === camera) this.camera = null
+      camera.stop()
+      this.patch({ video: NO_VIDEO })
+    }
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -501,6 +521,7 @@ class Link {
       stopMirror()
       stopLocating()
       stopMicrophone()
+      stopCamera()
       offs.forEach((off) => off())
     }
   }
@@ -900,6 +921,17 @@ class Link {
       return this.patch({ mic: { ...this.state.mic, error: 'this phone is not connected to a desktop' } })
     }
     await this.microphone.offer()
+  }
+
+  /**
+   * Offer this phone's camera to the desktop, or take it back. One press
+   * either way, and the responder — not the screen — decides what that means.
+   */
+  async offerCamera(which: 'front' | 'back' = 'back'): Promise<void> {
+    if (!this.camera) {
+      return this.patch({ video: { ...this.state.video, error: 'this phone is not connected to a desktop' } })
+    }
+    await this.camera.offer(which)
   }
 
   /**

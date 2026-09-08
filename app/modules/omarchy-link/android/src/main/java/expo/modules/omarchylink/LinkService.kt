@@ -76,6 +76,19 @@ class LinkService : Service() {
     @Volatile
     private var microphone = false
 
+    /**
+     * Whether the ongoing notification is also claiming the camera.
+     *
+     * Everything said above about the microphone holds here one rung up: from
+     * Android 14 a foreground service that films has to declare the `camera`
+     * type, before the device is opened, and claiming it for the life of the
+     * service would lose the whole link on every start that is not eligible
+     * for it. So it goes on when `Camera` is about to open a lens and off
+     * when it gives it back.
+     */
+    @Volatile
+    private var camera = false
+
     fun start(context: Context) {
       val app = context.applicationContext
       ContextCompat.startForegroundService(app, Intent(app, LinkService::class.java))
@@ -98,6 +111,21 @@ class LinkService : Service() {
       microphone = wanted
       if (!running) return
       instance?.goForeground() ?: Trace.warn("mic.foreground.missing", "wanted" to wanted)
+    }
+
+    /**
+     * Claim, or give back, the camera half of the foreground service type.
+     *
+     * Never fatal, for the same reason `holdMicrophone` is not: a phone that
+     * refuses the claim is a phone where the capture stops when the screen
+     * goes off, which is worth a line in the log and is not worth losing the
+     * link over.
+     */
+    fun holdCamera(wanted: Boolean) {
+      if (camera == wanted) return
+      camera = wanted
+      if (!running) return
+      instance?.goForeground() ?: Trace.warn("camera.foreground.missing", "wanted" to wanted)
     }
 
     /** The live service, so `holdMicrophone` has something to re-enter with. */
@@ -257,25 +285,27 @@ class LinkService : Service() {
   }
 
   private fun goForeground() {
-    val types = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-      0
-    } else if (microphone && Mic.hasPermission(this)) {
-      ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-    } else {
-      ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    // Built up rather than chosen from a list of pairs: there are two optional
+    // claims now and a phone can be recording and filming at once, so an `if`
+    // ladder over every combination would be four branches that mean one rule.
+    var types = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) 0 else ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      if (microphone && Mic.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+      if (camera && Camera.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
     }
     try {
       ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this), types)
-      Trace.detail("service.foreground", "ok" to true, "mic" to microphone)
+      Trace.detail("service.foreground", "ok" to true, "mic" to microphone, "cam" to camera)
     } catch (error: Exception) {
-      // The microphone type is the one the system refuses on its own terms —
-      // a service that came up from the background is not eligible for it —
-      // and the link is worth far more than the claim. Drop it and go back to
-      // the type that has always worked; whatever asked for the microphone
-      // hears about it when the recording is cut short.
+      // The microphone and camera types are the ones the system refuses on
+      // its own terms — a service that came up from the background is not
+      // eligible for either — and the link is worth far more than the claim.
+      // Drop both and go back to the type that has always worked; whatever
+      // asked for them hears about it when the capture is cut short.
       if (types != ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-        Trace.fail("service.foreground.microphone.refused", error)
+        Trace.fail("service.foreground.capture.refused", error)
         microphone = false
+        camera = false
         return goForeground()
       }
       // Android 12 forbids starting a foreground service from the background
@@ -372,7 +402,9 @@ class LinkService : Service() {
     // A recording outliving the service that legitimises it is exactly what
     // the foreground service type exists to prevent, so it ends here too.
     microphone = false
+    camera = false
     Mic.stop()
+    Camera.stop()
     Announce.stop()
     LinkPrefs.forgetConnection(this)
     // Nothing is left that could carry an answer to the desktop, or fetch a

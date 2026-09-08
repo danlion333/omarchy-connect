@@ -70,9 +70,61 @@ export function isMicRunning() {
   return mic.running
 }
 
+/* ── the camera ─────────────────────────────────────────────────────── */
+
 /**
- * The native event emitter, reduced to what the responder subscribes to. A
- * suite fires one with `globalThis.__mic.listeners.onMicStopped({ error })`.
+ * The capture, as a switch and a list of calls — the microphone's stub with a
+ * lens on it. `globalThis.__camera` is what a suite sets to describe the
+ * handset it wants and reads to find out whether a lens was actually opened.
+ */
+const camera = (globalThis.__camera = {
+  supported: true,
+  permission: true,
+  grants: true,
+  asked: 0,
+  running: false,
+  starts: 0,
+  stops: 0,
+  /** The request the last `startCamera` was given. */
+  last: null,
+  /** Set to a message to make `startCamera` throw it. */
+  refuse: null,
+})
+
+export function cameraSupported() {
+  return camera.supported
+}
+
+export function hasCameraPermission() {
+  return camera.permission
+}
+
+export async function requestCameraPermission() {
+  camera.asked += 1
+  if (camera.grants) camera.permission = true
+  return camera.grants
+}
+
+export function startCamera(request) {
+  if (camera.refuse) throw new Error(camera.refuse)
+  camera.starts += 1
+  camera.running = true
+  camera.last = request
+}
+
+export function stopCamera() {
+  if (camera.running) camera.stops += 1
+  camera.running = false
+}
+
+export function isCameraRunning() {
+  return camera.running
+}
+
+/**
+ * The native event emitter, reduced to what the responders subscribe to. A
+ * suite fires one with `globalThis.__mic.listeners.onMicStopped({ error })`,
+ * and the camera's frames arrive through the same table.
  */
 export function linkService() {
   return {

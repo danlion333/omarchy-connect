@@ -35,8 +35,9 @@ k  = HKDF-SHA256(es || ee, salt = e_pub || f_pub, info = "omarchy-connect v1 cha
 The first 32 bytes of `k` encrypt phone → desktop, the last 32 desktop → phone.
 Every later frame is binary ChaCha20-Poly1305 over the JSON that v1 sent in the
 clear — or, phone → desktop only, over a chunk of live microphone (**Live
-audio** below). The two are told apart by the first four bytes of the
-plaintext: a JSON frame begins with `{`, an audio frame with `OCA1`.
+audio** below) or one picture from the camera (**Live video**). The three are
+told apart by the first four bytes of the plaintext: a JSON frame begins with
+`{`, an audio frame with `OCA1`, a video frame with `OCV1`.
 
 Three properties follow, and each is exercised by the test suites:
 
@@ -358,6 +359,21 @@ by refusing with a reason. `input.available` is false on a desktop whose
 `pactl` cannot reach a sound server, and an app that sees it false draws no
 switch, the same way it draws no dictation button without `voxtype`. See
 **Live audio**.
+
+### video
+
+| Method | Params | Returns |
+| --- | --- | --- |
+| `video.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its camera. |
+| `video.stopped` | `{ stream, error }` | `{ ok, path, bytes, frames, seconds, fps, dropped, gaps }` — the phone saying it has stopped. |
+| `video.status` | — | `{ streaming, stream, since, camera, width, height, fps, quality, path, bytes, frames, seconds, dropped, gaps }`. |
+| `video.offer` | `{ op, camera, width, height, fps, quality }` | `start`, `stop` or `status`. The phone offering its own camera instead of waiting to be asked. Answers with `video.status`'s shape plus the `path` the desktop opened, once the handset is actually filming. Refused on a `remote` socket. |
+
+The capability is
+`{ receive, encoding, width, height, fps, quality, maxSeconds, offer, cameras }`
+and says what the desktop will accept, never what the handset can send —
+whether *this* phone can open a lens is its own answer, and it gives it by
+starting or by refusing with a reason. See **Live video**.
 
 ### device
 
@@ -1912,6 +1928,100 @@ in a room nobody at this desktop can see.
 the screen off needs the foreground service to declare
 `foregroundServiceType="microphone"`, so `LinkService` claims that type
 alongside `connectedDevice` while — and only while — something is recording.
+
+## Live video
+
+The phone's camera, as pictures on the desktop while it is still pointing at
+something. **Live audio** is the road this was built from and almost every
+sentence there holds here, so what follows is the differences rather than a
+second copy of the reasoning.
+
+**The desktop asks.** `omarchy-connect camera start` posts to `/api/camera`,
+which puts an instruction on the `video` channel and holds the request open
+until the handset answers:
+
+```jsonc
+// desktop → phone, on the video channel
+{ "t": "ev", "event": "video", "data": { "action": "start", "id": "<uuid>", "stream": 1,
+  "camera": "back", "encoding": "jpeg", "width": 640, "height": 480, "fps": 15,
+  "quality": 70, "maxSeconds": 600 } }
+
+// phone → desktop, once its camera is actually open
+{ "t": "req", "id": 4, "method": "video.started", "params": { "id": "<uuid>", "ok": true } }
+// … or a refusal with the sentence the desktop prints
+{ "t": "req", "id": 4, "method": "video.started",
+  "params": { "id": "<uuid>", "ok": false, "error": "camera access is not granted on the phone" } }
+```
+
+`camera` is `"back"` or `"front"`. Everything else in the request is **clamped
+rather than refused** — 160–1920 wide, 120–1080 high, 1–30 fps, quality 1–100 —
+and the handset clamps again to the sizes its own sensor offers, picking the
+nearest by pixel count. A person typing `--fps 500` wants the fastest available,
+not an error. `video.offer` is the same switch pressed from the phone, exactly
+as `audio.offer` is, and is refused to a socket that arrived down a tunnel for
+exactly the reason a microphone is — with the volume up.
+
+**The pictures travel as binary frames**, inside the same encrypted channel and
+under the same counter nonce as everything else:
+
+```
+"OCV1" || stream:uint32be || seq:uint32be || jpeg
+  4              4                4           n
+```
+
+The header is `OCA1`'s, byte for byte, and the magics differ in one byte —
+which is why `app/test/videoframe.mjs` asserts the three-way exclusion between
+JSON, sound and pictures rather than leaving it to be noticed. `stream` and
+`seq` mean what they mean for sound. One frame at 640×480 and quality 70 is
+25–40 KB on the handset this was measured on, so fifteen a second is roughly
+half a megabyte a second — an order of magnitude past the microphone's 32 KB/s,
+and still an order under the 1 MiB `maxPayload` per frame.
+
+A **hole in `seq` is a frame that was meant to go and could not**, and it is
+counted. A frame the phone chose not to send because the rate asked for is
+lower than the sensor's does **not** move `seq`: the desktop's gap count is
+about the link, not about the throttle.
+
+Frames are answered with nothing, and a frame the desktop refuses is dropped in
+silence — one for a finished stream, one larger than **512 KB**, one that does
+not begin with the `FFD8` marker every JPEG begins with. That last check is
+what keeps one bad frame from costing the rest of the file: an MJPEG stream is
+only readable because a decoder can resynchronise on that marker.
+
+**What the desktop does with them.** Each stream is appended to a `.mjpeg` file
+in `~/.cache/omarchy-connect/video/` — concatenated JPEGs and nothing else, so
+`ffprobe -f mjpeg`, `ffplay` and `mpv` read it with no header and no container.
+That is also why a capture killed mid-frame needs no repair: there is nothing
+to patch, and every finished frame before the truncated one still decodes. The
+cache and not the inbox, and swept — ten files, a day.
+`daemon/src/plugins/video.js` also publishes the frames as they land, which is
+the seam a desktop video sink will sit on. **There is no `/dev/video` node and
+no `v4l2loopback` here**; that is its own question and its own issue.
+
+**Backpressure is a ceiling in whole frames.** The desktop holds at most 1 MB
+in front of a sink that is not keeping up and drops the **oldest whole frame**
+to make room — never half of one, because half a JPEG is not half a picture.
+What was dropped is counted in frames and reported by `video.status` and by
+`omarchy-connect camera stop`, beside `gaps` and the `fps` the capture actually
+achieved.
+
+**Everything ends the stream, and all of them end it cleanly.**
+`omarchy-connect camera stop`, the phone saying `video.stopped`, the socket
+dying, the daemon stopping, or the **10-minute** ceiling — shorter than audio's
+half hour, because a camera left on is a worse thing to leave on.
+
+**On the handset** this is Camera2 with an `ImageReader` in the link module
+rather than `expo-camera`, which draws a preview on a screen this road does not
+have. The reader takes `YUV_420_888` — the streaming format every Camera2
+device supports — and `YuvImage.compressToJpeg` encodes it, because an
+`ImageFormat.JPEG` reader is the still-capture path and takes hundreds of
+milliseconds a frame. `acquireLatestImage` throws away everything but the
+newest picture, which is the backpressure the phone end wants: when the encode
+or the socket falls behind, it skips to now rather than sending history.
+Filming with the screen off needs the foreground service to declare
+`foregroundServiceType="camera"` and hold `FOREGROUND_SERVICE_CAMERA`, so
+`LinkService` claims that type alongside `connectedDevice` while — and only
+while — something is filming.
 
 ## File transfer
 

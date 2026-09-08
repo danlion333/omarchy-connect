@@ -58,6 +58,8 @@ class OmarchyLinkModule : Module() {
       "onDesktopAnnounce",
       "onMicChunk",
       "onMicStopped",
+      "onCameraFrame",
+      "onCameraStopped",
     )
 
     /**
@@ -121,6 +123,25 @@ class OmarchyLinkModule : Module() {
           /* nothing listening; the desktop's own socket tells it soon enough */
         }
       }
+      // Fifteen of these a second while the desktop is watching, and each one
+      // is tens of kilobytes rather than the microphone's hundreds of bytes.
+      // Same bargain otherwise: set here so `Camera` knows nothing about
+      // React, and null when the runtime goes away, which the read side reads
+      // as a frame with nowhere to go.
+      Camera.onFrame = { jpeg, seq ->
+        try {
+          this@OmarchyLinkModule.sendEvent("onCameraFrame", mapOf("jpeg" to jpeg, "seq" to seq))
+        } catch (error: Exception) {
+          /* the runtime went away mid-frame; the next one finds onFrame null */
+        }
+      }
+      Camera.onStopped = { reason ->
+        try {
+          this@OmarchyLinkModule.sendEvent("onCameraStopped", mapOf("error" to reason))
+        } catch (error: Exception) {
+          /* nothing listening; the desktop's own socket tells it soon enough */
+        }
+      }
       Locator.onFound = {
         try {
           this@OmarchyLinkModule.sendEvent("onLocateFound", emptyMap<String, Any?>())
@@ -141,6 +162,9 @@ class OmarchyLinkModule : Module() {
       Mic.onChunk = null
       Mic.onStopped = null
       Mic.stop()
+      Camera.onFrame = null
+      Camera.onStopped = null
+      Camera.stop()
       Locator.onFound = null
       pendingShare = null
       unwatchNetwork()
@@ -307,6 +331,46 @@ class OmarchyLinkModule : Module() {
         appContext.permissions,
         promise,
         Manifest.permission.RECORD_AUDIO,
+      )
+    }
+
+    /* ── the camera ───────────────────────────────────────────────────── */
+
+    /**
+     * Open the camera and start emitting `onCameraFrame`.
+     *
+     * Answers false rather than throwing, for the same reason `startMic` does:
+     * every particular reason is already a line in logcat and none of them
+     * changes what the phone tells the desktop — it could not look. Blocks
+     * while Camera2 opens the device and configures the session, which is why
+     * the desktop's fifteen seconds are comfortably wider than the eight this
+     * waits.
+     */
+    Function("startCamera") { facing: String, width: Int, height: Int, fps: Int, quality: Int ->
+      Camera.start(context, facing, width, height, fps, quality)
+    }
+
+    /** Give the camera back. Safe when nothing is filming. */
+    Function("stopCamera") { Camera.stop() }
+
+    /** Whether this phone is filming right now. */
+    Function("isCameraRunning") { Camera.isRunning }
+
+    /** Whether CAMERA is granted, without asking for it. */
+    Function("hasCameraPermission") { Camera.hasPermission(context) }
+
+    /**
+     * Ask for it. The manifest has declared `CAMERA` since the pairing scanner
+     * existed; what is new is that this module, rather than `expo-camera`, is
+     * the one that needs it — and a desktop asking for a lens while the app is
+     * in a pocket is exactly the case where the answer has to come back as a
+     * refusal rather than as a dialog nobody sees.
+     */
+    AsyncFunction("requestCameraPermissionAsync") { promise: Promise ->
+      Permissions.askForPermissionsWithPermissionsManager(
+        appContext.permissions,
+        promise,
+        Manifest.permission.CAMERA,
       )
     }
 
