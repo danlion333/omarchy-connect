@@ -78,7 +78,7 @@ const stop = () => {
 process.on('exit', () => {
   stop()
   tailscaled.close()
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 function start() {

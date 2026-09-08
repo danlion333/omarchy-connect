@@ -184,7 +184,7 @@ let deaf = null
 process.on('exit', () => {
   daemon.kill('SIGKILL')
   deaf?.kill('SIGKILL')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))

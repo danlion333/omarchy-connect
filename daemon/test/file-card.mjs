@@ -31,7 +31,7 @@ import path from 'node:path'
 import { check, done } from '../../tools/test-harness.mjs'
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-file-card-'))
-process.on('exit', () => fs.rmSync(sandbox, { recursive: true, force: true }))
+process.on('exit', () => fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
 
 const bin = path.join(sandbox, 'bin')
 fs.mkdirSync(bin, { recursive: true })

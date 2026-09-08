@@ -141,7 +141,7 @@ check('a missing config is written fresh', fresh.exists === true && fresh.port =
 const daemon = spawn(process.execPath, [entry, 'start', '--port', String(PORT)], { env, stdio: ['ignore', 'ignore', 'inherit'] })
 process.on('exit', () => {
   daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 for (let i = 0; i < 40; i += 1) {

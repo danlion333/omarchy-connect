@@ -212,7 +212,7 @@ process.on('exit', () => {
       /* gone */
     }
   }
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 /** Every process on this machine still carrying the sink's mark. */

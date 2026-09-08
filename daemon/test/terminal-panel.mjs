@@ -162,7 +162,7 @@ process.on('exit', () => {
   } catch {
     /* there may be no server to kill, which is the tidy case */
   }
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 async function waitForDaemon() {

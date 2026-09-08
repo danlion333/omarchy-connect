@@ -58,7 +58,7 @@ server.on('connection', (ws) => {
 })
 process.on('exit', () => {
   server.close()
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const client = new ConnectClient({

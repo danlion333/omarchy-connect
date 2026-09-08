@@ -173,5 +173,5 @@ try {
 } catch {
   /* there was no server to kill */
 }
-fs.rmSync(sandbox, { recursive: true, force: true })
+fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 done()

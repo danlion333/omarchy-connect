@@ -54,7 +54,7 @@ process.on('exit', () => {
   } catch {
     /* the directory may already be gone */
   }
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 for (let i = 0; i < 40; i += 1) {
