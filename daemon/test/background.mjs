@@ -18,7 +18,7 @@ import path from 'node:path'
 import { check, done } from '../../tools/test-harness.mjs'
 
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), 'omarchy-connect-background-'))
-process.on('exit', () => fs.rmSync(sandbox, { recursive: true, force: true }))
+process.on('exit', () => fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }))
 process.env.XDG_STATE_HOME = sandbox
 
 const current = path.join(sandbox, 'omarchy', 'current')

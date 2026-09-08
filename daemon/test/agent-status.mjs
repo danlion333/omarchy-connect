@@ -370,7 +370,7 @@ check(
 
 /* ── done ──────────────────────────────────────────────────────────────── */
 
-fs.rmSync(sandbox, { recursive: true, force: true })
+fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

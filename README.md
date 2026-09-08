@@ -917,9 +917,55 @@ handshake and the app greys out whatever is missing.
 | Scroll wheel (`input.scroll`) | `ydotool` (`pacman -S ydotool`). Without it, scrolling falls back to arrow keys and says so. |
 | Notification history (`notifications.*`, protocol only) | Omarchy's notification history in `~/.local/state/omarchy/` |
 | Screenshot, themes, OSD | the `omarchy-*` helpers |
+| The phone as a camera (PipeWire) | `ffmpeg` and `gst-plugin-pipewire` — both already on an Omarchy desktop. This is the camera a browser gets through the portal. |
+| The phone as a camera (`/dev/videoN`) | `v4l2loopback`, loaded by you: `sudo pacman -S v4l2loopback-dkms`, then `sudo modprobe v4l2loopback exclusive_caps=1 card_label="Omarchy Connect (phone)"`. Without it the PipeWire node still works and `cam status` says so — but Zoom and Chromium, which read `/dev/video*`, see nothing. |
 | Dictating to an agent | `voxtype` ([voxtype.io](https://voxtype.io)) and `ffmpeg`. The phone hides the microphone unless the desktop reports both. |
 | Pairing QR | `qrencode` |
 | Browsing for a file to send (`send --pick`) | the XDG desktop portal (`xdg-desktop-portal` plus a backend) — the file chooser a browser opens. Without one, pass the path: `omarchy-connect send <file>`. |
+
+### The phone as a camera
+
+The camera road has two halves. `omarchy-connect camera start` films into an
+MJPEG in the cache, which is a file; this is the other one:
+
+```bash
+omarchy-connect cam device on      # and `cam status`, and `cam device off`
+```
+
+It publishes the handset as a camera the rest of the desktop can pick — the
+same switch is on the panel under **Settings**, beside the microphone's — and
+then asks the phone to open its lens. Nothing takes anybody's default camera:
+this appears in the list, it does not push the webcam out of it.
+
+Which programs can see it depends on which of the two camera lists it lands
+in, and that is not something the daemon gets to decide:
+
+- **PipeWire.** Always available, nothing to install. A node with
+  `media.role=Camera`, which is what a browser gets when it asks the portal
+  for a camera. Firefox needs `media.webrtc.camera.allow-pipewire` in
+  `about:config`; Chrome has had it behind a flag since 127.
+- **`/dev/videoN`.** What Zoom, Chromium and OBS enumerate, and the only way
+  to invent one is a kernel module:
+
+  ```bash
+  sudo pacman -S v4l2loopback-dkms
+  sudo modprobe v4l2loopback exclusive_caps=1 card_label="Omarchy Connect (phone)"
+  ```
+
+  `exclusive_caps=1` is what makes Chromium and Zoom accept the device at all,
+  and the `card_label` is what the daemon looks for — it is also the name
+  `v4l2-ctl --list-devices` will show. To keep it across reboots, put
+  `v4l2loopback` in `/etc/modules-load.d/` and the options in
+  `/etc/modprobe.d/`. You may need to be in the `video` group to write to it.
+
+The daemon does neither of those for you. It has no root, does not ask for
+any, and `cam status` prints the exact line to run when the module is missing.
+`--pipewire` or `--v4l2` pick a road by hand; by default it takes the loopback
+device when there is one, because more programs can see it.
+
+A phone that goes quiet — locked, out of range, stream stopped — leaves the
+picture frozen rather than the camera disappearing, which is the failure a
+person in a call already knows how to read.
 
 ### Firewall
 

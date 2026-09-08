@@ -622,6 +622,61 @@ function micDetail(value, now) {
   return name === "" ? elapsed : elapsed + " \u00b7 " + name
 }
 
+/* ── the phone as a camera ─────────────────────────────────────────────── */
+
+/**
+ * The camera half of the status file, with every field defaulted.
+ *
+ * The same two facts the microphone keeps apart, kept apart again for the same
+ * reason: `streaming` is a lens open right now, writing an MJPEG into the
+ * cache, and `device.enabled` is whether this desktop publishes that picture
+ * as a camera every program can pick. A phone can be filming with no device
+ * published, and a device can sit there frozen with the handset asleep.
+ *
+ * `module` is the third fact and it is the one that decides how much of the
+ * desktop can see this at all: without `v4l2loopback` there is a PipeWire node
+ * and nothing in `/dev`, which is a working camera for a browser and no camera
+ * whatsoever for Zoom. A panel that did not say so would be reporting success
+ * to somebody staring at an empty list.
+ */
+function camera(status) {
+  var value = isObject(status) && isObject(status.video) ? status.video : {}
+  var device = isObject(value.device) ? value.device : {}
+  return {
+    streaming: value.streaming === true,
+    since: num(value.since, 0),
+    frames: num(value.frames, 0),
+    device: {
+      available: device.available === true,
+      enabled: device.enabled === true,
+      mode: typeof device.mode === "string" ? device.mode : "",
+      module: typeof device.module === "string" ? device.module : "missing",
+      path: typeof device.device === "string" ? device.device : "",
+      description: typeof device.description === "string" ? device.description : "Omarchy Connect (phone)"
+    }
+  }
+}
+
+/** The switch is drawn where it could work, and wherever it already has. */
+function cameraShown(value) {
+  return value.device.available || value.device.enabled
+}
+
+/** The line under the switch: what the phone-as-camera is doing right now. */
+function cameraText(value, running) {
+  if (!running) return "the daemon is stopped"
+  if (!value.device.enabled) {
+    if (!value.device.available) return "this desktop has no ffmpeg"
+    if (value.device.module !== "loaded") return "off \u00b7 PipeWire apps only until v4l2loopback is loaded"
+    return "off \u00b7 no phone in this machine's camera list"
+  }
+  var where = value.device.mode === "v4l2" && value.device.path !== ""
+    ? value.device.path
+    : "\"" + value.device.description + "\""
+  if (value.streaming) return "on \u00b7 " + where + " \u00b7 the phone is filming"
+  return "on \u00b7 " + where + " \u00b7 the picture is frozen — nothing is filming into it"
+}
+
 /* ── coding agents ────────────────────────────────────────────────────── */
 
 /**

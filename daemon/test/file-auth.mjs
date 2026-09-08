@@ -58,7 +58,7 @@ fs.writeFileSync(
 let daemon = null
 const stop = () => {
   if (daemon && !daemon.killed) daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 }
 process.on('exit', stop)
 

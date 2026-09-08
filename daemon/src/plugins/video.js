@@ -12,6 +12,13 @@ import {
   pathFor,
   readFormat,
 } from '../lib/video.js'
+import {
+  DESCRIPTION as SINK_DESCRIPTION,
+  NODE_NAME,
+  VideoSink,
+  available as sinkAvailable,
+  reap,
+} from '../lib/videosink.js'
 
 /**
  * Watching through the phone's camera from the desktop.
@@ -28,15 +35,19 @@ import {
  * being apologised for: there is one paired phone, and a second concurrent
  * capture would be two views of the same room from the same lens.
  *
- * ## What this deliberately is not
+ * ## The desktop's camera
  *
- * **Not a webcam.** There is no `/dev/video`, no `v4l2loopback`, no PipeWire
- * node — a desktop sink is its own issue and its own set of questions about
- * loopback modules and who is allowed to load them. `onFrame` is the seam that
- * one will sit on, and the MJPEG file in the cache is simply the first
- * consumer written against it, exactly as the WAV was for sound. That ordering
- * is on purpose: a road with one honest consumer is a road that can be proved
- * to work before anything harder is built on it.
+ * The second consumer is the point of the whole road: `lib/videosink.js`
+ * turns those same frames into a camera the rest of the system can pick, so
+ * Meet, OBS, Firefox or Zoom show *Omarchy Connect (phone)* and a desktop
+ * with no webcam has one. It is a toggle rather than a consequence of
+ * streaming, for the reason `plugins/audio.js` gives about its input: a
+ * program picks its camera before anybody points it at anything, so the
+ * device has to exist as its own decision. `onFrame` is the seam it sits on,
+ * and the MJPEG file in the cache is simply the first consumer written
+ * against that seam, exactly as the WAV was for sound.
+ *
+ * ## What this deliberately is not
  *
  * **Not a switch anybody can flip from off the network.** The instruction goes
  * out on the `video` channel, and like `audio` and `phone` that channel is
@@ -60,8 +71,13 @@ let live = null
 let asked = null
 /** Handed out ascending so a late frame from a finished run is recognisable. */
 let nextStream = 1
-/** Whoever wants the pictures as they land. A desktop sink will be one. */
+/** Whoever wants the pictures as they land. The desktop camera is one. */
 const listeners = new Set()
+
+/** The desktop's camera, when it is switched on. Never more than one. */
+let sink = null
+/** Undo for the `onFrame` subscription that feeds it. */
+let unfeed = null
 
 const format = () => ({ encoding: 'jpeg', width: WIDTH, height: HEIGHT, fps: FPS, quality: QUALITY })
 
@@ -77,7 +93,7 @@ const format = () => ({ encoding: 'jpeg', width: WIDTH, height: HEIGHT, fps: FPS
 const changed = () => bus?.emit('video.state')
 
 export function summary() {
-  if (!live) return { streaming: false }
+  if (!live) return { streaming: false, device: deviceSummary() }
   return {
     streaming: true,
     stream: live.stream,
@@ -85,6 +101,125 @@ export function summary() {
     camera: live.camera,
     ...live.format,
     ...live.capture.summary(),
+    device: deviceSummary(),
+  }
+}
+
+/* ── the phone as this desktop's camera ────────────────────────── */
+
+/**
+ * What the camera toggle is doing, whether or not anything is streaming.
+ *
+ * Two facts kept apart the way `inputSummary` and `streaming` are kept apart
+ * in `plugins/audio.js`, because they fail separately: the device can be
+ * published while the phone is asleep, and the phone can be filming into a
+ * cache file with no device published at all. `hint` is the third: a desktop
+ * that cannot do the `/dev/video` half says which command would fix that,
+ * rather than offering a switch that silently does the other half instead.
+ */
+export function deviceSummary() {
+  const state = sinkAvailable()
+  return {
+    node: NODE_NAME,
+    description: SINK_DESCRIPTION,
+    ...state,
+    ...(sink ? sink.summary() : { enabled: false }),
+  }
+}
+
+/** Is the phone currently published as a camera here? */
+export const deviceEnabled = () => Boolean(sink?.running)
+
+/**
+ * Switch the desktop camera on or off.
+ *
+ * Idempotent in both directions, which is what makes it safe as a toggle a
+ * panel can press twice: turning on something already on answers with the
+ * camera that is already there rather than starting a second node beside it.
+ */
+export function setDevice(on, { mode = 'auto' } = {}) {
+  if (on) {
+    if (sink?.running) return deviceSummary()
+    const state = sinkAvailable()
+    if (!state.available) throw new Error(state.hint || 'this desktop cannot publish a camera')
+    const started = new VideoSink({
+      mode,
+      // Whatever the live stream actually negotiated, so a phone that clamped
+      // 1280×720 down to what its lens can do is not published at a size it
+      // never sends. Nothing streaming yet means the format the next request
+      // will ask for, which is the same default the phone clamps towards.
+      width: live?.format?.width ?? WIDTH,
+      height: live?.format?.height ?? HEIGHT,
+      fps: live?.format?.fps ?? FPS,
+      // A child that died on its own — somebody killed the node, PipeWire went
+      // away, the loopback device was unloaded underneath it. The switch has
+      // to go back to where the truth is, or the panel offers an "off" for a
+      // camera that is already gone.
+      onGone: () => {
+        sink = null
+        unfeed?.()
+        unfeed = null
+        changed()
+      },
+    })
+    started.start()
+    sink = started
+    // Subscribed only while the camera is published, so a capture running for
+    // the file alone costs nothing extra when the switch is off.
+    unfeed = onFrame((jpeg) => started.write(jpeg))
+    changed()
+    return deviceSummary()
+  }
+  unfeed?.()
+  unfeed = null
+  const was = sink ? sink.stop() : { enabled: false }
+  sink = null
+  if (was.enabled) log.info('the phone is no longer a camera on this desktop')
+  changed()
+  return deviceSummary()
+}
+
+/**
+ * Did this toggle start the stream that is running? Only then does turning
+ * the camera off stop it — somebody who ran `camera start` for the recording
+ * and then published the device has not asked for their recording to end.
+ */
+let startedTheStream = false
+
+/**
+ * The toggle as a person means it: a camera on this desktop, with a picture
+ * in it.
+ *
+ * `setDevice` is the mechanism and this is the intent. Turning on publishes
+ * the device and *then* asks the handset to film, in that order and for
+ * `requestInput`'s reason: the device has to exist whether or not the phone
+ * answers, because a camera a program can select and see frozen is a better
+ * outcome than no camera and an error. A handset that refuses is reported
+ * beside a device that is nonetheless there.
+ */
+export async function requestDevice(op = 'status', { mode = 'auto', ...wanted } = {}) {
+  const action = String(op || 'status').toLowerCase()
+  if (action === 'status') return deviceSummary()
+  if (!['on', 'off', 'start', 'stop', 'enable', 'disable'].includes(action)) {
+    throw new Error(`unknown camera device action: ${op}`)
+  }
+
+  if (['off', 'stop', 'disable'].includes(action)) {
+    const stopping = startedTheStream && live ? requestVideo({ op: 'stop' }).outcome.catch(() => null) : null
+    startedTheStream = false
+    await stopping
+    return setDevice(false)
+  }
+
+  const state = setDevice(true, { mode })
+  if (live || asked) return { ...state, streaming: Boolean(live) }
+  try {
+    await requestVideo({ op: 'start', ...wanted }).outcome
+    startedTheStream = true
+    return { ...deviceSummary(), streaming: true }
+  } catch (err) {
+    // The switch worked; the handset did not answer it. Both facts go back.
+    return { ...deviceSummary(), streaming: false, phone: err.message }
   }
 }
 
@@ -225,10 +360,29 @@ export default {
 
   start(eventBus) {
     bus = eventBus
+    // Anything a daemon that was killed rather than stopped left publishing.
+    // Here rather than in `setDevice`, because an orphaned child is a camera
+    // in every picker on this machine whether or not anybody ever flips this
+    // desktop's switch again — `pipesource.js` reaps a stale module for the
+    // same reason, one layer down.
+    try {
+      reap()
+    } catch (err) {
+      log.debug('could not look for leftover camera processes:', err.message)
+    }
   },
 
   stop() {
+    startedTheStream = false
     if (live) void finish('the daemon is stopping', { tell: false })
+    // Before the listeners are cleared, and synchronously: a child left
+    // running by a daemon on its way out is a camera in every picker on this
+    // machine, showing whatever the last frame happened to be.
+    try {
+      if (sink) setDevice(false)
+    } catch (err) {
+      log.warn(`could not take the phone camera down: ${err.message}`)
+    }
     asked = null
     listeners.clear()
     bus = null
@@ -247,6 +401,11 @@ export default {
       // answers `unknown method`.
       offer: true,
       cameras: ['back', 'front'],
+      // Whether this desktop can turn the stream into a camera the rest of
+      // the system sees. False on a machine with no ffmpeg, and the app draws
+      // no button for it — the same bargain `audio.input` makes about
+      // pipewire-pulse.
+      device: deviceSummary(),
     }
   },
 

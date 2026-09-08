@@ -61,6 +61,7 @@ import {
 } from './plugins/audio.js'
 import {
   requestVideo,
+  requestDevice as requestVideoDevice,
   feed as feedVideo,
   hangUp as hangUpVideo,
   summary as videoSummary,
@@ -767,6 +768,12 @@ export function createServer({ port, version = '0.1.0' } = {}) {
      * is filming rather than that a message went into the dark. `value` is the
      * request — which lens, and how big and how fast — and everything in it is
      * clamped rather than refused (`lib/video.js`).
+     *
+     * `op: "device"` is the other half — not a capture at all, but whether
+     * this desktop publishes the phone as a camera the whole system can pick.
+     * It is `/api/mic`'s `op: "input"` pointed at pictures, and it answers the
+     * same way: with what the switch now is, including a camera that is
+     * published and frozen because the handset never woke up.
      */
     if (req.method === 'POST' && url.pathname === '/api/camera') {
       if (!localOnly(req, res)) return undefined
@@ -777,8 +784,16 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       })
       req.on('end', async () => {
         try {
-          const { op = 'status', value = {} } = JSON.parse(body || '{}')
+          const { op = 'status', value = {}, mode = 'auto' } = JSON.parse(body || '{}')
           if (op === 'status') return json(res, 200, { ok: true, video: videoSummary() })
+          // The switch takes a word rather than an object, exactly as
+          // `/api/mic`'s does, so that one shape covers both halves of both
+          // roads and nobody has to remember which one nests.
+          if (op === 'device') {
+            const device = await requestVideoDevice(typeof value === 'string' ? value : 'status', { mode })
+            publishState()
+            return json(res, 200, { ok: true, video: { ...videoSummary(), device } })
+          }
           const { outcome } = requestVideo({ op, ...(value && typeof value === 'object' ? value : {}) })
           const result = await outcome
           return json(res, 200, { ok: true, video: { ...videoSummary(), ...result } })

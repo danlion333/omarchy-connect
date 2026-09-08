@@ -142,6 +142,16 @@ Item {
   readonly property bool speakerPlaying: audio.output.playing
   readonly property bool speakerAvailable: Model.speakerShown(audio)
 
+  // And the phone's *camera*, published as a camera the rest of the desktop
+  // can pick. Its own properties again, and not folded into the audio ones,
+  // because it fails on its own terms — a desktop can have pipewire-pulse and
+  // no ffmpeg, or every tool it needs and no v4l2loopback, and each of those
+  // is a different sentence under a different switch.
+  readonly property var camera: Model.camera(status)
+  readonly property bool cameraStreaming: camera.streaming
+  readonly property bool cameraEnabled: camera.device.enabled
+  readonly property bool cameraAvailable: Model.cameraShown(camera)
+
   // Whether the phone may reach this desktop from off its own network, and
   // what it would come in over. Switchable from here for the same reason the
   // agent switch is: the daemon applies it live, so the link survives it.
@@ -609,6 +619,23 @@ Item {
 
   function disableSpeaker() {
     invoke(Model.command(root.status, ["speaker", "off"]), "Taking the phone out of the output list…")
+  }
+
+  /**
+   * The phone in this machine's camera list.
+   *
+   * Worth waiting on for the microphone's reason exactly: turning it on
+   * publishes a camera *and* asks the handset to open its lens, and either
+   * half can fail in a way the person who just clicked needs to read — no
+   * ffmpeg here, a phone asleep in another room, a camera permission the
+   * handset has never been granted.
+   */
+  function enableCamera() {
+    invoke(Model.command(root.status, ["cam", "device", "on"]), "Offering the phone as a camera…")
+  }
+
+  function disableCamera() {
+    invoke(Model.command(root.status, ["cam", "device", "off"]), "Taking the phone out of the camera list…")
   }
 
   function enableRemote() {

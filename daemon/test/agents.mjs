@@ -232,7 +232,7 @@ const standIn = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 900000)'], 
 process.on('exit', () => {
   daemon?.kill('SIGTERM')
   standIn.kill()
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 /**

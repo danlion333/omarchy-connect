@@ -170,7 +170,7 @@ const daemon = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.
 
 process.on('exit', () => {
   daemon.kill('SIGKILL')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))

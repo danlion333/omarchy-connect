@@ -64,7 +64,7 @@ const daemon = spawn(
 )
 process.on('exit', () => {
   daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 for (let i = 0; i < 40; i += 1) {

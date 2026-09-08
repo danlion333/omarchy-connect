@@ -195,7 +195,7 @@ process.on('exit', () => {
   } catch {
     /* nothing left running */
   }
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms))

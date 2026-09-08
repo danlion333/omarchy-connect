@@ -39,7 +39,7 @@ const check = (name, ok, detail = '') => {
 let daemon = null
 process.on('exit', () => {
   daemon?.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const cli = (...args) => execFileSync(process.execPath, [entry, ...args], { env, encoding: 'utf8' })

@@ -46,7 +46,7 @@ const daemon = spawn(process.execPath, ['daemon/bin/omarchy-connect.js', 'start'
 })
 process.on('exit', () => {
   daemon.kill('SIGTERM')
-  fs.rmSync(sandbox, { recursive: true, force: true })
+  fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 })
 
 const base = `http://127.0.0.1:${PORT}`

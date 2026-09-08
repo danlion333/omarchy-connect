@@ -268,6 +268,17 @@ Panel {
     else bridge.disableSpeaker()
   }
 
+  /**
+   * The camera switch. No confirmation, for the speaker's reason — what it
+   * does is visible the moment it is done — and because the lens does not
+   * open until the handset agrees to open it, which is a question asked on
+   * the phone rather than here.
+   */
+  function requestCamera(on) {
+    if (on) bridge.enableCamera()
+    else bridge.disableCamera()
+  }
+
   function runAction(key) {
     if (key === "pair") bridge.pair()
     else if (key === "unpair") bridge.unpair(bridge.device)
@@ -309,6 +320,7 @@ Panel {
       if (bridge.remoteAvailable) list.push("remote")
       if (bridge.micAvailable) list.push("mic")
       if (bridge.speakerAvailable) list.push("speaker")
+      if (bridge.cameraAvailable) list.push("camera")
       list.push("autostart")
     }
     return list
@@ -359,6 +371,7 @@ Panel {
     else if (focusSection === "remote") requestRemote(!bridge.remoteEnabled)
     else if (focusSection === "mic") requestMic(!bridge.micEnabled)
     else if (focusSection === "speaker") requestSpeaker(!bridge.speakerEnabled)
+    else if (focusSection === "camera") requestCamera(!bridge.cameraEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
   }
 
@@ -1468,6 +1481,27 @@ Panel {
               accent: bridge.speakerEnabled && !bridge.speakerPlaying ? root.urgent : root.foreground
               fontFamily: root.fontFamily
               onClicked: root.requestSpeaker(!bridge.speakerEnabled)
+            }
+
+            // The same bargain again, for pictures. Hidden on a desktop with
+            // no ffmpeg to decode them, kept once the camera is published so
+            // the switch that put a lens in somebody's meeting is the switch
+            // that takes it back out.
+            Toggle {
+              visible: bridge.cameraAvailable
+              width: parent.width
+              label: bridge.cameraEnabled ? "The phone is this desktop's camera" : "Use the phone as this desktop's camera"
+              description: (bridge.cameraEnabled ? "󰕧  " : "󰕨  ") + Model.cameraText(bridge.camera, bridge.running)
+              checked: bridge.cameraEnabled
+              hasCursor: root.cursorActive && root.focusSection === "camera"
+              onHovered: function (on) { if (on) root.setCursor("camera") }
+              foreground: root.foreground
+              // A lens that is open in this room earns the same colour a live
+              // microphone does, and for the same reason: it is the state
+              // somebody most needs to notice they left on.
+              accent: bridge.cameraStreaming ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestCamera(!bridge.cameraEnabled)
             }
 
             // Reading works without hooks; knowing that an agent is *stuck*

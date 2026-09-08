@@ -168,5 +168,5 @@ check(
 )
 
 ear.close()
-fs.rmSync(sandbox, { recursive: true, force: true })
+fs.rmSync(sandbox, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
 done('desktop announcement checks')

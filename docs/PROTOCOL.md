@@ -378,10 +378,21 @@ switch, the same way it draws no dictation button without `voxtype`. See
 | `video.offer` | `{ op, camera, width, height, fps, quality }` | `start`, `stop` or `status`. The phone offering its own camera instead of waiting to be asked. Answers with `video.status`'s shape plus the `path` the desktop opened, once the handset is actually filming. Refused on a `remote` socket. |
 
 The capability is
-`{ receive, encoding, width, height, fps, quality, maxSeconds, offer, cameras }`
-and says what the desktop will accept, never what the handset can send —
+`{ receive, encoding, width, height, fps, quality, maxSeconds, offer, cameras,
+device }` and says what the desktop will accept, never what the handset can
+send —
 whether *this* phone can open a lens is its own answer, and it gives it by
 starting or by refusing with a reason. See **Live video**.
+
+`device` is the desktop's own half: whether it can publish those frames as a
+camera the rest of the machine can pick, and what it is doing about that right
+now — `{ available, modes, module, hint, node, description, enabled, mode,
+device, since, width, height, fps, frames, bytes, dropped, repeated }`. It is
+`audio`'s `input` for pictures, and it fails on its own terms: `available` is
+false on a desktop with no `ffmpeg`, `modes` says which of the two camera lists
+this machine can appear in, and `module` (`missing`, `installed`, `loaded`)
+with `hint` is the `v4l2loopback` sentence a person has to read before Zoom
+will see anything. See **The phone as a camera**.
 
 ### device
 
@@ -2191,8 +2202,7 @@ That is also why a capture killed mid-frame needs no repair: there is nothing
 to patch, and every finished frame before the truncated one still decodes. The
 cache and not the inbox, and swept — ten files, a day.
 `daemon/src/plugins/video.js` also publishes the frames as they land, which is
-the seam a desktop video sink will sit on. **There is no `/dev/video` node and
-no `v4l2loopback` here**; that is its own question and its own issue.
+the seam the desktop's own camera sits on — see **The phone as a camera**.
 
 **Backpressure is a ceiling in whole frames.** The desktop holds at most 1 MB
 in front of a sink that is not keeping up and drops the **oldest whole frame**
@@ -2205,6 +2215,41 @@ achieved.
 `omarchy-connect camera stop`, the phone saying `video.stopped`, the socket
 dying, the daemon stopping, or the **10-minute** ceiling — shorter than audio's
 half hour, because a camera left on is a worse thing to leave on.
+
+### The phone as a camera
+
+The file in the cache is the first consumer of those frames; the second is the
+point of the road. `POST /api/camera` with `{ "op": "device", "value": "on" }`
+— or `omarchy-connect cam device on`, or the panel's switch — publishes the
+phone as a camera the rest of this desktop can pick, and then asks the handset
+to open its lens, in that order and for the reason `mic input` uses: a camera a
+program can select and see frozen is a better outcome than no camera and an
+error.
+
+Two roads, because a Linux desktop has two camera lists and no program agrees
+which one to read.
+
+| Road | What sees it | What it needs |
+| --- | --- | --- |
+| PipeWire node (`media.class=Video/Source`, `media.role=Camera`) | the portal, and browsers that ask it for a camera | `gst-plugin-pipewire`, already here |
+| `/dev/videoN` | Zoom, Chromium, OBS, everything that enumerates V4L2 | the `v4l2loopback` kernel module, which the *user* loads |
+
+`mode` picks one (`auto`, `pipewire`, `v4l2`); `auto` prefers the loopback
+device when one exists, because more programs can see it. Both are children of
+the daemon — `ffmpeg` decoding the MJPEG, and for the node a `gst-launch-1.0`
+publishing it — so nothing survives the process that started them: every child
+carries `OMARCHY_CONNECT_CAMERA_SINK` in its environment, and a daemon coming
+up after a `kill -9` walks `/proc` and clears whatever the last one left.
+
+**The daemon never installs or loads the module.** It has no root and does not
+want any. It reports `module` and prints the `pacman` and `modprobe` lines, and
+that is the whole of its involvement.
+
+**A quiet phone is a frozen picture, not a camera that vanished.** The last
+frame is sent again once a second while nothing arrives, counted apart from
+real frames as `repeated`, because what a program does with a source that
+simply stops is that program's business and not something worth discovering
+during a call.
 
 **On the handset** this is Camera2 with an `ImageReader` in the link module
 rather than `expo-camera`, which draws a preview on a screen this road does not
