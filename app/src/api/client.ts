@@ -585,7 +585,7 @@ export class ConnectClient {
    * watching stats when the socket dropped is watching them again when it
    * comes back, without having to notice that anything happened.
    */
-  private subscriptions = new Set<string>(['clipboard', 'theme', 'file', 'agent', 'phone', 'audio', 'endpoints'])
+  private subscriptions = new Set<string>(['clipboard', 'theme', 'file', 'agent', 'phone', 'audio', 'video', 'endpoints'])
 
   /**
    * Probes racing the socket that is being opened right now.

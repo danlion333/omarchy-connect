@@ -113,6 +113,17 @@ check(
   ['clipboard', 'theme', 'file', 'agent', 'phone', 'endpoints'].every((e) => client.subscribed.includes(e)),
   client.subscribed.join(', '),
 )
+// The two channels the desktop *instructs* the handset on. A responder that
+// listens for `ev:audio` or `ev:video` and a socket that never asked for the
+// channel is the exact shape of a feature that works in every suite and does
+// nothing at all on a phone: the instruction is fanned out only to sockets
+// subscribed to it, so the desktop times out on a handset that heard nothing.
+// #58 shipped that way for one afternoon, which is why this is a check.
+check(
+  'including the two channels the desktop asks this handset to open something on',
+  ['audio', 'video'].every((e) => client.subscribed.includes(e)),
+  client.subscribed.join(', '),
+)
 
 {
   const before = count('stats')
