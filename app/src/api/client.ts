@@ -411,6 +411,40 @@ const PING_TIMEOUT = 10_000
 const HELLO_TIMEOUT = 20_000
 
 /**
+ * How long a dial has to reach `onopen` before it is written off.
+ *
+ * A socket that never opens had no deadline at all: `startHelloDeadline` is
+ * armed from `onopen`, so everything before it was left to the platform's own
+ * connect timeout — tens of seconds on Android, and on some networks minutes.
+ * That is the whole of the "From anywhere" bug. Off the home wire the local
+ * address is still dialled first (it is a guess worth making, and it is the
+ * right answer whenever the phone is actually home), but a TCP SYN to
+ * 192.168.1.100 from somebody else's Wi-Fi does not fail — it hangs. The
+ * probes racing alongside it come back over the tunnel in a second or two and
+ * the phone had nothing to do with the answer, because the dial that was
+ * going nowhere still counted as an attempt in progress.
+ *
+ * A few seconds rather than the platform's timeout, and deliberately longer
+ * than the stagger the probes are spread over: a desktop that is really on
+ * this wire answers in milliseconds, and one that needs six seconds to accept
+ * a connection is one the phone should be looking for elsewhere anyway.
+ */
+const DIAL_TIMEOUT = 6_000
+
+/**
+ * How long a dial in flight is left alone by `reconnectNow`.
+ *
+ * Android reports joining a network as a short burst of callbacks rather than
+ * one, and every one of them arrives here. Without this, the first dial after
+ * a network change would be torn down and started again by the second and the
+ * third callback of the same change, which is a phone that never finishes
+ * connecting on exactly the networks this file exists to survive. A deliberate
+ * tap on Reconnect (`force`) does not wait it out — the user is looking at a
+ * screen that says nothing is happening, and they outrank the guess.
+ */
+const DIAL_GRACE_MS = 1_500
+
+/**
  * How long a probe waits behind the one in front of it.
  *
  * Long enough that a desktop sitting at the address we expected is never
@@ -505,6 +539,10 @@ export class ConnectClient {
   private pingSentAt: number | null = null
   private helloTimer: any = null
   private helloTimeout: number
+  private dialTimer: any = null
+  private dialTimeout: number
+  /** When the socket now in flight was opened, for `reconnectNow`'s grace. */
+  private dialStartedAt = 0
   private retryTimer: any = null
   private attempt = 0
   private closedByUser = false
@@ -590,6 +628,8 @@ export class ConnectClient {
     probe?: (host: string, port: number) => Promise<{ publicKey: string | null; certPin: string | null } | null>
     /** How long to wait for `hello.ok` on an open socket. Tests shorten it. */
     helloTimeout?: number
+    /** How long to wait for a socket to open at all. Tests shorten it. */
+    dialTimeout?: number
   }) {
     this.host = opts.host
     this.port = opts.port
@@ -603,6 +643,7 @@ export class ConnectClient {
     this.endpoints = opts.endpoints ?? []
     this.probe = opts.probe ?? null
     this.helloTimeout = opts.helloTimeout ?? HELLO_TIMEOUT
+    this.dialTimeout = opts.dialTimeout ?? DIAL_TIMEOUT
     this.proven = { host: opts.host, port: opts.port }
   }
 
@@ -686,6 +727,8 @@ export class ConnectClient {
   connect(force = false) {
     this.closedByUser = false
     clearTimeout(this.retryTimer)
+    // Whatever a previous dial was waiting on, this one replaces it.
+    this.stopDialDeadline()
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
     // Any dial makes every probe still in flight stale: they are answers
     // about a decision that has already been made.
@@ -718,6 +761,11 @@ export class ConnectClient {
     this.ws = ws
     this.secure = null
     this.handshake = null
+    // Armed here rather than in a handler, because the state this guards is
+    // the one no handler is ever called for: a socket that stays in
+    // `CONNECTING` fires nothing at all.
+    this.dialStartedAt = Date.now()
+    this.startDialDeadline(ws)
 
     // Every handler below opens with the same line, and it is the whole point
     // of them being written out rather than shared: a socket only speaks for
@@ -730,6 +778,9 @@ export class ConnectClient {
     // with nothing in the log to say why.
     ws.onopen = () => {
       if (ws !== this.ws) return
+      // The dial arrived; from here on the greeting's deadline is the one
+      // that matters.
+      this.stopDialDeadline()
       // The socket is up; the greeting is what is owed now, and this is the
       // only thing that will notice if it never arrives.
       this.startHelloDeadline(ws)
@@ -777,6 +828,7 @@ export class ConnectClient {
 
     ws.onclose = (event) => {
       if (ws !== this.ws) return
+      this.stopDialDeadline()
       this.stopHelloDeadline()
       this.stopPing()
       this.failAllPending(new Error('disconnected'))
@@ -810,12 +862,30 @@ export class ConnectClient {
   reconnectNow(force = false) {
     this.attempt = 0
     clearTimeout(this.retryTimer)
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+    const ws = this.ws
+    if (ws && ws.readyState === WebSocket.OPEN) {
       // Nothing to reconnect, but the phone has plainly been somewhere — the
       // app was reopened, or somebody asked for this — and that is as good a
       // moment as a network change to ask whether the road has improved.
-      if (this.ws.readyState === WebSocket.OPEN) void this.preferBetter()
+      void this.preferBetter()
       return
+    }
+    if (ws && ws.readyState === WebSocket.CONNECTING) {
+      // A dial in flight used to make this a no-op, which read as a working
+      // Reconnect button that did nothing: off the home wire the direct dial
+      // sits in `CONNECTING` for as long as the platform lets it, and the
+      // button, the return to the foreground and the network-change callback
+      // all landed here and turned round. Only a dial that has just started
+      // is left alone, and only when nobody asked for this by hand.
+      if (!force && Date.now() - this.dialStartedAt < DIAL_GRACE_MS) return
+      this.stopDialDeadline()
+      this.ws = null
+      this.detach(ws)
+      try {
+        ws.close(4012, 'dialling again')
+      } catch {
+        /* a socket that never opened may not close either */
+      }
     }
     this.connect(force)
   }
@@ -878,7 +948,12 @@ export class ConnectClient {
     } catch {
       /* already gone */
     }
-    this.connect()
+    // Dialled as given, not re-decided. Every caller has a probe answer from
+    // this address behind it, and letting `connect` reorder the candidates
+    // again would undo the move on the spot: the local address ranks first on
+    // any Wi-Fi, so a phone that had just found its desktop over the tunnel
+    // went straight back to dialling the address that does not answer.
+    this.connect(true)
   }
 
   /**
@@ -1059,7 +1134,13 @@ export class ConnectClient {
         if (token !== this.raceToken) return
         // The same checks `link.relocate` makes before following an address.
         if (!this.isOurDesktop(candidate, found)) return
-        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return
+        // Only an *open* socket outranks a probe that answered. A dial still
+        // in `CONNECTING` used to count too, and off the home wire that is the
+        // one state the direct dial never leaves — the answer this race exists
+        // to produce was thrown away on the strength of a socket that was
+        // going nowhere. The address here has just named this desktop's own
+        // key; a dial that has not opened yet has said nothing at all.
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return
         this.moveTo(candidate.host, candidate.port)
       }, PROBE_STAGGER_MS * (index + 1))
     })
@@ -1095,6 +1176,7 @@ export class ConnectClient {
     this.raceToken += 1
     this.upgradeToken += 1
     clearTimeout(this.retryTimer)
+    this.stopDialDeadline()
     this.stopHelloDeadline()
     this.stopPing()
     this.failAllPending(new Error('closed'))
@@ -1103,6 +1185,43 @@ export class ConnectClient {
     this.detach(old)
     old?.close()
     this.setStatus('idle', null)
+  }
+
+  /**
+   * The deadline on a dial, armed per socket.
+   *
+   * The greeting's deadline below is the model for this one — a timer tied to
+   * a particular `ws`, which speaks only for that socket — with one important
+   * difference in how it ends. `startHelloDeadline` closes and lets `onclose`
+   * drive the retry, because a socket that is *open* reports its close. A
+   * socket still in `CONNECTING` is exactly the one that may take the
+   * platform's own timeout to report anything, or report nothing ever, so
+   * waiting on `onclose` here would be waiting on the thing that failed. It is
+   * dropped first — detached and forgotten, the discipline `moveTo` uses — and
+   * the close is then only a courtesy to the kernel.
+   */
+  private startDialDeadline(ws: WebSocket) {
+    this.stopDialDeadline()
+    this.dialTimer = setTimeout(() => {
+      if (ws !== this.ws) return
+      this.dialTimer = null
+      this.lastError = `no answer from ${this.host}:${this.port}`
+      this.ws = null
+      this.detach(ws)
+      try {
+        ws.close(4011, 'dial timeout')
+      } catch {
+        /* a socket that never opened may not close either */
+      }
+      this.stopPing()
+      this.failAllPending(new Error('disconnected'))
+      this.scheduleReconnect()
+    }, this.dialTimeout)
+  }
+
+  private stopDialDeadline() {
+    clearTimeout(this.dialTimer)
+    this.dialTimer = null
   }
 
   /**
