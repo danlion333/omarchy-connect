@@ -816,9 +816,16 @@ async function cmdHeadset(args) {
  * `--front` picks the other lens, and `--width`, `--height` and `--fps` are
  * the request. All of them are clamped rather than refused: a phone asked for
  * something its camera has never heard of gets the nearest thing it can do.
+ *
+ * `camera device on` is the other thing entirely, and the one most people
+ * want: it publishes the phone as a camera this desktop's programs can pick,
+ * so Meet, OBS or Firefox show *Omarchy Connect (phone)* in their camera list.
+ * `cam` is the same command under a shorter name, because `cam status` is what
+ * somebody checking on that switch actually types.
  */
 async function cmdCamera(args) {
-  const [action = 'status'] = args._
+  const [action = 'status', ...rest] = args._
+  if (action === 'device') return cmdCameraDevice(rest, args)
   const op = ['start', 'on', 'watch'].includes(action)
     ? 'start'
     : ['stop', 'off'].includes(action)
@@ -827,7 +834,10 @@ async function cmdCamera(args) {
         ? 'status'
         : null
   if (!op) {
-    log.error('usage: omarchy-connect camera <start|stop|status> [--front] [--width N] [--height N] [--fps N]')
+    log.error(
+      'usage: omarchy-connect camera <start|stop|status|device on|device off> ' +
+        '[--front] [--width N] [--height N] [--fps N]',
+    )
     process.exit(1)
   }
   const value = {
@@ -851,6 +861,10 @@ async function cmdCamera(args) {
   }
   const video = res.data?.video || {}
   if (op === 'status') {
+    // The device first, because it is the half that is a *state* — a camera
+    // in somebody's picker outlasts any one capture, and a person running
+    // `cam status` is usually asking about that rather than about a file.
+    printCameraDevice(video.device || {})
     if (!video.streaming) return log.info('the phone is not streaming its camera')
     return log.ok(
       `watching the ${video.camera} camera — ${video.frames} frames in ${video.seconds}s ` +
@@ -867,6 +881,83 @@ async function cmdCamera(args) {
   const lost = video.dropped ? `, ${video.dropped} frames dropped to keep up` : ''
   const holes = video.gaps ? `, ${video.gaps} the phone never sent` : ''
   log.ok(`the phone has stopped — ${video.frames} frames in ${video.seconds}s (${video.fps} fps) in ${video.path}${lost}${holes}`)
+}
+
+/**
+ * The phone as this desktop's camera.
+ *
+ * Prints what any other program would see, because that is the only thing
+ * worth confirming: the name in the picker, and which of the two camera lists
+ * it is in. The two are not interchangeable — a PipeWire node is what a
+ * browser asking the portal for a camera gets, and `/dev/videoN` is what Zoom
+ * and Chromium enumerate — so the road taken is printed rather than implied.
+ *
+ * A desktop with no `v4l2loopback` is not an error and is not silence either:
+ * the PipeWire half works, it says so, and it says the one command that would
+ * give it the other half. Nothing here runs that command. The daemon has no
+ * root and this is not the program that should be asking for it.
+ */
+function printCameraDevice(device) {
+  if (device.available === false && !device.enabled) {
+    log.warn(device.hint || 'this desktop cannot publish the phone as a camera')
+    return
+  }
+  if (!device.enabled) {
+    log.info('the phone is not a camera on this desktop — `omarchy-connect cam device on`')
+  } else if (device.mode === 'v4l2') {
+    log.ok(`"${device.deviceLabel || device.description}" is a camera on this desktop at ${device.device}`)
+  } else {
+    log.ok(`"${device.description}" is a PipeWire camera on this desktop — pick it wherever cameras are offered`)
+  }
+  // Said whether the switch is on or off, because it is the difference between
+  // "every app can see this" and "only the ones that ask PipeWire can", and
+  // somebody who does not know that is somebody about to file a bug.
+  if (device.module !== 'loaded' && device.hint) {
+    log.info(`${device.hint}\n  without it only PipeWire-aware apps see the phone; Zoom and Chromium want /dev/videoN`)
+  }
+  if (device.enabled && device.dropped) {
+    log.info(`${device.dropped} frame${device.dropped === 1 ? '' : 's'} dropped in front of a consumer that fell behind`)
+  }
+}
+
+/**
+ * The switch itself.
+ *
+ * Held open the way `mic input` is, because turning it on also asks the
+ * handset to start filming: the answer worth having is "there is a camera and
+ * there is a picture in it", not "a message left".
+ */
+async function cmdCameraDevice(rest, args) {
+  const [word = 'status'] = rest
+  const value = ['on', 'start', 'enable'].includes(word)
+    ? 'on'
+    : ['off', 'stop', 'disable'].includes(word)
+      ? 'off'
+      : word === 'status'
+        ? 'status'
+        : null
+  if (!value) {
+    log.error('usage: omarchy-connect cam device <on|off|status> [--pipewire|--v4l2]')
+    process.exit(1)
+  }
+  const mode = args.pipewire ? 'pipewire' : args.v4l2 ? 'v4l2' : 'auto'
+  const res = await daemonRequest('/api/camera', { method: 'POST', body: { op: 'device', value, mode }, timeout: 30_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the camera could not be switched')
+    process.exit(1)
+  }
+  const device = res.data?.video?.device || {}
+  if (value === 'off') {
+    log.info('the phone is no longer a camera on this desktop')
+    return
+  }
+  printCameraDevice(device)
+  if (device.phone) log.warn(`the handset is not filming yet: ${device.phone}\n  wake it and run \`omarchy-connect camera start\``)
+  else if (device.streaming === false && value === 'status') log.info('nothing is filming into it — `omarchy-connect camera start`')
 }
 
 /**
@@ -2447,6 +2538,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('speaker')} <on|off|status>     play this desktop's sound out of the phone
   ${bold('headset')} <on|off|status>     both at once, with the phone cancelling the echo
   ${bold('camera')} <start|stop|status>  stream the phone's camera to this desktop
+  ${bold('cam device')} <on|off|status>  offer the phone as a camera every app can pick
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('terminal')} <status|on|off>    a shell here the phone can type into
@@ -2478,6 +2570,9 @@ const commands = {
   speaker: cmdSpeaker,
   headset: cmdHeadset,
   camera: cmdCamera,
+  // The short name, because the thing most people came for is the switch
+  // rather than the recording, and `cam status` is what they will type.
+  cam: cmdCamera,
   agent: cmdAgent,
   terminal: cmdTerminal,
   remote: cmdRemote,

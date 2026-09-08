@@ -31,6 +31,7 @@
     "test:dictation": "node test/dictation.mjs",
     "test:audio": "node test/audio.mjs",
     "test:video": "node test/video.mjs",
+    "test:video-sink": "node test/video-sink.mjs",
     "test:audio-level": "node test/audio-level.mjs",
     "test:audio-input": "node test/audio-input.mjs",
     "test:resample": "node test/resample.mjs",
