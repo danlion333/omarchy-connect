@@ -2321,6 +2321,24 @@ export default {
      * one, where Return sends. Return on the checkbox screen would toggle
      * whatever row is highlighted instead, which is how a phone used to add an
      * option nobody picked.
+     *
+     * A block of several questions ends on a tab of its own — `Review your
+     * answers`, with `Submit answers` highlighted — and moving onto it is not
+     * the same as pressing it. A multi-select last question got its Return by
+     * accident, as the second half of the walk off the checkboxes; a
+     * single-choice last question got a digit and nothing else, which picks
+     * the option, lands on the review tab and stops there. The agent then sits
+     * on the confirmation screen with `AskUserQuestion` still unanswered while
+     * the phone shows two ticked questions and a session it has just called
+     * `working`. So the last question of a multi-question block always ends
+     * with Return, whichever kind it is. A block of one has no review tab to
+     * cross for a single-choice question: the digit is the whole answer, and a
+     * Return after it would be a stray newline typed at the agent.
+     *
+     * Which is also why the session only goes back to `working` on that last
+     * answer. Answering the first of two sends nothing — the block is still
+     * open, the agent is still waiting, and a card that says `working` in the
+     * middle of a block is the same lie in a smaller place.
      */
     async 'agents.answer'({ id, seq, question = 0, choices = [] } = {}) {
       requireEnabled()
@@ -2339,14 +2357,17 @@ export default {
       }
       await ensureWritable(entry)
 
+      const last = index === block.questions.length - 1
       const keys = picked.map(String)
-      if (asked.multiSelect) {
-        keys.push('Right')
-        if (index === block.questions.length - 1) keys.push('Enter')
-      }
+      // The digits tick the boxes; Right walks off them, onto the next
+      // question or onto the review tab.
+      if (asked.multiSelect) keys.push('Right')
+      // And on the review tab, Return is what actually submits the block.
+      // Only a lone single-choice question is sent by its digit alone.
+      if (last && (asked.multiSelect || block.questions.length > 1)) keys.push('Enter')
       const result = await writer.serialise(entry, () => writer.chord(entry, keys, { gap: ANSWER_GAP_MS }))
-      if (entry.state === 'waiting') setState(entry, 'working')
-      return { ok: true, labels: picked.map((n) => asked.options[n - 1].label), ...result }
+      if (last && entry.state === 'waiting') setState(entry, 'working')
+      return { ok: true, submitted: last, labels: picked.map((n) => asked.options[n - 1].label), ...result }
     },
 
     /**

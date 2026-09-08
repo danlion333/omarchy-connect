@@ -1331,6 +1331,67 @@ if (!hasTmux) {
   await hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: MULTI_ID, tool_input: multiInput })
   await settle(300)
 
+  /* ── a block of several questions ends on a Return ───────────────────── */
+
+  // `AskUserQuestion` may ask two or three things at once, and then the TUI
+  // puts a tab of its own at the end of them — `Review your answers`, with
+  // `Submit answers` waiting to be pressed. A digit on the last question picks
+  // its option and walks onto that tab; it does not press it. So a block whose
+  // last question is single-choice used to leave the agent standing on the
+  // confirmation screen with nothing sent, while the phone ticked both cards
+  // and called the session `working`. The last answer of a block ends with
+  // Return whichever kind of question it is, and only that last answer moves
+  // the session off `waiting`.
+  const PAIR_ID = 'toolu_pair'
+  const pairInput = {
+    questions: [
+      {
+        question: 'Which colours should the theme use?',
+        header: 'Colours',
+        multiSelect: true,
+        options: [{ label: 'Red' }, { label: 'Green' }, { label: 'Blue' }],
+      },
+      {
+        question: 'And which shape?',
+        header: 'Shape',
+        multiSelect: false,
+        options: [{ label: 'Circle' }, { label: 'Square' }, { label: 'Hexagon' }],
+      },
+    ],
+  }
+  await hook('PreToolUse', { tool_name: 'AskUserQuestion', tool_use_id: PAIR_ID, tool_input: pairInput })
+  await settle(500)
+  const pairBlock = (await req('agents.open', { id: session.id, limit: 200 })).blocks
+    .find((b) => b.kind === 'question' && b.questions?.length === 2)
+  check('a block of two questions arrives whole', Boolean(pairBlock), JSON.stringify(pairBlock?.questions?.length))
+  check('and the session is waiting on it', (await stateOf()) === 'waiting', await stateOf())
+
+  const beforePair = fs.readFileSync(received, 'utf8').length
+  const firstOfTwo = await req('agents.answer', { id: session.id, seq: pairBlock.seq, question: 0, choices: [1, 3] })
+  check('the first answer says it has not submitted the block', firstOfTwo.submitted === false, JSON.stringify(firstOfTwo.submitted))
+  await settle(1200)
+  // Nothing may have been sent yet: the pane is in canonical mode and the
+  // walk off the checkboxes carries no Return.
+  check(
+    'answering the first question sends no Return',
+    fs.readFileSync(received, 'utf8').length === beforePair,
+    JSON.stringify(fs.readFileSync(received, 'utf8').slice(beforePair)),
+  )
+  check('and leaves the session waiting on the rest of the block', (await stateOf()) === 'waiting', await stateOf())
+
+  const lastOfTwo = await req('agents.answer', { id: session.id, seq: pairBlock.seq, question: 1, choices: [2] })
+  check('the last answer names what it picked', lastOfTwo.labels?.join() === 'Square', JSON.stringify(lastOfTwo.labels))
+  check('and says it submitted the block', lastOfTwo.submitted === true, JSON.stringify(lastOfTwo.submitted))
+  await settle(1600)
+  const pairChord = fs.readFileSync(received, 'utf8').slice(beforePair)
+  check(
+    'a single-choice last question is a digit and the Return that submits',
+    pairChord === '13\x1b[C2\n',
+    JSON.stringify(pairChord),
+  )
+  await hook('PostToolUse', { tool_name: 'AskUserQuestion', tool_use_id: PAIR_ID, tool_input: pairInput })
+  await settle(300)
+
   /* ── handing over a picture ──────────────────────────────────────────── */
 
   // A one-pixel PNG is a real picture as far as every layer here is concerned.
