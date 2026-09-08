@@ -60,6 +60,7 @@ class OmarchyLinkModule : Module() {
       "onMicStopped",
       "onCameraFrame",
       "onCameraStopped",
+      "onSpeakerStopped",
     )
 
     /**
@@ -142,6 +143,17 @@ class OmarchyLinkModule : Module() {
           /* nothing listening; the desktop's own socket tells it soon enough */
         }
       }
+      // The track going away without being asked is the one thing the desktop
+      // cannot see from its end: it would keep sending into a phone that is
+      // playing nothing. Set here for the reason `Mic`'s is — so `Speaker`
+      // knows nothing about React.
+      Speaker.onStopped = { reason ->
+        try {
+          this@OmarchyLinkModule.sendEvent("onSpeakerStopped", mapOf("error" to reason))
+        } catch (error: Exception) {
+          /* nothing listening; the desktop's own socket tells it soon enough */
+        }
+      }
       Locator.onFound = {
         try {
           this@OmarchyLinkModule.sendEvent("onLocateFound", emptyMap<String, Any?>())
@@ -165,6 +177,8 @@ class OmarchyLinkModule : Module() {
       Camera.onFrame = null
       Camera.onStopped = null
       Camera.stop()
+      Speaker.onStopped = null
+      Speaker.stop()
       Locator.onFound = null
       pendingShare = null
       unwatchNetwork()
@@ -333,6 +347,34 @@ class OmarchyLinkModule : Module() {
         Manifest.permission.RECORD_AUDIO,
       )
     }
+
+    /* ── the speaker ──────────────────────────────────────────────────── */
+
+    /**
+     * Open a track for the desktop's sound and start accepting chunks.
+     *
+     * Answers false rather than throwing, for the reason `startMic` does: the
+     * layer above turns it into the one sentence the desktop is holding a
+     * request open for. No permission is checked because Android asks for none
+     * to play.
+     */
+    Function("startSpeaker") { rate: Int, chunkMs: Int -> Speaker.start(context, rate, chunkMs) }
+
+    /** Give the track back. Safe when nothing is playing. */
+    Function("stopSpeaker") { Speaker.stop() }
+
+    /** Whether a track is open right now. */
+    Function("isSpeakerRunning") { Speaker.isRunning }
+
+    /**
+     * One chunk into the track, base64 as it crossed the bridge.
+     *
+     * Fifty of these a second, which is why it is a `Function` rather than an
+     * `AsyncFunction`: a promise per chunk would be fifty promises a second
+     * resolving on the JS thread to say something the next chunk already
+     * implies. False means the track has gone, and the layer above stops.
+     */
+    Function("writeSpeaker") { pcm: String -> Speaker.writeEncoded(pcm) }
 
     /* ── the camera ───────────────────────────────────────────────────── */
 

@@ -5,6 +5,8 @@
  * prove the daemon agrees with itself.
  */
 import crypto from 'node:crypto'
+
+import { isSpeakerFrame, parseFrame as parseSpeakerFrame } from '../src/lib/speaker.js'
 import WebSocket from 'ws'
 
 const MAGIC = Buffer.from('OCX1')
@@ -30,6 +32,7 @@ export function connectPhone(port, serverKeyHex, { host = '127.0.0.1', tls = fal
 
   const ws = new WebSocket(`${tls ? 'wss' : 'ws'}://${host}:${port}/ws`, ca ? { ca } : undefined)
   const listeners = []
+  const binaryListeners = []
   let sendKey = null
   let receiveKey = null
   let sendCounter = 0n
@@ -61,6 +64,17 @@ export function connectPhone(port, serverKeyHex, { host = '127.0.0.1', tls = fal
           decipher.setAuthTag(tag)
           const plain = Buffer.concat([decipher.update(body), decipher.final()])
           receiveCounter += 1n
+          // Not everything the desktop sends is a sentence any more. Since the
+          // speaker road there are binary frames coming *down* as well as up,
+          // told apart from JSON by four bytes, and a stand-in phone that ran
+          // `JSON.parse` over one of those would throw inside a socket handler
+          // and take the suite with it — which is exactly the bug the real app
+          // had until `api/client.ts` learned the same branch.
+          if (isSpeakerFrame(plain)) {
+            const chunk = parseSpeakerFrame(plain)
+            for (const listener of binaryListeners) listener(chunk)
+            return
+          }
           const msg = JSON.parse(plain.toString())
           for (const listener of listeners) listener(msg)
         })
@@ -86,5 +100,14 @@ export function connectPhone(port, serverKeyHex, { host = '127.0.0.1', tls = fal
 
   const send = (obj) => sendBytes(Buffer.from(JSON.stringify(obj)))
 
-  return { ws, ready, send, sendBytes, on: (fn) => listeners.push(fn), close: () => ws.close() }
+  return {
+    ws,
+    ready,
+    send,
+    sendBytes,
+    on: (fn) => listeners.push(fn),
+    /** Chunks of the desktop's own sound, for the suites that ask for them. */
+    onChunk: (fn) => binaryListeners.push(fn),
+    close: () => ws.close(),
+  }
 }

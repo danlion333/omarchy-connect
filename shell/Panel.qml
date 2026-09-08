@@ -256,6 +256,18 @@ Panel {
     else bridge.disableMic()
   }
 
+  /**
+   * The speaker switch, which needs no confirmation for the reason the
+   * microphone's does not: what it does is visible the moment it is done —
+   * either this desktop's sound is coming out of the phone or it is not — and
+   * a dialog in front of a switch somebody just decided to flip is a dialog
+   * they will click through without reading.
+   */
+  function requestSpeaker(on) {
+    if (on) bridge.enableSpeaker()
+    else bridge.disableSpeaker()
+  }
+
   function runAction(key) {
     if (key === "pair") bridge.pair()
     else if (key === "unpair") bridge.unpair(bridge.device)
@@ -296,6 +308,7 @@ Panel {
       if (bridge.terminalAvailable) list.push("terminal")
       if (bridge.remoteAvailable) list.push("remote")
       if (bridge.micAvailable) list.push("mic")
+      if (bridge.speakerAvailable) list.push("speaker")
       list.push("autostart")
     }
     return list
@@ -345,6 +358,7 @@ Panel {
     else if (focusSection === "terminal") requestTerminal(!bridge.terminalEnabled)
     else if (focusSection === "remote") requestRemote(!bridge.remoteEnabled)
     else if (focusSection === "mic") requestMic(!bridge.micEnabled)
+    else if (focusSection === "speaker") requestSpeaker(!bridge.speakerEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
   }
 
@@ -1431,6 +1445,29 @@ Panel {
               accent: bridge.micStreaming ? root.urgent : root.foreground
               fontFamily: root.fontFamily
               onClicked: root.requestMic(!bridge.micEnabled)
+            }
+
+            // The same switch pointed the other way: this desktop's sound out
+            // of the phone. Hidden on a machine with no pipewire-pulse and
+            // while the daemon is stopped, and kept once the sink is loaded
+            // for the reason the microphone's is kept — the switch that
+            // rerouted a desktop's sound has to be the switch that puts it
+            // back.
+            Toggle {
+              visible: bridge.speakerAvailable
+              width: parent.width
+              label: bridge.speakerEnabled ? "The phone is this desktop's speaker" : "Use the phone as this desktop's speaker"
+              description: (bridge.speakerEnabled ? "󰓃  " : "󰓄  ") + Model.speakerText(bridge.audio, bridge.running)
+              checked: bridge.speakerEnabled
+              hasCursor: root.cursorActive && root.focusSection === "speaker"
+              onHovered: function (on) { if (on) root.setCursor("speaker") }
+              foreground: root.foreground
+              // A sink that is loaded with no handset playing it is the state
+              // worth the urgent colour here: everything routed into it is
+              // being swallowed, and nothing else on the machine says so.
+              accent: bridge.speakerEnabled && !bridge.speakerPlaying ? root.urgent : root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.requestSpeaker(!bridge.speakerEnabled)
             }
 
             // Reading works without hooks; knowing that an agent is *stuck*

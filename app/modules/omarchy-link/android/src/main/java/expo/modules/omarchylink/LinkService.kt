@@ -89,6 +89,19 @@ class LinkService : Service() {
     @Volatile
     private var camera = false
 
+    /**
+     * Whether the ongoing notification is also claiming media playback.
+     *
+     * The third of the same claim, and the one this service needs while the
+     * desktop's sound is coming out of this handset: from Android 14 a
+     * foreground service that plays has to declare `mediaPlayback`, before the
+     * track is written to, or the system stops the playback the moment the app
+     * is out of sight — which is the entire case the speaker exists for, since
+     * a phone being used as a speaker is a phone lying face down on a table.
+     */
+    @Volatile
+    private var playback = false
+
     fun start(context: Context) {
       val app = context.applicationContext
       ContextCompat.startForegroundService(app, Intent(app, LinkService::class.java))
@@ -126,6 +139,21 @@ class LinkService : Service() {
       camera = wanted
       if (!running) return
       instance?.goForeground() ?: Trace.warn("camera.foreground.missing", "wanted" to wanted)
+    }
+
+    /**
+     * Claim, or give back, the playback half of the foreground service type.
+     *
+     * Never fatal, for the reason neither of the others is: a phone that
+     * refuses the claim is a phone where the sound stops when the screen goes
+     * off, which is worth a line in the log and is not worth losing the link
+     * over.
+     */
+    fun holdPlayback(wanted: Boolean) {
+      if (playback == wanted) return
+      playback = wanted
+      if (!running) return
+      instance?.goForeground() ?: Trace.warn("speaker.foreground.missing", "wanted" to wanted)
     }
 
     /** The live service, so `holdMicrophone` has something to re-enter with. */
@@ -292,10 +320,16 @@ class LinkService : Service() {
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
       if (microphone && Mic.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
       if (camera && Camera.hasPermission(this)) types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+      // No permission to gate this one on: playing needs none. What gates it
+      // is Android's own rule that the type may only be claimed from a
+      // service that is eligible for it, which the `catch` below answers.
+      if (playback && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+      }
     }
     try {
       ServiceCompat.startForeground(this, NOTIFICATION_ID, buildNotification(this), types)
-      Trace.detail("service.foreground", "ok" to true, "mic" to microphone, "cam" to camera)
+      Trace.detail("service.foreground", "ok" to true, "mic" to microphone, "cam" to camera, "play" to playback)
     } catch (error: Exception) {
       // The microphone and camera types are the ones the system refuses on
       // its own terms — a service that came up from the background is not

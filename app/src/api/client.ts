@@ -7,6 +7,7 @@ import {
   type Candidate,
   type NetworkFacts,
 } from '../lib/retry.ts'
+import { isSpeakerFrame, parse as parseSpeakerFrame } from '../lib/speakerframe.ts'
 import { SecureChannel, fingerprint, startHandshake } from './crypto.ts'
 import { errorLine } from '../lib/errors.ts'
 import { HEADER as ENCRYPTION_HEADER, SCHEME as ENCRYPTION_SCHEME } from './filecrypt.ts'
@@ -1294,11 +1295,36 @@ export class ConnectClient {
       return
     }
     if (!this.secure) return
+    let plain: Uint8Array
     try {
-      this.handleMessage(new TextDecoder().decode(this.secure.decrypt(frame)))
+      plain = this.secure.decrypt(frame)
     } catch {
       this.lastError = 'the connection failed authentication'
       this.ws?.close(4005, 'decryption failed')
+      return
+    }
+    // Sound, rather than a sentence about sound. Until the desktop had a
+    // speaker to feed, everything inside one of these frames was JSON and this
+    // line was a `TextDecoder` with nothing in front of it — which is why a
+    // binary frame arriving here would have been mangled into a string and
+    // then swallowed by `JSON.parse`, fifty times a second, with nothing in
+    // any log. Four bytes tell them apart (`lib/speakerframe.ts`), and they
+    // are unambiguous because a JSON frame's first byte is always `{`.
+    if (isSpeakerFrame(plain)) {
+      try {
+        this.emit('speaker', parseSpeakerFrame(plain))
+      } catch {
+        // A frame this phone cannot read is dropped and nothing more. The
+        // desktop is sending fifty a second and answering each one would cost
+        // the link more than the chunk was worth.
+      }
+      return
+    }
+    try {
+      this.handleMessage(new TextDecoder().decode(plain))
+    } catch {
+      // A decrypted frame that is not JSON either: not an authentication
+      // failure, so the socket stays exactly where it is.
     }
   }
 

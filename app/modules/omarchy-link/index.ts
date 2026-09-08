@@ -79,6 +79,12 @@ type Events = {
    * empty when it was this app's own `stopCamera` that did it.
    */
   onCameraStopped: (info: { error: string }) => void
+  /**
+   * Playing the desktop's sound ended without the app asking. Android took
+   * the track, or the output device changed under it. `error` is empty when it
+   * was this app's own `stopSpeaker` that did it.
+   */
+  onSpeakerStopped: (info: { error: string }) => void
 }
 
 /**
@@ -137,6 +143,10 @@ declare class OmarchyLink extends NativeModule<Events> {
   isCameraRunning(): boolean
   hasCameraPermission(): boolean
   requestCameraPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
+  startSpeaker(rate: number, chunkMs: number): boolean
+  stopSpeaker(): void
+  isSpeakerRunning(): boolean
+  writeSpeaker(pcm: string): boolean
   takeShareIntent(): Promise<SharePayload | null>
 }
 
@@ -527,6 +537,72 @@ export function isMicRunning(): boolean {
   } catch {
     return false
   }
+}
+
+/* ── the speaker ────────────────────────────────────────────────────── */
+
+/**
+ * Whether this build can play the desktop's sound at all.
+ *
+ * The same three noes `micSupported` answers, checked the same way and for the
+ * same reason: an installed build older than this feature has the module and
+ * has never heard of `startSpeaker`, and a desktop that has just loaded a sink
+ * and is waiting to be told deserves a sentence rather than a timeout.
+ */
+export function speakerSupported(): boolean {
+  const native = linkService()
+  return typeof (native as unknown as { startSpeaker?: unknown } | null)?.startSpeaker === 'function'
+}
+
+/**
+ * Open a track for the desktop's sound.
+ *
+ * No permission anywhere: playing is not recording, and Android asks for
+ * nothing to do it. Throws rather than returning false when it cannot, because
+ * every reason it cannot is a sentence the desktop is holding a request open
+ * for.
+ */
+export function startSpeaker(rate: number, chunkMs: number): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot play the desktop’s sound')
+  if (!native.startSpeaker(rate, chunkMs)) throw new Error('the phone would not open its speaker')
+}
+
+/** Stop, and give the track back. Safe when nothing is playing. */
+export function stopSpeaker(): void {
+  try {
+    linkService()?.stopSpeaker()
+  } catch {
+    /* nothing was playing, or the module went away with the runtime */
+  }
+}
+
+export function isSpeakerRunning(): boolean {
+  try {
+    return linkService()?.isSpeakerRunning() ?? false
+  } catch {
+    return false
+  }
+}
+
+/**
+ * One chunk of the desktop's PCM into the track.
+ *
+ * Base64 because that is how bytes cross the bridge in this app — the
+ * microphone's chunks come the other way in exactly the same encoding, and
+ * Hermes has no Buffer to do better with. Fifty small strings a second is
+ * nothing beside what the track itself is doing.
+ *
+ * Throws when the native side says the write failed, which is the one thing
+ * the layer above has to hear about: a track that has gone means the desktop
+ * is talking to a speaker that is not there.
+ */
+export function writeSpeaker(pcm: Uint8Array): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot play the desktop’s sound')
+  let binary = ''
+  for (let i = 0; i < pcm.length; i += 1) binary += String.fromCharCode(pcm[i])
+  if (!native.writeSpeaker(globalThis.btoa(binary))) throw new Error('the phone stopped playing')
 }
 
 /* ── the camera ─────────────────────────────────────────────────────── */

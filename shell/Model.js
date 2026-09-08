@@ -527,6 +527,7 @@ function callDetail(call, bt, now) {
 function audio(status) {
   var value = isObject(status) && isObject(status.audio) ? status.audio : {}
   var input = isObject(value.input) ? value.input : {}
+  var output = isObject(value.output) ? value.output : {}
   return {
     streaming: value.streaming === true,
     since: num(value.since, 0),
@@ -540,6 +541,17 @@ function audio(status) {
       enabled: input.enabled === true,
       name: typeof input.name === "string" ? input.name : "omarchy_connect_phone",
       description: typeof input.description === "string" ? input.description : "Omarchy Connect (phone)"
+    },
+    output: {
+      available: output.available === true,
+      enabled: output.enabled === true,
+      // Whether the handset actually has a track open for it. The sink can be
+      // loaded with nothing behind it — a phone asleep in another room — and
+      // that is precisely the state somebody needs told, because everything
+      // they route into it is going nowhere.
+      playing: output.playing === true,
+      name: typeof output.name === "string" ? output.name : "omarchy_connect_phone",
+      description: typeof output.description === "string" ? output.description : "Omarchy Connect (phone)"
     }
   }
 }
@@ -554,6 +566,32 @@ function audio(status) {
  */
 function micShown(value) {
   return value.input.available || value.input.enabled
+}
+
+/** The same rule for the speaker, which fails the same two ways. */
+function speakerShown(value) {
+  return value.output.available || value.output.enabled
+}
+
+/**
+ * The line under the speaker switch.
+ *
+ * It says more than the microphone's does in one state, and that state is the
+ * whole reason the sentence is here: a sink that is loaded while the handset
+ * is not playing is a desktop quietly sending its sound nowhere. A person
+ * looking at the panel has to be able to tell that from a phone that is
+ * playing, because the two look identical everywhere else on this machine —
+ * the device is in the picker either way.
+ */
+function speakerText(value, running) {
+  if (!running) return "the daemon is stopped"
+  if (!value.output.enabled) {
+    if (!value.output.available) return "this desktop has no pipewire-pulse"
+    return "off \u00b7 no phone in this machine's output list"
+  }
+  var where = "\"" + value.output.description + "\""
+  if (value.output.playing) return "on \u00b7 " + where + " \u00b7 the phone is playing it"
+  return "on \u00b7 " + where + " \u00b7 the phone is not playing it yet"
 }
 
 /** The line under the switch: what the phone-as-input is doing right now. */

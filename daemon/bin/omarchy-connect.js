@@ -666,6 +666,77 @@ async function cmdMic(args) {
 }
 
 /**
+ * Play this desktop's sound out of the phone.
+ *
+ * The mirror of `mic input`, and the one command on this road: it loads a
+ * PipeWire **sink** called *Omarchy Connect (phone)*, so `pavucontrol`,
+ * `wpctl` and every application's output picker can send sound at it, and asks
+ * the handset to open a track for it. `wpctl set-default` is how somebody
+ * makes it the whole machine's output; nothing here takes that decision for
+ * them, for the reason `mic input` does not take the default input.
+ *
+ * Held open until the handset answers, so a success means the phone is
+ * actually playing rather than that a message went into the dark — and a
+ * refusal is printed beside a sink that is loaded anyway, because a device
+ * somebody can already route into is a better place to be than an error and no
+ * device at all.
+ */
+async function cmdSpeaker(args) {
+  const [action = 'status'] = args._
+  const op = ['on', 'start', 'enable'].includes(action)
+    ? 'on'
+    : ['off', 'stop', 'disable'].includes(action)
+      ? 'off'
+      : action === 'status'
+        ? 'status'
+        : null
+  if (!op) {
+    log.error('usage: omarchy-connect speaker <on|off|status>')
+    process.exit(1)
+  }
+  const res = await daemonRequest('/api/speaker', { method: 'POST', body: { op }, timeout: 30_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the speaker could not be switched')
+    process.exit(1)
+  }
+  const output = res.data?.audio?.output || {}
+  if (!output.available) {
+    log.warn('this desktop has no pipewire-pulse, so the phone cannot be offered as an output')
+    return
+  }
+  if (!output.enabled) {
+    return log.info(
+      op === 'status'
+        ? 'the phone is not an output on this desktop — `omarchy-connect speaker on`'
+        : 'the phone is no longer an output on this desktop',
+    )
+  }
+  log.ok(`"${output.description}" is an output on this desktop — pick it in any app, or \`wpctl set-default\` it`)
+  if (output.rate && output.ringMs) {
+    log.info(
+      `loaded at ${output.rate} Hz mono, so PipeWire keeps ${output.ringMs} ms of it before the wire's ${output.wireRate} Hz`,
+    )
+  }
+  if (output.phone) {
+    log.warn(`the handset is not playing yet: ${output.phone}\n  wake it and run \`omarchy-connect speaker on\``)
+  } else if (!output.playing) {
+    log.info('nothing is playing it on the phone yet')
+  } else {
+    // What was heard, and what never left. `silent` is the sink idling rather
+    // than a fault — a loaded sink writes zeroes for as long as nothing is
+    // playing, and those are dropped here rather than carried across Wi-Fi.
+    const parts = [`${output.chunks || 0} chunks sent`]
+    if (output.silent) parts.push(`${output.silent} of silence dropped`)
+    if (output.dropped) parts.push(`${output.dropped} bytes too old to play`)
+    log.info(parts.join(', '))
+  }
+}
+
+/**
  * Watch through the phone's camera from here.
  *
  * `camera` asks and holds the terminal until the handset answers, so a
@@ -2310,6 +2381,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('mic')} <start|stop|status>     stream the phone's microphone to this desktop
   ${bold('mic input')} <on|off|status>  offer the phone as an input every app can pick
   ${bold('mic gain')} [N|auto]           how much louder the desktop makes it
+  ${bold('speaker')} <on|off|status>     play this desktop's sound out of the phone
   ${bold('camera')} <start|stop|status>  stream the phone's camera to this desktop
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
@@ -2339,6 +2411,7 @@ const commands = {
   phone: cmdPhone,
   locate: cmdLocate,
   mic: cmdMic,
+  speaker: cmdSpeaker,
   camera: cmdCamera,
   agent: cmdAgent,
   terminal: cmdTerminal,
