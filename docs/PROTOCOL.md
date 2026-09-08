@@ -823,7 +823,7 @@ resuming from. `agents.close` throws it away immediately, as it always did.
 | `agents.send` | `{ id, text, submit }` | `{ ok, via, pane \| window, submitted }` — types a message and, unless `submit` is false, presses Return. `submitted` is what the desktop observed, not what it was asked for. |
 | `agents.relay` | `{ id, agentId, text }` | `{ ok, queued, agentId, worker, via, submitted }` — a message for one of the session's workers, typed into the *session's* composer for it to pass on. `queued`, never delivered. |
 | `agents.key` | `{ id, key }` | `{ ok, via, key }` — one named key from the whitelist `capabilities.agents.keys`. |
-| `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, via, keys }` — picks options off a multiple-choice question by position. |
+| `agents.answer` | `{ id, seq, question, choices }` | `{ ok, labels, submitted, via, keys }` — picks options off a multiple-choice question by position; `submitted` says whether that answer was the one that sent the block. |
 | `agents.attach` | `{ id, paths, text, submit }` | `{ ok, paths, via, submitted }` — hands the agent one or more pictures the phone uploaded, with a message. |
 | `agents.screen` | `{ id, lines }` | `{ id, pane, screen }` — the pane as the terminal draws it. Needs a multiplexer: tmux or herdr. |
 | `agents.limits` | — | `{ limits }` — how much of the plan is left, or `null`. |
@@ -1175,6 +1175,15 @@ toggles: the digits tick the boxes and nothing has been said yet, so the answer
 walks the tabs along with `Right` — onto the next question, or onto the submit
 tab when this was the last one, where Return sends. Return pressed on the
 checkbox screen toggles whatever row is highlighted instead.
+
+One call asks several questions as often as it asks one, and a block of several
+ends on a review tab of its own — `Review your answers`, with `Submit answers`
+highlighted. Arriving there is not pressing it, so the last answer of such a
+block always ends with `Return`, whichever kind of question it is; a block of
+one single-choice question has no review tab to cross and is sent by its digit
+alone. Until that last answer the block is still open and the session stays
+`waiting` — the phone has ticked a card, but nothing has reached the agent yet.
+`submitted` in the reply is which of the two just happened.
 
 Two rules the reader never sees the other side of: a `thinking` block's
 `signature` is encrypted and is never sent, and traffic from a subagent
