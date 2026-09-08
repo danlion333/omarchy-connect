@@ -289,6 +289,21 @@ const RISE_DB_PER_S = 6
  * Stateful, and one per stream. `feed()` makes a fresh one for every stream so
  * that a reconnect starts from the same place rather than inheriting a gain
  * chosen for a conversation that has ended.
+ *
+ * ## And when the phone is a headset
+ *
+ * The paragraphs above assume the signal the handset was built to send: the
+ * unprocessed `VOICE_RECOGNITION` source, no gain riding, no suppression. In
+ * headset mode that assumption stops being true — the communication path
+ * brings the platform's own gain control and noise suppressor with it, and
+ * neither can be switched off from this desktop (`Headset.kt`). This follower
+ * is left exactly as it is all the same, and the reason is a measurement
+ * rather than a preference: on the handset on this desk, with the desktop gain
+ * pinned at 1, the room floor arrived at **-66.5 dBFS** in the mode against
+ * **-41.7 dBFS** outside it. The gaps get *quieter*, which is the direction
+ * the gate wants; and a signal that arrives already near `TARGET_PEAK` asks
+ * this follower for a gain of one, so the two loops have nothing to fight
+ * about. `daemon/test/audio-level.mjs` holds both of those as checks.
  */
 export class Leveller {
   constructor({ rate = RATE, gain = 1 } = {}) {

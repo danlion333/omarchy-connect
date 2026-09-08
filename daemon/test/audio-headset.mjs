@@ -228,7 +228,7 @@ const speaker = (op) => post('/api/speaker', { op })
  * `aec` is what this pretend handset claims about its echo canceller, so the
  * suite can be both kinds of phone — one that has one and one that does not.
  */
-async function connect(greeting, { aec = { available: true, enabled: true }, refuse = null } = {}) {
+async function connect(greeting, { aec = null, refuse = null } = {}) {
   const info = await (await fetch(`${base}/api/info`)).json()
   const phone = connectPhone(PORT, info.publicKey)
   /** Every `audio` instruction, in order, as `action` (with `on` for a mode). */
@@ -238,6 +238,21 @@ async function connect(greeting, { aec = { available: true, enabled: true }, ref
   let playStream = null
   let mode = false
   let paired = null
+  /** How many times this phone has been told to enter the mode. */
+  let asks = 0
+
+  /**
+   * What this pretend handset says about its echo canceller — and *when* it
+   * can say it, which is the fact the real one forced into the protocol.
+   *
+   * `AcousticEchoCanceler` is created against a record session, so a phone
+   * asked to enter the mode before its microphone is open can only answer
+   * whether the platform has one at all. It learns the rest when the recorder
+   * opens. So the first answer here says `enabled: false` and every later one
+   * says the truth, exactly as the handset on the desk did.
+   */
+  const echo = () =>
+    aec || { available: true, enabled: asks > 1 }
 
   const hello = await new Promise((resolve, reject) => {
     phone.ready
@@ -263,11 +278,12 @@ async function connect(greeting, { aec = { available: true, enabled: true }, ref
           })
         }
         mode = data.on !== false
+        if (mode) asks += 1
         return phone.send({
           t: 'req',
           id: 901,
           method: 'audio.wearing',
-          params: { id: data.id, ok: true, on: mode, aec },
+          params: { id: data.id, ok: true, on: mode, aec: echo() },
         })
       }
       if (data.action === 'start') {
@@ -365,6 +381,12 @@ check(
   state?.echoCancellation === true && state?.aec?.enabled === true,
   JSON.stringify(state?.aec),
 )
+check(
+  'which it only knows because it asked again once the microphone was open — a canceller exists over a session, not over a mode',
+  link.told.filter((t) => t === 'headset:on').length === 2 &&
+    link.told.lastIndexOf('headset:on') > link.told.indexOf('mic:start'),
+  link.told.join(' → '),
+)
 
 /* ── both directions carrying sound at the same time ───────────────────── */
 
@@ -441,12 +463,37 @@ check(
   JSON.stringify(micOnly.body?.audio?.headset),
 )
 
+/* ── asking again for a headset that has lost half of itself ───────────── */
+
+// The state a person is actually in after using it for a while: the mode is
+// still on, one direction ended some time ago, and they ask for a headset
+// again. Answering "on" to that would be a switch that is right about itself
+// and useless to them.
+const halfway = await headset('status')
+check(
+  'the mode is still on with one direction gone',
+  halfway.body?.audio?.headset?.on === true && halfway.body?.audio?.headset?.playing === false,
+  JSON.stringify(halfway.body?.audio?.headset),
+)
+const raised = await headset('on')
+check(
+  'asking again raises the half that is missing rather than answering with the half that is not',
+  raised.body?.audio?.headset?.listening === true && raised.body?.audio?.headset?.playing === true,
+  JSON.stringify(raised.body?.audio?.headset),
+)
+
 /* ── nothing left of either direction ──────────────────────────────────── */
 
 const beforeLast = link.told.filter((t) => t === 'headset:off').length
 await mic('stop')
 check(
-  'the last direction to end takes the mode with it, so the phone is not left in it',
+  'the first of the two to end leaves the mode where it is',
+  link.told.filter((t) => t === 'headset:off').length === beforeLast,
+  link.told.join(' → '),
+)
+await speaker('off')
+check(
+  'and the last one takes the mode with it, so the phone is not left in it',
   await until(() => link.told.filter((t) => t === 'headset:off').length > beforeLast, 4000),
   link.told.join(' → '),
 )

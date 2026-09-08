@@ -707,33 +707,39 @@ export async function requestHeadset(op = 'status') {
   if (!pipeAvailable() || !sinkAvailable()) {
     throw new Error('this desktop has no pipewire-pulse, so it cannot use the phone as a headset')
   }
-  if (headset) return headsetSummary()
+  // Already in the mode is not already finished. A person who stopped the
+  // microphone an hour ago and now asks for a headset again wants the half
+  // that is missing back, not a summary saying the switch is on while nothing
+  // is being heard — so the mode is left exactly as it is and the two
+  // directions below are raised as if it had just been entered.
+  if (!headset) {
+    // Whatever was running was opened in the wrong state for a duplex. Both go
+    // back, and both come up again below inside the mode.
+    if (live) await requestMic({ op: 'stop' }).outcome.catch(() => null)
+    if (playing) hushPhone('the headset is taking the track back')
 
-  // Whatever was running was opened in the wrong state for a duplex. Both go
-  // back, and both come up again below inside the mode.
-  if (live) await requestMic({ op: 'stop' }).outcome.catch(() => null)
-  if (playing) hushPhone('the headset is taking the track back')
+    // The devices first, for `requestInput`'s reason: a program picks its input
+    // and its output before anybody speaks, and a pair that exists and is silent
+    // beats an error and no pair at all.
+    setInput(true)
+    setOutput(true)
 
-  // The devices first, for `requestInput`'s reason: a program picks its input
-  // and its output before anybody speaks, and a pair that exists and is silent
-  // beats an error and no pair at all.
-  setInput(true)
-  setOutput(true)
+    let aec = null
+    try {
+      const answer = await askPhoneHeadset(true).outcome
+      aec = answer?.aec || null
+    } catch (err) {
+      return { ...headsetSummary(), phone: err.message }
+    }
 
-  let aec = null
-  try {
-    const answer = await askPhoneHeadset(true).outcome
-    aec = answer?.aec || null
-  } catch (err) {
-    return { ...headsetSummary(), phone: err.message }
+    headset = { since: Date.now(), aec, startedMic: false, startedPlay: false }
+  } else {
+    // The devices can have been unloaded under a mode that is still on — the
+    // speaker switch does exactly that — so they are asked for again before
+    // anything is played into them. Both are idempotent.
+    setInput(true)
+    setOutput(true)
   }
-
-  headset = { since: Date.now(), aec, startedMic: false, startedPlay: false }
-  log.ok(
-    aec?.enabled
-      ? 'the phone is a headset for this desktop, with its own echo canceller'
-      : 'the phone is a headset for this desktop — it has no echo canceller, so expect to hear yourself',
-  )
 
   // The microphone before the track, because the canceller hangs on the
   // record session and the track joins it. A refusal on either is reported
@@ -744,6 +750,15 @@ export async function requestHeadset(op = 'status') {
     try {
       await requestMic({ op: 'start' }).outcome
       headset.startedMic = true
+      // And now — not before — the phone can be asked what it actually got.
+      // An `AcousticEchoCanceler` is created against a *record session*, so
+      // the answer to the instruction that opened the mode was necessarily
+      // given by a phone that had no session yet and could only say whether
+      // the platform has a canceller at all. This second ask is the same
+      // idempotent instruction (the phone is already in the mode, so nothing
+      // is reopened) and it is the one whose answer is true.
+      const bound = await askPhoneHeadset(true).outcome.catch(() => null)
+      if (bound?.aec) headset.aec = bound.aec
     } catch (err) {
       trouble.push(err.message)
     }
@@ -762,6 +777,11 @@ export async function requestHeadset(op = 'status') {
   } else {
     headset.startedPlay = false
   }
+  log.ok(
+    headset.aec?.enabled
+      ? 'the phone is a headset for this desktop, with its own echo canceller'
+      : 'the phone is a headset for this desktop — no echo canceller was fitted, so expect to hear yourself',
+  )
   changed()
   return { ...headsetSummary(), ...(trouble.length ? { phone: trouble.join('; ') } : {}) }
 }
