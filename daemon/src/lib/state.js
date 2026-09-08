@@ -7,6 +7,7 @@ import { identity, fingerprint, SUITE } from './crypto.js'
 import * as tls from './tls.js'
 import { INBOX } from '../plugins/share.js'
 import { SOURCE_NAME, SOURCE_DESCRIPTION } from './pipesource.js'
+import { SINK_NAME, SINK_DESCRIPTION } from './pipesink.js'
 import { detected as detectedAgents } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
 import * as tmux from '../agents/tmux.js'
@@ -152,6 +153,17 @@ export function baseSnapshot({ version = null, port = null } = {}) {
     audio: {
       streaming: false,
       input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
+      // The speaker says the same three things for the same reasons, and one
+      // of them harder: a sink is unloaded on the way out, so a daemon that is
+      // down is a desktop whose sound is on its own speakers again, and the
+      // panel must not offer to turn off something that is already gone.
+      output: {
+        available: false,
+        name: SINK_NAME,
+        description: SINK_DESCRIPTION,
+        enabled: false,
+        playing: false,
+      },
     },
     // Sessions are discovered by a running daemon and nothing else, so with it
     // stopped the panel shows the switch and an empty list rather than a stale
@@ -224,6 +236,7 @@ export function clear() {
   snapshot.audio = {
     streaming: false,
     input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
+    output: { available: false, name: SINK_NAME, description: SINK_DESCRIPTION, enabled: false, playing: false },
   }
   return publish(snapshot)
 }

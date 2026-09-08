@@ -34,10 +34,13 @@ k  = HKDF-SHA256(es || ee, salt = e_pub || f_pub, info = "omarchy-connect v1 cha
 
 The first 32 bytes of `k` encrypt phone → desktop, the last 32 desktop → phone.
 Every later frame is binary ChaCha20-Poly1305 over the JSON that v1 sent in the
-clear — or, phone → desktop only, over a chunk of live microphone (**Live
-audio** below) or one picture from the camera (**Live video**). The three are
-told apart by the first four bytes of the plaintext: a JSON frame begins with
-`{`, an audio frame with `OCA1`, a video frame with `OCV1`.
+clear — or over a chunk of live microphone (**Live audio** below) or one
+picture from the camera (**Live video**) going up, or a chunk of the desktop's
+own sound (**The phone as a desktop output**) coming down. They are told apart
+by the first four bytes of the plaintext: a JSON frame begins with `{`, a
+microphone frame with `OCA1`, a video frame with `OCV1`, a speaker frame with
+`OCS1`. `OCS1` is the only one that travels desktop → phone, and it is the only
+kind of frame the desktop sends that is not JSON.
 
 Three properties follow, and each is exercised by the test suites:
 
@@ -350,6 +353,9 @@ false on a desktop without `voxtype` or `ffmpeg`.
 | `audio.status` | — | `{ streaming, stream, since, path, bytes, seconds, dropped, gaps, gain, input }`. |
 | `audio.offer` | `{ op }` | `start`, `stop` or `status`. The phone offering its own microphone instead of waiting to be asked. Answers with `audio.status`'s shape plus the `path` the desktop opened, once the handset is actually recording. Refused on a `remote` socket. |
 | `audio.input` | `{ op }` | `on`, `off` or `status`. Offers the phone as an input the whole desktop can see, and answers with `{ available, name, description, enabled, … }`. Refused on a `remote` socket. See **The phone as a desktop input**. |
+| `audio.playing` | `{ id, ok, error }` | `{ ok, stream }` — the phone's answer to being asked to become this desktop's speaker. |
+| `audio.hushed` | `{ stream, error }` | `{ ok }` — the phone saying it has stopped playing. The sink stays loaded; it is the desktop's device, not the handset's. |
+| `audio.speaker` | `{ op }` | `on`, `off` or `status`. Offers the phone as an *output* the whole desktop can see, and answers with `{ available, name, description, enabled, playing, … }`. Refused on a `remote` socket. See **The phone as a desktop output**. |
 
 The capability is
 `{ receive, encoding, rate, channels, chunkMs, maxSeconds, input }` and says
@@ -1609,6 +1615,12 @@ carry out, keeping it only while a source is loaded so it can be turned back
 off. `gain` is how much louder this desktop makes what the handset sends —
 see **How loud it is** — and it is in the snapshot whether or not anything is
 streaming, because it is the setting rather than the session.
+Beside `input` is `output`, which is the same three facts about the other
+direction — `{ available, name, description, enabled, playing, … }` — with one
+more that only this direction has: `playing` is whether the handset actually
+has a track open. A sink that is `enabled` while `playing` is false is a
+desktop quietly sending its sound nowhere, which is the one state the panel
+colours as urgent, because nothing else on the machine says so.
 The snapshot is republished the moment any of this moves, so a microphone
 that has been left on is never a state the desktop keeps to itself. The WAV
 path is in here for the same reason the address is: this file is `0600` in the
@@ -1928,6 +1940,113 @@ in a room nobody at this desktop can see.
 the screen off needs the foreground service to declare
 `foregroundServiceType="microphone"`, so `LinkService` claims that type
 alongside `connectedDevice` while — and only while — something is recording.
+
+### The phone as a desktop output
+
+The mirror of the section above, and the direction sound never travelled until
+now. What somebody wants out of it is one line in the **output** picker every
+program on this desktop already draws — **Omarchy Connect (phone)**, beside
+their speakers and their headset — and for whatever they route into it to come
+out of the handset in their pocket: a laptop whose own output is broken, a
+meeting they would rather hear from the phone on the table, music in the next
+room.
+
+```
+omarchy-connect speaker on         # and `off`, and `status`
+```
+
+Under the hood that is a FIFO in `$XDG_RUNTIME_DIR/omarchy-connect/speaker.pipe`
+and pipewire-pulse's own `module-pipe-sink` pointed at it, loaded as `s16le`,
+**mono**, at **48 kHz**. Mono because pipewire-pulse then does the downmix for
+every stereo program on the way in, which is free and better than anything this
+daemon would do with two channels it is about to add together. Forty-eight
+kilohertz for the reason the source is loaded at ninety-six — the module is
+`module-pipe-tunnel` underneath either way, so it keeps the same ring of 8192
+frames and the same table applies (512 ms at 16 kHz, 171 ms at 48, 85 at 96).
+The wire, though, still speaks 16 kHz mono, so the daemon takes the rate back
+down with a real anti-alias filter in front of it (`Downsampler` in
+`daemon/src/lib/resample.js`, the interpolator's mirror), and
+`OMARCHY_CONNECT_OUTPUT_RATE` picks another multiple of 16000 for anyone who
+wants to trade delay for wake-ups.
+
+**The format is the wire's, and that is a decision with a price.** 16 kHz mono
+is 32 KB/s for the whole desktop's sound, against 192 KB/s for 48 kHz stereo,
+and it is telephone quality: right for a meeting, for a call, for anything
+anybody would put a phone on the table for, and audibly not a hi-fi. A second
+format is one field in the `play` instruction and an `AudioTrack` built to
+match it, and both fit inside the 1 MB `maxPayload` with room to spare.
+
+**The switch, and then the handset.** `/api/speaker` loads the sink *first* and
+only then asks the phone, because a program picks its output before anybody
+presses play: a sink that exists and is unheard is a better outcome than no
+sink and an error, and a handset that was asleep can be asked again. The
+instruction and the answer are `mic`'s, one word apart:
+
+```jsonc
+// desktop → phone, on the audio channel
+{ "t": "ev", "event": "audio", "data": { "action": "play", "id": "<uuid>", "stream": 1,
+  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 20 } }
+
+// phone → desktop, once its track is actually open
+{ "t": "req", "id": 6, "method": "audio.playing", "params": { "id": "<uuid>", "ok": true } }
+
+// desktop → phone, when the switch goes off or the sink goes away
+{ "t": "ev", "event": "audio", "data": { "action": "hush", "stream": 1 } }
+```
+
+Then the chunks, fifty a second, inside the same encrypted frames as
+everything else:
+
+```
+"OCS1" || stream:uint32be || seq:uint32be || pcm
+  4            4                  4          n
+```
+
+`OCA1`'s header with one letter changed. `stream` is what the desktop handed
+out when the switch went on, so a chunk of a run that has ended — one in flight
+when the sink went away, one that arrives after a reconnect — is dropped by the
+phone rather than played into the middle of the next one; `seq` counts from
+zero within a stream, and a gap in it is a chunk the desktop could not get onto
+the socket in time. Nothing is queued at either end: a chunk that missed its
+socket is worthless by the time there is a socket again, so the desktop drops
+it against a `bufferedAmount` ceiling and the phone's `AudioTrack` write is
+non-blocking.
+
+**Silence is silence.** A `pipe-sink` that has been used once keeps writing for
+as long as it is `IDLE` — zeroes, at the sink's full rate — and carrying those
+across Wi-Fi would spend a radio and a battery to deliver nothing. So a chunk
+that is entirely zero is counted (`silent`) and dropped, and a phone whose
+track is simply not written to underruns into exactly the silence it would have
+been sent. Neither end reads that as an outage.
+
+**What is in the pipe is a delay, not a reserve** — the source's rule, in the
+other direction. The module writes at real time whether or not the daemon is
+draining, so a daemon that fell behind comes back to a pipe holding sound that
+is already too old to play in front of sound that is not. Every tick drains
+everything and keeps only the newest 100 ms; the rest is counted in `dropped`.
+
+**A socket that dies takes the sink with it**, and this is the one place the
+two directions deliberately differ. A source with nobody speaking into it is a
+microphone in an empty room, so it stays loaded; a *sink* with nobody carrying
+it away is a desktop whose sound is being swallowed — every program routed into
+it plays into a pipe that goes nowhere, with no sound and no error anywhere on
+the machine. Unloading it puts those programs back on the speakers they had.
+The module is unloaded synchronously on `SIGTERM` and any `module-pipe-sink`
+carrying this sink's name is reaped on the way up, exactly as the source's is.
+
+**Not down a tunnel.** `audio.speaker` is refused on a `remote` socket, like
+`audio.offer` and `audio.input`: a desktop whose sound is quietly rerouted to a
+handset in another building is the same kind of thing the microphone's fence is
+for.
+
+**On the handset** this is `AudioTrack` in the link module — nothing in the app
+had ever played a byte off the socket; the only playback was `Locator`'s
+ringtone through `MediaPlayer` — at `USAGE_MEDIA`, which is what puts it on the
+loudspeaker and under the media volume slider the person already knows. Playing
+with the screen off needs the foreground service to declare
+`foregroundServiceType="mediaPlayback"`, so `LinkService` claims that type
+alongside `connectedDevice` while — and only while — a track is open. No
+permission is asked for anywhere: Android needs none to play.
 
 ## Live video
 

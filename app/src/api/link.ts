@@ -36,6 +36,7 @@ import { startPhoneMirror } from './phone'
 import { startLocateResponder } from './locate'
 import { NO_MIC, startMicResponder, type MicResponder, type MicState } from './mic'
 import { NO_VIDEO, startVideoResponder, type VideoResponder, type VideoState } from './video'
+import { startSpeakerResponder } from './speaker.ts'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -419,6 +420,12 @@ class Link {
       camera.stop()
       this.patch({ video: NO_VIDEO })
     }
+    // And the one road that runs the other way: the desktop's own sound, out
+    // of this phone. Started here rather than from a screen for the reason
+    // none of the others is screen-bound — a phone being used as a speaker is
+    // a phone lying face down with the app nowhere in sight.
+    const speaker = startSpeakerResponder(client)
+    const stopSpeaker = () => speaker.stop()
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -522,6 +529,7 @@ class Link {
       stopLocating()
       stopMicrophone()
       stopCamera()
+      stopSpeaker()
       offs.forEach((off) => off())
     }
   }

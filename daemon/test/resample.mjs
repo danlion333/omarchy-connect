@@ -11,9 +11,10 @@
  * boundary is not audible, and it is cheap enough to run on every chunk.
  */
 import { check, done } from '../../tools/test-harness.mjs'
-import { Upsampler } from '../src/lib/resample.js'
+import { Upsampler, Downsampler } from '../src/lib/resample.js'
 import { RATE, CHUNK_MS } from '../src/lib/mic.js'
 import { RATE as SOURCE_RATE } from '../src/lib/pipesource.js'
+import { RATE as SINK_RATE } from '../src/lib/pipesink.js'
 
 const AMPLITUDE = 10000
 const chunkSamples = (RATE * CHUNK_MS) / 1000
@@ -91,6 +92,71 @@ for (const L of [...new Set([factor, 3, 6, 12])]) {
   const perChunk = (performance.now() - started) / 200
   check(`x${L}: one chunk costs well under its own length`, perChunk < CHUNK_MS / 10, `${perChunk.toFixed(3)} ms for ${CHUNK_MS} ms`)
 }
+
+/* ── and the decimator under `lib/pipesink.js` ─────────────────────────── */
+
+/**
+ * The other direction, which has one danger the interpolator does not.
+ *
+ * Throwing samples away without filtering first folds everything above the
+ * output's Nyquist back down into the band — a 6 kHz whistle in a 48 kHz sink
+ * would come out of a 16 kHz wire as a 2 kHz one, louder than anything else in
+ * the room and impossible to explain. So the checks that matter are: a tone in
+ * the voice band survives at its own height, a tone above the wire's Nyquist
+ * is *gone* rather than moved, a chunk boundary is inaudible whatever lengths
+ * the pipe hands over, and it is cheap.
+ */
+for (const D of [SINK_RATE / RATE, 3, 6]) {
+  const down = new Downsampler({ factor: D })
+  const inRate = RATE * D
+  /** A tone at `hz`, as the sink's own PCM, through one decimator. */
+  const played = (hz, seconds = 0.3) => {
+    const samples = Math.round(inRate * seconds)
+    const pcm = Buffer.alloc(samples * 2)
+    for (let i = 0; i < samples; i += 1) pcm.writeInt16LE(Math.round(AMPLITUDE * Math.sin((2 * Math.PI * hz * i) / inRate)), i * 2)
+    return down.process(pcm)
+  }
+
+  const voice = played(1000)
+  check(`÷${D}: the output is a ${D}th as long`, voice.length === Math.round((inRate * 0.3) / D) * 2, `${voice.length} bytes`)
+  // Past the filter's own warm-up, which is half a window.
+  const kept = peak(voice, 400)
+  check(`÷${D}: a 1 kHz tone keeps its height`, Math.abs(dB(kept / AMPLITUDE)) < 0.5, `${dB(kept / AMPLITUDE).toFixed(2)} dB`)
+
+  const above = new Downsampler({ factor: D })
+  const inRate2 = RATE * D
+  const samples = Math.round(inRate2 * 0.3)
+  const pcm = Buffer.alloc(samples * 2)
+  // 10 kHz: comfortably above the wire's 8 kHz Nyquist, and exactly the sort
+  // of thing a desktop plays all day.
+  for (let i = 0; i < samples; i += 1) pcm.writeInt16LE(Math.round(AMPLITUDE * Math.sin((2 * Math.PI * 10000 * i) / inRate2)), i * 2)
+  const folded = peak(above.process(pcm), 400)
+  check(`÷${D}: a tone above the wire's Nyquist is gone, not folded down`, dB(folded / AMPLITUDE) < -50, `${dB(Math.max(folded, 1) / AMPLITUDE).toFixed(1)} dB`)
+
+  // Ragged lengths on purpose: a pipe hands over whatever it has, and a
+  // decimator that assumed a multiple of the factor would shift its phase at
+  // every read and tick once a chunk.
+  const whole = new Downsampler({ factor: D })
+  const pieces = new Downsampler({ factor: D })
+  const signal = Buffer.alloc(D * 2 * 700)
+  for (let i = 0; i < signal.length / 2; i += 1) signal.writeInt16LE(((i * 977) % 20000) - 10000, i * 2)
+  const atOnce = whole.process(signal)
+  const cut = []
+  for (let at = 0; at < signal.length; at += 47 * 2) cut.push(pieces.process(signal.subarray(at, at + 47 * 2)))
+  check(`÷${D}: reads of a ragged length change nothing`, Buffer.concat(cut).equals(atOnce), `${Buffer.concat(cut).length} vs ${atOnce.length}`)
+
+  const silence = new Downsampler({ factor: D }).process(Buffer.alloc(D * 2 * 100))
+  check(`÷${D}: silence stays silence`, peak(silence) === 0, String(peak(silence)))
+
+  const block = Buffer.alloc(D * chunkSamples * 2)
+  const startedDown = performance.now()
+  for (let i = 0; i < 200; i += 1) down.process(block)
+  const perChunkDown = (performance.now() - startedDown) / 200
+  check(`÷${D}: one chunk costs well under its own length`, perChunkDown < CHUNK_MS / 2, `${perChunkDown.toFixed(3)} ms for ${CHUNK_MS} ms`)
+}
+
+check('a decimation factor that is not a whole number is refused', (() => { try { new Downsampler({ factor: 2.5 }); return false } catch { return true } })())
+check('and a factor of one is a copy', new Downsampler({ factor: 1 }).process(Buffer.from([1, 2, 3, 4])).equals(Buffer.from([1, 2, 3, 4])))
 
 check('a factor that is not a whole number is refused', (() => { try { new Upsampler({ factor: 2.5 }); return false } catch { return true } })())
 check('a factor of one is a copy', new Upsampler({ factor: 1 }).process(Buffer.from([1, 2, 3, 4])).equals(Buffer.from([1, 2, 3, 4])))

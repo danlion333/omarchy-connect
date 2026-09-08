@@ -34,6 +34,7 @@ import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
 import { SOURCE_NAME, SOURCE_DESCRIPTION } from '../src/lib/pipesource.js'
+import { SINK_DESCRIPTION } from '../src/lib/pipesink.js'
 
 const PORT = Number(process.env.PORT || 8829)
 const base = `http://127.0.0.1:${PORT}`
@@ -66,7 +67,10 @@ fs.writeFileSync(
     '    idx=$(( $(wc -l < "$modules") + 700 ))',
     // The real module holds the read end open; without a reader here the
     // daemon's non-blocking open of the write end has nothing to talk to.
-    '    setsid cat "$f" > /dev/null 2>/dev/null &',
+    // A source's module reads the pipe; a sink's writes into it. Both are
+    // held open for the life of the module, which is what makes an idle pipe
+    // read as "nothing to say" rather than as "nobody there".
+    '    case "$*" in *module-pipe-sink*) setsid bash -c \'exec 3> "$0"; while true; do sleep 1; done\' "$f" >/dev/null 2>&1 &;; *) setsid cat "$f" > /dev/null 2>/dev/null &;; esac',
     '    echo $! > "$pidfile"',
     '    shift 1',
     '    printf "%s\\t%s\\t%s\\n" "$idx" "$*" "loaded" >> "$modules"',
@@ -146,6 +150,16 @@ check(
   Model.micShown(Model.audio(stopped)) === false,
   Model.micText(Model.audio(stopped), false),
 )
+check(
+  'and says the same three things about the speaker',
+  stopped.audio?.output?.enabled === false && stopped.audio?.output?.playing === false && stopped.audio?.output?.available === false,
+  JSON.stringify(stopped.audio?.output ?? null),
+)
+check(
+  'so no speaker switch is offered either',
+  Model.speakerShown(Model.audio(stopped)) === false,
+  Model.speakerText(Model.audio(stopped), false),
+)
 
 /* ── a daemon that can hear ────────────────────────────────────────────── */
 
@@ -171,6 +185,12 @@ async function waitForDaemon() {
   }
   throw new Error('daemon did not start')
 }
+
+const speaker = (body) =>
+  fetch(`${base}/api/speaker`, { method: 'POST', headers: local(), body: JSON.stringify(body) }).then(async (r) => ({
+    status: r.status,
+    body: await r.json(),
+  }))
 
 const mic = (body) =>
   fetch(`${base}/api/mic`, { method: 'POST', headers: local(), body: JSON.stringify(body) }).then(async (r) => ({
@@ -220,6 +240,12 @@ async function connect(pairCode) {
       if (msg.t === 'ev' && msg.event === 'audio' && msg.data.action === 'start') {
         phone.send({ t: 'req', id: 901, method: 'audio.started', params: { id: msg.data.id, ok: true } })
       }
+      // And the other direction: a handset that opens a track for the
+      // desktop's own sound. Answered here so the switch below does not spend
+      // its fifteen seconds waiting for a phone that is in the room.
+      if (msg.t === 'ev' && msg.event === 'audio' && msg.data.action === 'play') {
+        phone.send({ t: 'req', id: 902, method: 'audio.playing', params: { id: msg.data.id, ok: true } })
+      }
     })
   })
   const subscribed = new Promise((resolve) => phone.on((msg) => msg.t === 'sub.ok' && resolve(msg.events)))
@@ -247,6 +273,16 @@ check(
   'which reads as off until somebody flips it',
   Model.micText(Model.audio(idle), true) === `off · no phone in this machine's microphone list`,
   Model.micText(Model.audio(idle), true),
+)
+check(
+  'and this desktop can offer the phone as a speaker, so that switch is drawn too',
+  idle?.audio?.output?.available === true && Model.speakerShown(Model.audio(idle)) === true,
+  JSON.stringify(idle?.audio?.output),
+)
+check(
+  'reading as off until somebody flips that one',
+  Model.speakerText(Model.audio(idle), true) === `off · no phone in this machine's output list`,
+  Model.speakerText(Model.audio(idle), true),
 )
 
 /* ── the switch the panel presses ──────────────────────────────────────── */
@@ -286,6 +322,41 @@ check(
   'while the switch says the phone is speaking rather than merely loaded',
   /the phone is speaking/.test(Model.micText(Model.audio(speaking), true)),
   Model.micText(Model.audio(speaking), true),
+)
+
+/* ── the speaker switch, which the panel presses the same way ──────────── */
+
+// The panel runs `speaker on` and reads the answer out of the file, so both
+// ends of that round trip are what is checked — and the state that only this
+// direction has: a sink that is loaded while the handset is not playing it,
+// which is a desktop quietly sending its sound nowhere.
+const speakerOn = await speaker({ op: 'on' })
+check('the speaker switch turns on', speakerOn.body?.audio?.output?.enabled === true, JSON.stringify(speakerOn.body?.audio?.output))
+
+const outputting = await until((s) => s.audio?.output?.enabled === true)
+check(
+  'and the status file says so without waiting for the panel to ask again',
+  outputting?.audio?.output?.enabled === true,
+  JSON.stringify(outputting?.audio?.output ?? null),
+)
+check(
+  'named the way a person will see it in their output picker',
+  outputting?.audio?.output?.description === SINK_DESCRIPTION,
+  JSON.stringify(outputting?.audio?.output?.description),
+)
+check(
+  'and the panel says whether the phone is actually playing it',
+  /the phone is playing it|not playing it yet/.test(Model.speakerText(Model.audio(outputting), true)),
+  Model.speakerText(Model.audio(outputting), true),
+)
+
+const speakerOff = await speaker({ op: 'off' })
+check('and off again', speakerOff.body?.audio?.output?.enabled === false, JSON.stringify(speakerOff.body?.audio?.output))
+const unloadedSink = await until((s) => s.audio?.output?.enabled === false)
+check(
+  'switching the speaker off is published too',
+  unloadedSink?.audio?.output?.enabled === false,
+  JSON.stringify(unloadedSink?.audio?.output ?? null),
 )
 
 /* ── and when the sound stops ──────────────────────────────────────────── */
@@ -328,6 +399,18 @@ check(
   Model.micText(Model.audio(deaf), true) === 'this desktop has no pipewire-pulse',
   Model.micText(Model.audio(deaf), true),
 )
+const deafOut = { running: true, audio: { output: { available: false, enabled: false } } }
+check(
+  'a desktop with no pipewire-pulse is offered no speaker switch either',
+  Model.speakerShown(Model.audio(deafOut)) === false,
+  Model.speakerText(Model.audio(deafOut), true),
+)
+check(
+  'and is told why',
+  Model.speakerText(Model.audio(deafOut), true) === 'this desktop has no pipewire-pulse',
+  Model.speakerText(Model.audio(deafOut), true),
+)
+
 // The one case where a switch has to be drawn anyway: a source is loaded and
 // the only way back out is through it.
 const stranded = { running: true, audio: { streaming: false, input: { available: false, enabled: true } } }
@@ -347,6 +430,11 @@ check(
   'a stopped daemon leaves nothing streaming behind it',
   down?.audio?.streaming === false && down?.audio?.input?.enabled === false,
   JSON.stringify(down?.audio ?? null),
+)
+check(
+  'and no output pointed at a phone it can no longer reach',
+  down?.audio?.output?.enabled === false && down?.audio?.output?.playing === false,
+  JSON.stringify(down?.audio?.output ?? null),
 )
 
 done('microphone panel checks')

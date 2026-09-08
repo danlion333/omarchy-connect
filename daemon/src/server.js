@@ -53,6 +53,8 @@ import {
   requestInput as requestAudioInput,
   feed as feedAudio,
   hangUp as hangUpAudio,
+  requestOutput as requestAudioOutput,
+  hangUpOutput as hangUpAudioOutput,
   summary as audioSummary,
   setGain as setAudioGain,
 } from './plugins/audio.js'
@@ -78,6 +80,17 @@ export const PROTOCOL_VERSION = 2
 const MAX_UPLOAD = 512 * 1024 * 1024
 const MAX_MESSAGE = 1 * 1024 * 1024
 const HEARTBEAT_MS = 20_000
+/**
+ * How much may be waiting on a socket before live sound is dropped rather
+ * than added to it.
+ *
+ * Quarter of a megabyte is eight seconds of the speaker's 32 KB/s: a socket
+ * that far behind is not going to catch up on a link that is delivering sound
+ * in real time, and every chunk piled on top of it would arrive later than the
+ * one before. `lib/mic.js` makes the same argument in the same words about the
+ * recording queue, and the phone's `sendBytes` makes it going the other way.
+ */
+const SOCKET_BACKLOG_BYTES = 256 * 1024
 export const DEFAULT_EVENTS = ['stats', 'clipboard', 'notification', 'theme', 'file', 'phone', 'audio', 'video', 'agent', 'terminal', 'endpoints']
 const RECENT_TRANSFERS = 8
 const FIREWALL_RECHECK_MS = 5 * 60 * 1000
@@ -775,6 +788,36 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       return undefined
     }
 
+    /**
+     * The desktop offering itself to the phone's speaker, and taking the offer
+     * back.
+     *
+     * `op: "on"` is `/api/mic`'s `op: "input"` pointed the other way: not a
+     * stream but a switch, answering with what the switch now is — including a
+     * sink that is loaded and unheard because the handset never woke up. Held
+     * open the way that one is, because the answer worth having is "the phone
+     * is playing" rather than "a message left".
+     */
+    if (req.method === 'POST' && url.pathname === '/api/speaker') {
+      if (!localOnly(req, res)) return undefined
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          const output = await requestAudioOutput(op)
+          publishState()
+          return json(res, 200, { ok: true, audio: { ...audioSummary(), output } })
+        } catch (err) {
+          return json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/locate') {
       if (!localOnly(req, res)) return undefined
       let body = ''
@@ -1308,6 +1351,11 @@ export function createServer({ port, version = '0.1.0' } = {}) {
       // Within the tick, so a socket that died mid-stream leaves a finished
       // file rather than a recorder waiting for bytes that will never come.
       hangUpAudio(client.id)
+      // And the other direction with it. A sink left loaded with no handset
+      // behind it swallows whatever this desktop routes into it, silently, so
+      // a socket that dies mid-playback takes the output down rather than
+      // leaving a device that eats sound.
+      hangUpAudioOutput(client.id)
       hangUpVideo(client.id)
       bus.unsubscribe([...client.events])
       clients.delete(client)
@@ -1494,6 +1542,39 @@ export function createServer({ port, version = '0.1.0' } = {}) {
   bus.on('audio.state', publishState)
   // The camera moved: a capture started or ended. Same road, same reason.
   bus.on('video.state', publishState)
+
+  /**
+   * Bytes towards one phone, rather than a sentence about them.
+   *
+   * The mirror of the audio and video branches in the message handler above,
+   * and until the desktop had a speaker to feed there was nothing on this
+   * road at all: everything the desktop sent was JSON. `session` names the
+   * socket the answer came back on, so sound for a run one handset started
+   * cannot be pushed at the socket it opened after reconnecting.
+   *
+   * Encrypted sockets only. Raw PCM of everything this desktop is playing is
+   * not something to put on a plaintext link because an old app asked nicely.
+   *
+   * And nothing is queued. A socket whose buffer is already deep is one that
+   * cannot carry live sound, and adding to it would only make the sound that
+   * eventually arrives later still — so the chunk is dropped and the caller is
+   * told, which is the very rule the phone keeps for the microphone going the
+   * other way.
+   */
+  bus.on('audio.bytes', (payload, session, report = () => {}) => {
+    for (const client of clients) {
+      if (!client.device || client.id !== session) continue
+      if (!client.secure || client.ws.readyState !== client.ws.OPEN) return report(false)
+      if (client.ws.bufferedAmount > SOCKET_BACKLOG_BYTES) return report(false)
+      try {
+        client.ws.send(client.secure.encrypt(payload), { binary: true })
+        return report(true)
+      } catch {
+        return report(false)
+      }
+    }
+    report(false)
+  })
 
   bus.on('event', (event, data) => {
     if (event === 'notification') counters.notifications += 1

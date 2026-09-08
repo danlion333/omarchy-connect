@@ -17,6 +17,13 @@ import {
   readGain,
 } from '../lib/mic.js'
 import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable } from '../lib/pipesource.js'
+import { PipeSink, SINK_DESCRIPTION, SINK_NAME, available as sinkAvailable } from '../lib/pipesink.js'
+import {
+  CHANNELS as WIRE_CHANNELS,
+  CHUNK_MS as WIRE_CHUNK_MS,
+  RATE as WIRE_RATE,
+  buildFrame as buildSpeakerFrame,
+} from '../lib/speaker.js'
 
 /**
  * Listening to the phone's microphone from the desktop.
@@ -64,6 +71,21 @@ import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable
  * the list is the feature, and quietly becoming the microphone of a machine
  * whose owner did not ask is not.
  *
+ * ## The desktop's output
+ *
+ * And the same road pointed the other way, which is younger than everything
+ * above it: `lib/pipesink.js` loads a PipeWire **sink**, so that a person can
+ * route this desktop's sound — a meeting, an album, everything — at the phone
+ * in their pocket and hear it come out of the handset. It is a toggle for the
+ * microphone's reason (a program picks its output before anybody presses play)
+ * and it differs from the input in exactly two places, both of them because a
+ * sink that nothing is carrying away *swallows sound*:
+ *
+ *   - turning it off tells the handset to close its track, because there is
+ *     nothing left on this road for a phone to be playing;
+ *   - a socket that dies takes the sink down with it, where a dead socket
+ *     leaves the microphone's source loaded and silent.
+ *
  * ## Who presses the button
  *
  * Both ends can. The desktop asking is the original road and the reason the
@@ -104,7 +126,28 @@ let input = null
 /** Undo for the `onChunk` subscription that feeds it. */
 let unfeed = null
 
+/** The desktop's output, when it is switched on. Never more than one. */
+let output = null
+/**
+ * The phone that is playing, or null. `session` is the socket the chunks are
+ * being sent down, so a handset that reconnected does not have the sound of a
+ * run it has already forgotten pushed at it.
+ */
+let playing = null
+/** The `play` instruction that has gone out and not been answered yet. */
+let askedToPlay = null
+/** Handed out ascending, so a chunk of a finished run is recognisable. */
+let nextPlayStream = 1
+
 const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunkMs: CHUNK_MS })
+
+/** The other direction's format. The same wire, the same numbers, going out. */
+const playFormat = () => ({
+  encoding: 's16le',
+  rate: WIRE_RATE,
+  channels: WIRE_CHANNELS,
+  chunkMs: WIRE_CHUNK_MS,
+})
 
 /**
  * Say, on this desktop only, that the microphone picture has moved.
@@ -118,7 +161,7 @@ const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunk
 const changed = () => bus?.emit('audio.state')
 
 export function summary() {
-  const desktop = { input: inputSummary() }
+  const desktop = { input: inputSummary(), output: outputSummary() }
   if (!live) return { streaming: false, gain: currentGain(), auto: currentAuto(), ...desktop }
   return {
     streaming: true,
@@ -172,6 +215,203 @@ export function setInput(on) {
   if (was.enabled !== undefined) log.info('the phone is no longer an input on this desktop')
   changed()
   return { available: pipeAvailable(), name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false }
+}
+
+/* ── the phone as this desktop's speaker ─────────────────────────────── */
+
+/**
+ * What the output toggle is doing, and whether the handset is playing it.
+ *
+ * Two facts, kept apart the way `inputSummary` and `streaming` are kept apart,
+ * because they fail separately: the sink can be loaded on a desktop whose
+ * phone is asleep — every program on the machine can route into it and nothing
+ * comes out — and the phone can be playing a run whose sink somebody has since
+ * unloaded, which is the state that lasts for one tick.
+ */
+export function outputSummary() {
+  return {
+    available: sinkAvailable(),
+    name: SINK_NAME,
+    description: SINK_DESCRIPTION,
+    playing: Boolean(playing),
+    ...(playing ? { stream: playing.stream, playingSince: playing.startedAt, sent: playing.sent } : {}),
+    ...(output ? output.summary() : { enabled: false }),
+  }
+}
+
+/** Is the phone currently offered as an output here? */
+export const outputEnabled = () => Boolean(output?.running)
+
+/**
+ * One chunk of this desktop's sound, towards the handset.
+ *
+ * Nothing is queued and nothing is retried. A chunk that missed its socket is
+ * worthless by the time there is a socket again — the moment it belonged to
+ * has passed — which is the very rule `client.sendBytes` keeps on the phone
+ * for the microphone going the other way. What a refused chunk earns is a
+ * number in the summary, so a link that cannot keep up is visible as sound
+ * that never left rather than as a mystery.
+ */
+function pushChunk(pcm) {
+  if (!playing || !bus) return
+  const frame = buildSpeakerFrame(playing.stream, playing.seq, pcm)
+  playing.seq += 1
+  bus.emit('audio.bytes', frame, playing.session, (sent) => {
+    if (sent) playing.sent += 1
+    else playing.missed += 1
+  })
+}
+
+/**
+ * Switch the desktop output on or off.
+ *
+ * Idempotent in both directions, which is what makes it safe as a toggle a
+ * phone can press: turning on something already on answers with the sink that
+ * is already there rather than loading a second module beside it.
+ *
+ * Turning it *off* also tells the handset to close its track. That is not the
+ * same bargain the input makes — there, a stream somebody started from the
+ * terminal outlives the switch — because there is nothing on this road for a
+ * phone to be playing once the sink is gone: every byte it would play comes
+ * out of that pipe.
+ */
+export function setOutput(on) {
+  if (on) {
+    if (output?.running) return outputSummary()
+    if (!sinkAvailable()) {
+      throw new Error('this desktop has no pipewire-pulse, so it cannot offer the phone as an output')
+    }
+    const sink = new PipeSink({
+      onChunk: pushChunk,
+      // Somebody unloaded the module by hand. The sink is already down by the
+      // time this runs; what is left is to stop the handset playing a stream
+      // nothing is feeding any more.
+      onGone: () => {
+        output = null
+        hushPhone('the sink went away')
+        changed()
+      },
+    })
+    sink.start()
+    output = sink
+    changed()
+    return outputSummary()
+  }
+  const was = output ? output.stop() : { enabled: false }
+  output = null
+  hushPhone('the desktop switched the speaker off')
+  if (was.enabled !== undefined) log.info('the phone is no longer an output on this desktop')
+  changed()
+  return { available: sinkAvailable(), name: SINK_NAME, description: SINK_DESCRIPTION, playing: false, enabled: false }
+}
+
+/**
+ * Tell the handset to close its track, if one is open, and forget it.
+ *
+ * Always safe to call, which matters because four different things end a
+ * playback — the switch, the socket, the module being unloaded, the daemon
+ * stopping — and they race.
+ */
+function hushPhone(why, { tell = true } = {}) {
+  if (askedToPlay) {
+    clearTimeout(askedToPlay.timer)
+    askedToPlay.reject(new Error(why))
+    askedToPlay = null
+  }
+  const current = playing
+  if (!current) return null
+  playing = null
+  log.info(`the phone stopped being this desktop's speaker (${why}): ${current.sent} chunks sent`)
+  if (tell) bus?.emit('event', 'audio', { action: 'hush', stream: current.stream })
+  return current
+}
+
+/** How long the desktop waits for the handset to say whether it could play. */
+const PLAY_TTL_MS = 15_000
+
+/**
+ * Ask the handset to open its speaker, and hold the answer until it has.
+ *
+ * `requestMic`'s shape exactly, and for the same reason: a success has to mean
+ * a track is open on the phone rather than that a message went into the dark.
+ */
+function askPhoneToPlay() {
+  if (!bus) throw new Error('daemon is not running')
+  if (playing) throw new Error('the phone is already playing this desktop')
+  if (askedToPlay) throw new Error('the phone has already been asked and has not answered yet')
+
+  const stream = nextPlayStream
+  nextPlayStream += 1
+  const id = crypto.randomUUID()
+  const outcome = new Promise((resolve, reject) => {
+    askedToPlay = {
+      id,
+      stream,
+      resolve,
+      reject,
+      timer: setTimeout(() => {
+        askedToPlay = null
+        reject(new Error('the phone did not answer — it may be off, asleep or off this network'))
+      }, PLAY_TTL_MS),
+    }
+    askedToPlay.timer.unref?.()
+  })
+  bus.emit('event', 'audio', { action: 'play', id, stream, ...playFormat() })
+  return { id, stream, outcome }
+}
+
+/**
+ * The toggle as a person means it: an output on this desktop, coming out of
+ * the phone.
+ *
+ * `setOutput` is the mechanism and this is the intent, and the order is the
+ * same one `requestInput` argues for: the sink is loaded *first*, because a
+ * sink that exists and is silent is a far better outcome than no sink and an
+ * error — a program picks its output before anybody presses play, and a
+ * handset that was asleep can be asked again. A phone that refuses is reported
+ * beside a sink that is nonetheless there.
+ */
+export async function requestOutput(op = 'status') {
+  const action = String(op || 'status').toLowerCase()
+  if (action === 'status') return outputSummary()
+  if (!['on', 'off', 'start', 'stop', 'enable', 'disable'].includes(action)) {
+    throw new Error(`unknown output action: ${op}`)
+  }
+  if (['off', 'stop', 'disable'].includes(action)) return setOutput(false)
+
+  const state = setOutput(true)
+  if (playing || askedToPlay) return { ...state, playing: Boolean(playing) }
+  try {
+    await askPhoneToPlay().outcome
+    return outputSummary()
+  } catch (err) {
+    // The switch worked; the handset did not answer it. Both facts go back.
+    return { ...outputSummary(), phone: err.message }
+  }
+}
+
+/**
+ * The socket carrying the sound away went down.
+ *
+ * The sink goes with it, and that is a deliberate difference from the
+ * microphone's `hangUp`, which leaves the source loaded and silent. A source
+ * nobody is speaking into is a microphone in an empty room; a *sink* nobody is
+ * carrying away is a desktop whose sound is being swallowed — every program
+ * routed into it plays into a pipe that goes nowhere, with no sound and no
+ * error anywhere on the machine. Unloading it puts those programs back on the
+ * speakers they had, which is what somebody whose phone just walked out of
+ * Wi-Fi range wants to happen.
+ */
+export function hangUpOutput(session) {
+  if (!playing || playing.session !== session) return
+  hushPhone('the socket closed', { tell: false })
+  if (output) {
+    try {
+      setOutput(false)
+    } catch (err) {
+      log.warn(`could not take the phone output down: ${err.message}`)
+    }
+  }
 }
 
 /**
@@ -430,6 +670,16 @@ export default {
   stop() {
     startedTheStream = false
     if (live) void finish('the daemon is stopping', { tell: false })
+    // The speaker first, because it is the one whose absence is silent: a
+    // `module-pipe-sink` left loaded by a daemon on its way out is an output
+    // in every picker on this machine that swallows whatever is routed into
+    // it. Synchronous for the same reason `setInput(false)` is.
+    try {
+      if (output) setOutput(false)
+      else hushPhone('the daemon is stopping', { tell: false })
+    } catch (err) {
+      log.warn(`could not take the phone output down: ${err.message}`)
+    }
     // Before the listeners are cleared, and synchronously: a module left
     // loaded by a daemon on its way out is a source in every picker on this
     // machine, pointing at a pipe that no longer exists.
@@ -460,6 +710,14 @@ export default {
       // app draws no button for it — the same bargain `dictation` and
       // `media` already make about `voxtype` and `wpctl`.
       input: inputSummary(),
+      // And whether it can go the other way: this desktop's own sound out of
+      // the handset's speaker. False on the same machines for the same reason,
+      // and separately from `input` because a phone talking to a desktop that
+      // has one and not the other must draw one button and not two.
+      output: outputSummary(),
+      // The format the desktop will send when it does. Advertised so an app
+      // can build its track before the first chunk lands rather than after.
+      play: playFormat(),
     }
   },
 
@@ -557,6 +815,69 @@ export default {
       // either set or gone, so the state the app draws from is the state the
       // press actually produced rather than the one before it.
       return { ...summary(), ...(result?.path ? { path: result.path } : {}) }
+    },
+
+    /**
+     * The handset's answer to being asked to become this desktop's speaker.
+     *
+     * `audio.started`'s twin, down to the fifteen seconds and the sentence:
+     * `ok` false is a refusal with a reason — no track could be opened, the
+     * build is too old to have one — and the desktop's `omarchy-connect
+     * speaker` prints it rather than timing out on sound that was never going
+     * to be played.
+     */
+    'audio.playing'({ id, ok = true, error } = {}, ctx = {}) {
+      const pending = askedToPlay
+      if (!pending || pending.id !== id) throw new Error('nothing is waiting on that speaker request')
+      clearTimeout(pending.timer)
+      askedToPlay = null
+      if (!ok) {
+        pending.reject(new Error(error || 'the phone could not open its speaker'))
+        return { ok: false }
+      }
+      playing = {
+        stream: pending.stream,
+        session: ctx.session,
+        startedAt: Date.now(),
+        seq: 0,
+        sent: 0,
+        missed: 0,
+      }
+      log.ok('the phone is this desktop\'s speaker')
+      changed()
+      pending.resolve({ ok: true, stream: playing.stream, ...playFormat() })
+      return { ok: true, stream: playing.stream }
+    },
+
+    /**
+     * The handset saying it has stopped playing — because the desktop asked,
+     * because Android took the track away, or because something else on the
+     * phone wanted the speaker. The sink stays exactly where it is: it is this
+     * desktop's device, a person may have routed a meeting into it, and it is
+     * not a handset's to unload. What ends is the sending.
+     */
+    'audio.hushed'({ stream, error } = {}, ctx = {}) {
+      if (!playing || playing.session !== ctx.session) return { ok: true }
+      if (stream !== undefined && Number(stream) !== playing.stream) return { ok: true }
+      hushPhone(error ? `the phone stopped: ${error}` : 'the phone stopped', { tell: false })
+      changed()
+      return { ok: true }
+    },
+
+    /**
+     * The phone flipping the desktop's output on or off.
+     *
+     * The switch is here as well as in the CLI for the reason the microphone's
+     * is: the speaker is on the handset, and somebody walking into the room
+     * with the phone in their hand should be able to offer it without going to
+     * the keyboard first. It rides `audio`, so like everything else on that
+     * channel it is refused to a socket that came down a tunnel — a desktop
+     * whose sound is quietly rerouted to a handset in another building is
+     * exactly the shape of thing the fence is there for.
+     */
+    async 'audio.speaker'({ op = 'status' } = {}, ctx = {}) {
+      remoteRefused(ctx)
+      return requestOutput(op)
     },
 
     /**

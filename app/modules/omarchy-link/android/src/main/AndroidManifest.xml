@@ -42,6 +42,17 @@
     while something is actually filming: `LinkService.holdCamera`.
   -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+
+  <!--
+    This desktop's sound, out of the phone's speaker — see `Speaker`.
+
+    Playing needs no runtime permission of its own; what this is for is the
+    right to go on playing once the app is out of sight, which is the only
+    state a phone being used as a speaker is ever in. Claimed on the service
+    that already exists and only while a track is open, exactly as the two
+    above are: `LinkService.holdPlayback`.
+  -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
   <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
   <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -76,7 +87,7 @@
     <service
       android:name=".LinkService"
       android:exported="false"
-      android:foregroundServiceType="connectedDevice|microphone|camera"
+      android:foregroundServiceType="connectedDevice|microphone|camera|mediaPlayback"
       android:stopWithTask="false" />
 
     <!--

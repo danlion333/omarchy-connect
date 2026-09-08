@@ -133,6 +133,15 @@ Item {
   // still appears while the source is loaded, so it can be turned back off.
   readonly property bool micAvailable: Model.micShown(audio)
 
+  // And the same phone as a *speaker*: a sink this desktop can route anything
+  // into. Kept as separate properties from the microphone's rather than folded
+  // into one "audio" switch, because the two fail apart — a handset can be
+  // playing this desktop while nothing is listening to its microphone, and a
+  // panel that drew one switch for both would be wrong half the time.
+  readonly property bool speakerEnabled: audio.output.enabled
+  readonly property bool speakerPlaying: audio.output.playing
+  readonly property bool speakerAvailable: Model.speakerShown(audio)
+
   // Whether the phone may reach this desktop from off its own network, and
   // what it would come in over. Switchable from here for the same reason the
   // agent switch is: the daemon applies it live, so the link survives it.
@@ -583,6 +592,23 @@ Item {
 
   function disableMic() {
     invoke(Model.command(root.status, ["mic", "input", "off"]), "Taking the phone out of the input list…")
+  }
+
+  /**
+   * The phone in this machine's output list.
+   *
+   * Worth waiting on for the microphone's reason and one more: turning it on
+   * loads the sink *and* asks the handset to open a track, and a phone that is
+   * asleep leaves a device that swallows sound. That is the one failure here
+   * somebody has to read rather than discover by wondering why their music
+   * stopped.
+   */
+  function enableSpeaker() {
+    invoke(Model.command(root.status, ["speaker", "on"]), "Offering the phone as a speaker…")
+  }
+
+  function disableSpeaker() {
+    invoke(Model.command(root.status, ["speaker", "off"]), "Taking the phone out of the output list…")
   }
 
   function enableRemote() {

@@ -121,6 +121,56 @@ export function isCameraRunning() {
   return camera.running
 }
 
+/* ── the speaker ────────────────────────────────────────────────────── */
+
+/**
+ * The player, as a switch and a list of what was written to it.
+ *
+ * `globalThis.__speaker` is what a suite sets to describe the handset it wants
+ * — a build with no player, a track Android will not give — and what it reads
+ * to find out whether a track was opened, what went into it, and whether it
+ * was ever given back.
+ */
+const speaker = (globalThis.__speaker = {
+  supported: true,
+  running: false,
+  starts: 0,
+  stops: 0,
+  /** What the last `startSpeaker` was told about the format. */
+  last: null,
+  /** Every chunk written, in order, as byte arrays. */
+  written: [],
+  /** Set to a message to make `startSpeaker` throw it. */
+  refuse: null,
+  /** Set to a message to make `writeSpeaker` throw it. */
+  breakOnWrite: null,
+})
+
+export function speakerSupported() {
+  return speaker.supported
+}
+
+export function startSpeaker(rate, chunkMs) {
+  if (speaker.refuse) throw new Error(speaker.refuse)
+  speaker.starts += 1
+  speaker.running = true
+  speaker.last = { rate, chunkMs }
+}
+
+export function stopSpeaker() {
+  if (speaker.running) speaker.stops += 1
+  speaker.running = false
+}
+
+export function isSpeakerRunning() {
+  return speaker.running
+}
+
+export function writeSpeaker(pcm) {
+  if (speaker.breakOnWrite) throw new Error(speaker.breakOnWrite)
+  speaker.written.push(Array.from(pcm))
+}
+
 /**
  * The native event emitter, reduced to what the responders subscribe to. A
  * suite fires one with `globalThis.__mic.listeners.onMicStopped({ error })`,
