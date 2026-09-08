@@ -127,6 +127,14 @@ internal object Mic {
     // milliseconds Android occasionally takes the thread away for.
     val bufferBytes = maxOf(minimum, chunkBytes * 4)
 
+    // Headset mode is decided here rather than passed in, because the two
+    // things that decide it — the source and the session — are both fixed at
+    // the moment the input is constructed and cannot be changed on a running
+    // `AudioRecord`. `Headset` explains why it is a mode and not a switch.
+    val duplex = Headset.wanted
+    val source =
+      if (duplex) MediaRecorder.AudioSource.VOICE_COMMUNICATION else MediaRecorder.AudioSource.VOICE_RECOGNITION
+
     val input = try {
       // VOICE_RECOGNITION rather than MIC: it is the source Android documents
       // as unprocessed for speech — no automatic gain riding over pauses, no
@@ -145,7 +153,16 @@ internal object Mic {
       // fitted here would spend that headroom before the desktop ever saw
       // it, differently on every handset, and could not be undone from the
       // machine that has to live with the result.
-      AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, RATE, CHANNEL, ENCODING, bufferBytes)
+      //
+      // In headset mode all of that is still true and none of it is decisive.
+      // The desktop's sound is coming out of this phone's own loudspeaker two
+      // centimetres from this microphone, so the thing to be got right is not
+      // the noise floor but the loop, and the loop is only cancellable on the
+      // communication path — `VOICE_COMMUNICATION`, one audio session, an
+      // `AcousticEchoCanceler` bound below. The platform's own gain riding
+      // comes with it and cannot be turned off from here; that is the price of
+      // not hearing yourself, and `Headset` argues it at length.
+      AudioRecord(source, RATE, CHANNEL, ENCODING, bufferBytes)
     } catch (error: Exception) {
       Trace.fail("mic.start.failed", error)
       LinkService.holdMicrophone(false)
@@ -179,6 +196,13 @@ internal object Mic {
       return false
     }
 
+    // After `startRecording` and not before: the session id is real from the
+    // moment the object exists, but an effect created on a session that is not
+    // yet capturing is one more thing to get wrong for no gain. The track
+    // joins this session afterwards, which is why the desktop opens the
+    // microphone first.
+    if (duplex) Headset.bind(input.audioSessionId)
+
     wifi = try {
       (context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager)
         ?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "omarchy:mic")
@@ -193,7 +217,14 @@ internal object Mic {
       null
     }
 
-    Trace.evt("mic.start", "chunkMs" to window, "buffer" to bufferBytes, "wifiLock" to (wifi != null))
+    Trace.evt(
+      "mic.start",
+      "chunkMs" to window,
+      "buffer" to bufferBytes,
+      "wifiLock" to (wifi != null),
+      "headset" to duplex,
+      "session" to input.audioSessionId,
+    )
     thread = Thread({ pump(input, chunkBytes) }, "omarchy-mic").also {
       it.priority = Thread.MAX_PRIORITY
       it.start()
@@ -223,6 +254,10 @@ internal object Mic {
       /* the same */
     }
     thread = null
+    // The canceller hangs on the session this input just gave back, so it goes
+    // with it. The *mode* does not: the desktop's sound may still be playing
+    // out of this phone, and leaving it is a decision made a layer up.
+    Headset.unbind()
     try {
       wifi?.takeIf { it.isHeld }?.release()
     } catch (error: Exception) {

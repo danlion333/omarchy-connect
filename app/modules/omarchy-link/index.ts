@@ -147,6 +147,9 @@ declare class OmarchyLink extends NativeModule<Events> {
   stopSpeaker(): void
   isSpeakerRunning(): boolean
   writeSpeaker(pcm: string): boolean
+  startHeadset(): boolean
+  stopHeadset(): void
+  headsetStatus(): HeadsetFacts
   takeShareIntent(): Promise<SharePayload | null>
 }
 
@@ -603,6 +606,82 @@ export function writeSpeaker(pcm: Uint8Array): void {
   let binary = ''
   for (let i = 0; i < pcm.length; i += 1) binary += String.fromCharCode(pcm[i])
   if (!native.writeSpeaker(globalThis.btoa(binary))) throw new Error('the phone stopped playing')
+}
+
+/* ── the headset ────────────────────────────────────────────────────── */
+
+/**
+ * What the phone can actually do about hearing itself, once it has tried.
+ *
+ * `aecAvailable` is a per-handset answer — `AcousticEchoCanceler.isAvailable()`
+ * — and `aecEnabled` is whether one was actually created and switched on for
+ * the session the microphone is recording into. They differ, and the
+ * difference is worth carrying all the way to the desktop: "this phone has no
+ * canceller" and "this stream did not get one" want different sentences.
+ */
+export type HeadsetFacts = {
+  on: boolean
+  session: number
+  aecAvailable: boolean
+  aecEnabled: boolean
+  recording: boolean
+  playing: boolean
+}
+
+/** Nothing known, because nothing native answered. */
+export const NO_HEADSET_FACTS: HeadsetFacts = {
+  on: false,
+  session: 0,
+  aecAvailable: false,
+  aecEnabled: false,
+  recording: false,
+  playing: false,
+}
+
+/**
+ * Whether this build can be a headset at all.
+ *
+ * The same three noes `micSupported` answers, and checked the same way: an
+ * installed build older than this feature has the module and has never heard
+ * of `startHeadset`, and a desktop that is holding a request open for the
+ * answer deserves a sentence rather than a timeout.
+ */
+export function headsetSupported(): boolean {
+  const native = linkService()
+  return typeof (native as unknown as { startHeadset?: unknown } | null)?.startHeadset === 'function'
+}
+
+/**
+ * Become a headset: one audio session, the communication source, the
+ * platform's echo canceller, and the loudspeaker rather than the earpiece.
+ *
+ * Asked before either direction is opened, because every one of those is fixed
+ * when `AudioRecord` and `AudioTrack` are built. Throws when it cannot, for
+ * the reason `startSpeaker` throws: the desktop is holding a request open for
+ * a sentence.
+ */
+export function startHeadset(): void {
+  const native = linkService()
+  if (!native) throw new Error('this build cannot be a headset for the desktop')
+  if (!native.startHeadset()) throw new Error('the phone would not go into headset mode')
+}
+
+/** Leave the mode and put the phone back. Safe when it was never entered. */
+export function stopHeadset(): void {
+  try {
+    linkService()?.stopHeadset()
+  } catch {
+    /* the mode was never entered, or the module went with the runtime */
+  }
+}
+
+/** What the mode actually is on this handset, rather than what was asked. */
+export function headsetFacts(): HeadsetFacts {
+  try {
+    return linkService()?.headsetStatus() ?? NO_HEADSET_FACTS
+  } catch {
+    return NO_HEADSET_FACTS
+  }
 }
 
 /* ── the camera ─────────────────────────────────────────────────────── */

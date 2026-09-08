@@ -737,6 +737,69 @@ async function cmdSpeaker(args) {
 }
 
 /**
+ * The phone as a headset: its microphone and its speaker at once.
+ *
+ * `mic input` and `speaker` are the two halves and this is not a third switch
+ * beside them — it is both of them, raised in the order that lets the handset
+ * put an echo canceller between them. Without that order the two halves are a
+ * loop: the phone's loudspeaker plays what the desktop is saying and the phone's
+ * microphone, two centimetres away, sends it back.
+ *
+ * What comes back is the mode *and* what the handset could actually do about
+ * the echo, and both are printed. A phone with no `AcousticEchoCanceler` is a
+ * working duplex that echoes, and somebody is better off reading that here
+ * than discovering it in the middle of a call.
+ */
+async function cmdHeadset(args) {
+  const [action = 'status'] = args._
+  const op = ['on', 'start', 'enable'].includes(action)
+    ? 'on'
+    : ['off', 'stop', 'disable'].includes(action)
+      ? 'off'
+      : action === 'status'
+        ? 'status'
+        : null
+  if (!op) {
+    log.error('usage: omarchy-connect headset <on|off|status>')
+    process.exit(1)
+  }
+  const res = await daemonRequest('/api/headset', { method: 'POST', body: { op }, timeout: 60_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the headset could not be switched')
+    process.exit(1)
+  }
+  const headset = res.data?.audio?.headset || {}
+  if (!headset.available) {
+    log.warn('this desktop has no pipewire-pulse, so the phone cannot be a headset for it')
+    return
+  }
+  if (!headset.on) {
+    return log.info(
+      op === 'status'
+        ? 'the phone is not a headset on this desktop — `omarchy-connect headset on`'
+        : 'the phone is no longer a headset on this desktop',
+    )
+  }
+  log.ok('the phone is a headset for this desktop — its microphone in, its speaker out')
+  if (headset.echoCancellation) {
+    log.info('the handset is cancelling the echo of its own speaker')
+  } else {
+    log.warn(
+      headset.aec?.available === false
+        ? 'this handset has no echo canceller, so the desktop will hear itself — use one person at a time'
+        : 'no echo canceller was fitted to this stream, so the desktop may hear itself',
+    )
+  }
+  if (!headset.listening) log.warn('nothing is being heard from the phone yet')
+  if (!headset.playing) log.warn('the phone is not playing this desktop yet')
+  if (headset.phone) log.warn(`the handset had trouble: ${headset.phone}`)
+}
+
+/**
  * Watch through the phone's camera from here.
  *
  * `camera` asks and holds the terminal until the handset answers, so a
@@ -2382,6 +2445,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('mic input')} <on|off|status>  offer the phone as an input every app can pick
   ${bold('mic gain')} [N|auto]           how much louder the desktop makes it
   ${bold('speaker')} <on|off|status>     play this desktop's sound out of the phone
+  ${bold('headset')} <on|off|status>     both at once, with the phone cancelling the echo
   ${bold('camera')} <start|stop|status>  stream the phone's camera to this desktop
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
@@ -2412,6 +2476,7 @@ const commands = {
   locate: cmdLocate,
   mic: cmdMic,
   speaker: cmdSpeaker,
+  headset: cmdHeadset,
   camera: cmdCamera,
   agent: cmdAgent,
   terminal: cmdTerminal,

@@ -376,6 +376,37 @@ class OmarchyLinkModule : Module() {
      */
     Function("writeSpeaker") { pcm: String -> Speaker.writeEncoded(pcm) }
 
+    /* ── the headset ──────────────────────────────────────────────────── */
+
+    /**
+     * Enter the mode where this phone is a microphone and a speaker at once.
+     *
+     * Asked *before* either direction is opened, and that ordering is the
+     * whole of it: the record source, the audio session and the platform's
+     * echo canceller are all fixed at the moment `AudioRecord` and
+     * `AudioTrack` are constructed, so a mode entered afterwards would change
+     * nothing until something restarted. `Headset` argues it at length.
+     *
+     * Answers false only on a device with no audio manager at all.
+     */
+    Function("startHeadset") { Headset.start(context) }
+
+    /**
+     * Leave it, and put the phone back the way it was found — the mode, the
+     * routing and the canceller. Safe when the mode was never entered, because
+     * the desktop asking, the socket dying and the app going away are three
+     * roads here and they race.
+     */
+    Function("stopHeadset") { Headset.stop(context) }
+
+    /**
+     * What the duplex actually is on this handset, rather than what was asked
+     * for. `aecAvailable` is a per-handset fact and some phones say no; the
+     * desktop prints that instead of promising an echo canceller that is not
+     * there.
+     */
+    Function("headsetStatus") { Headset.status() }
+
     /* ── the camera ───────────────────────────────────────────────────── */
 
     /**

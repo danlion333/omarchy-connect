@@ -37,6 +37,7 @@ import { startLocateResponder } from './locate'
 import { NO_MIC, startMicResponder, type MicResponder, type MicState } from './mic'
 import { NO_VIDEO, startVideoResponder, type VideoResponder, type VideoState } from './video'
 import { startSpeakerResponder } from './speaker.ts'
+import { startHeadsetResponder } from './headset.ts'
 import {
   backgroundLinkChosen,
   backgroundLinkEnabled,
@@ -426,6 +427,13 @@ class Link {
     // a phone lying face down with the app nowhere in sight.
     const speaker = startSpeakerResponder(client)
     const stopSpeaker = () => speaker.stop()
+    // And the mode that puts those two together. It opens nothing itself —
+    // the microphone and the track are still opened by their own responders,
+    // on the desktop's own instructions — it only decides the state they are
+    // opened in, which is why it is started here beside them rather than
+    // inside either.
+    const headset = startHeadsetResponder(client)
+    const stopHeadset = () => headset.stop()
     const offs = [
       client.on('status', ({ status, error }: { status: ConnectionStatus; error: string | null }) => {
         this.patch({ status, error })
@@ -530,6 +538,10 @@ class Link {
       stopMicrophone()
       stopCamera()
       stopSpeaker()
+      // Last, and never conditionally: the mode is the one piece of state
+      // here that is felt outside this app, so a socket going away must not
+      // leave the phone in it.
+      stopHeadset()
       offs.forEach((off) => off())
     }
   }

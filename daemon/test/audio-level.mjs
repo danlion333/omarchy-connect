@@ -174,6 +174,58 @@ check('but never below the floor', shouting.leveller.gain >= MIN_AUTO_GAIN)
 const whisper = run(300, 60)
 check('and a very quiet room stops at the ceiling rather than opening for ever', whisper.leveller.gain <= MAX_AUTO_GAIN, String(whisper.leveller.gain))
 
+/* ── the same follower over a headset ──────────────────────────────────── */
+
+// The follower was written against one signal — `VOICE_RECOGNITION`, no gain
+// riding, no suppression — and headset mode hands it a different one:
+// `VOICE_COMMUNICATION`, whose platform processing cannot be switched off from
+// this desktop. That is not a reason to change the arithmetic, but it is a
+// reason to re-read it against what actually arrives, so both of these were
+// measured on the handset on this desk (OnePlus 9 Pro, Android 15, the phone's
+// gain pinned at 1 so the numbers are the phone's own):
+//
+//   outside the mode   room floor rms -41.7 dBFS
+//   in the mode        room floor rms -66.5 dBFS
+//
+// Twenty-five decibels quieter in the gaps, because the suppressor that comes
+// with the communication path takes the hiss out. The gate's whole job is to
+// stop the follower chasing a gap, and a gap that arrives *quieter* makes it
+// safer rather than less safe — which is why nothing below is a special case
+// for the mode.
+
+// What a suppressed pause is: not the hissy floor around 50 the old path gave,
+// but very nearly digital silence. The follower must sit still through it.
+const suppressed = run(3, 20)
+check(
+  'a pause the phone has suppressed to almost nothing does not wind the follower up',
+  suppressed.leveller.gain === 1,
+  String(suppressed.leveller.gain),
+)
+check('and comes out as what it was, rather than as arithmetic on a zero', peakOf(suppressed.last) === 3, String(peakOf(suppressed.last)))
+check('with true silence surviving it too', peakOf(new Leveller({ gain: 1 }).push(Buffer.alloc(SAMPLES * 2))) === 0)
+
+// And the other half of the same worry: the communication path rides its own
+// gain, so the signal arrives near where the follower wants it already. Two
+// loops in series is the classic way to get pumping, and the answer here is
+// that this one has nothing left to do — it only moves on peaks, and a peak
+// that is already at the target asks for a gain of one.
+const regulated = new Leveller({ gain: 1 })
+const seen = []
+for (let i = 0; i < 10 * CHUNKS_PER_S; i += 1) {
+  seen.push(regulated.gain)
+  regulated.push(tone(0.4 * 32767, { from: i * SAMPLES }))
+}
+check(
+  'a signal the handset has already levelled leaves the follower still — the two do not fight',
+  Math.max(...seen) / Math.min(...seen) < 1.15,
+  `${Math.min(...seen).toFixed(2)}–${Math.max(...seen).toFixed(2)} over ten seconds`,
+)
+check(
+  'and it is left at the level the handset chose, not lifted off it',
+  Math.abs(dB(peakOf(regulated.push(tone(0.4 * 32767)))) - dB(0.4 * 32767)) < 1,
+  `${dB(peakOf(regulated.push(tone(0.4 * 32767)))).toFixed(1)} dBFS`,
+)
+
 /* ── the frame the socket handed over ──────────────────────────────────── */
 
 const shared = tone(QUIET)

@@ -54,6 +54,7 @@ import {
   feed as feedAudio,
   hangUp as hangUpAudio,
   requestOutput as requestAudioOutput,
+  requestHeadset as requestAudioHeadset,
   hangUpOutput as hangUpAudioOutput,
   summary as audioSummary,
   setGain as setAudioGain,
@@ -811,6 +812,37 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           const output = await requestAudioOutput(op)
           publishState()
           return json(res, 200, { ok: true, audio: { ...audioSummary(), output } })
+        } catch (err) {
+          return json(res, 400, { error: err.message })
+        }
+      })
+      return undefined
+    }
+
+    /**
+     * Both directions at once: the phone as a headset for this desktop.
+     *
+     * Not a third road beside `/api/mic` and `/api/speaker` — it is those two,
+     * in the order that lets the handset put an echo canceller between them,
+     * around one instruction that says what state to open them in. Held open
+     * the way both of them are, because the answer worth having is what the
+     * phone actually managed: a handset with no canceller is a working duplex
+     * that echoes, and that is a sentence somebody should read before they
+     * start a call rather than during one.
+     */
+    if (req.method === 'POST' && url.pathname === '/api/headset') {
+      if (!localOnly(req, res)) return undefined
+      let body = ''
+      req.on('data', (c) => {
+        body += c
+        if (body.length > 8192) req.destroy()
+      })
+      req.on('end', async () => {
+        try {
+          const { op = 'status' } = JSON.parse(body || '{}')
+          const result = await requestAudioHeadset(op)
+          publishState()
+          return json(res, 200, { ok: true, audio: { ...audioSummary(), headset: result } })
         } catch (err) {
           return json(res, 400, { error: err.message })
         }

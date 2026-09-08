@@ -113,12 +113,23 @@ internal object Speaker {
     // buffer is the only thing between a jittery link and a hole in the sound.
     val bufferBytes = maxOf(minimum, chunkBytes * 8)
 
+    // Headset mode changes both halves of what a track declares, and neither
+    // can be changed afterwards — which is why the mode is entered before
+    // anything is opened. `USAGE_VOICE_COMMUNICATION` is what puts this sound
+    // on the path the platform's echo canceller knows about, and the session
+    // is the microphone's own, so what comes out of the speaker is what the
+    // canceller subtracts from what goes into the microphone. Outside the
+    // mode this is `USAGE_MEDIA` on a session of its own, for every reason
+    // argued above.
+    val duplex = Headset.wanted
+    val session = Headset.sessionId
+
     val output = try {
       AudioTrack.Builder()
         .setAudioAttributes(
           AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .setUsage(if (duplex) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_MEDIA)
+            .setContentType(if (duplex) AudioAttributes.CONTENT_TYPE_SPEECH else AudioAttributes.CONTENT_TYPE_MUSIC)
             .build(),
         )
         .setAudioFormat(
@@ -133,6 +144,11 @@ internal object Speaker {
         // no buffer that holds all of it, which is the whole difference
         // between this and the ringtone `Locator` plays.
         .setTransferMode(AudioTrack.MODE_STREAM)
+        // Zero is Android's own "a session of my own", so a headset mode whose
+        // microphone has not opened yet gets exactly what it would have got
+        // before — a working track with no canceller behind it — rather than
+        // a refused build.
+        .apply { if (duplex && session > 0) setSessionId(session) }
         .build()
     } catch (error: Exception) {
       Trace.fail("speaker.start.failed", error)
@@ -167,7 +183,14 @@ internal object Speaker {
       return false
     }
 
-    Trace.evt("speaker.start", "rate" to hz, "chunkMs" to window, "buffer" to bufferBytes)
+    Trace.evt(
+      "speaker.start",
+      "rate" to hz,
+      "chunkMs" to window,
+      "buffer" to bufferBytes,
+      "headset" to duplex,
+      "session" to session,
+    )
     return true
   }
 
