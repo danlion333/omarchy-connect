@@ -281,6 +281,11 @@ export class PipeSink {
     this.timer = null
     /** Wire bytes that did not add up to a whole chunk last tick. */
     this.rest = Buffer.alloc(0)
+    /**
+     * The byte of a sample whose other half had not been written yet when the
+     * read ended. See `readSome`: it is kept, not dropped.
+     */
+    this.half = Buffer.alloc(0)
     this.bytes = 0
     this.chunks = 0
     this.silent = 0
@@ -369,6 +374,7 @@ export class PipeSink {
 
     this.downsampler = new Downsampler({ factor: this.rate / WIRE_RATE })
     this.rest = Buffer.alloc(0)
+    this.half = Buffer.alloc(0)
     this.bytes = 0
     this.chunks = 0
     this.silent = 0
@@ -423,20 +429,34 @@ export class PipeSink {
     }
     this.emptySince = null
 
-    let pcm = Buffer.concat(pieces)
+    // Whatever was left of a sample last tick goes back in front of what
+    // arrived this one. A FIFO is a byte stream and a read may end anywhere,
+    // including between the two halves of a sample; the byte that was kept
+    // belongs to the sample whose other half is at the head of this read.
+    let pcm = this.half.length ? Buffer.concat([this.half, ...pieces]) : Buffer.concat(pieces)
+    this.half = Buffer.alloc(0)
     // What is already too old to play, in front of what is not. Dropped from
     // the front, which is the same bargain `Recorder` makes: nobody has heard
-    // any of this, and the newest is the part that belongs to now.
+    // any of this, and the newest is the part that belongs to now. The cut is
+    // rounded up to a whole sample: a front dropped at an odd offset would
+    // leave every sample after it read from the wrong pair of bytes, which is
+    // not a shorter sound but a loud one.
     const ceiling = Math.round((this.bytesPerSecond * MAX_BACKLOG_MS) / 1000)
     if (pcm.length > ceiling) {
-      this.dropped += pcm.length - ceiling
-      pcm = pcm.subarray(pcm.length - ceiling)
+      const from = pcm.length - ceiling + ((pcm.length - ceiling) % 2)
+      this.dropped += from
+      pcm = pcm.subarray(from)
     }
     // A whole number of samples, always: the tail of a half-written sample
     // waits for the rest of itself rather than shifting every sample after it
-    // by a byte.
+    // by a byte. Waits, and is not thrown away — dropping it would put the
+    // *next* read half a sample out of step and keep it there, which is the
+    // same misalignment heard as noise rather than as a gap.
     const usable = pcm.length - (pcm.length % 2)
-    if (usable !== pcm.length) pcm = pcm.subarray(0, usable)
+    if (usable !== pcm.length) {
+      this.half = Buffer.from(pcm.subarray(usable))
+      pcm = pcm.subarray(0, usable)
+    }
     if (usable === 0) return 0
 
     this.emit(this.downsampler.process(pcm))
@@ -529,6 +549,7 @@ export class PipeSink {
       /* gone already */
     }
     this.rest = Buffer.alloc(0)
+    this.half = Buffer.alloc(0)
     this.startedAt = null
     this.emptySince = null
     return { ...was, enabled: false }
