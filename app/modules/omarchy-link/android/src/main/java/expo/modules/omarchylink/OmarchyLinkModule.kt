@@ -361,12 +361,18 @@ class OmarchyLinkModule : Module() {
     /**
      * Open a track for the desktop's sound and start accepting chunks.
      *
-     * Answers false rather than throwing, for the reason `startMic` does: the
-     * layer above turns it into the one sentence the desktop is holding a
-     * request open for. No permission is checked because Android asks for none
-     * to play.
+     * Answers a map rather than throwing, for the reason `startMic` answers
+     * false: the layer above turns `ok: false` into the one sentence the
+     * desktop is holding a request open for. No permission is checked because
+     * Android asks for none to play.
+     *
+     * `rate` and `channels` come back because they are not always what was
+     * asked for — headset mode forces the baseline whatever the desktop
+     * offered — and the desktop sends what this answer names.
      */
-    Function("startSpeaker") { rate: Int, chunkMs: Int -> Speaker.start(context, rate, chunkMs) }
+    Function("startSpeaker") { rate: Int, channels: Int, chunkMs: Int ->
+      Speaker.start(context, rate, channels, chunkMs)
+    }
 
     /** Give the track back. Safe when nothing is playing. */
     Function("stopSpeaker") { Speaker.stop() }

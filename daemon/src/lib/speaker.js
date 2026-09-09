@@ -37,35 +37,118 @@
  * decrypt: the channel's counter nonce already refuses a repeated or reordered
  * frame.
  *
- * ## Why 16 kHz mono, when the sink is 48
+ * ## Two formats, agreed once per run
  *
- * The channel already speaks 16 kHz mono `s16le`, and the wire keeps speaking
- * it. That is 32 KB/s for the whole desktop's sound, against 192 KB/s for
- * 48 kHz stereo — and it is the difference between a road a phone can hold
- * open on a slow Wi-Fi and one it cannot. The honest cost is that this is
- * telephone quality: fine for a meeting, for a call, for anything anybody
- * would put a phone on the table for, and audibly not a hi-fi. The sink is
- * *loaded* at 48 kHz mono all the same (`lib/pipesink.js` says why: the ring
- * is counted in frames), so pipewire-pulse does the mixing and the channel
- * downmix, and `Downsampler` in `lib/resample.js` takes the rate back down
- * with a real anti-alias filter in front of it rather than by dropping two
- * samples in three.
+ * This road began at 16 kHz mono because that is what the microphone
+ * direction speaks and the number was carried across without anybody choosing
+ * it. It is 32 KB/s for the whole desktop's sound, and it is telephone
+ * quality: nothing above about 7.2 kHz survives the anti-alias filter, and
+ * two channels of a record become one before they ever reach the wire. Right
+ * for a meeting; audibly wrong for music, which is what the desktop's output
+ * mostly carries.
  *
- * If a later issue wants music, the second format goes here — one more field
- * in the `play` instruction, an `AudioTrack` built to match it on the phone —
- * and both formats fit inside the 1 MB `maxPayload` with room to spare. What
- * is deliberately *not* here is a format negotiated per chunk: a frame whose
- * meaning depends on a state the two ends have to agree about is the one bug
- * this whole road is arranged to avoid.
+ * So there are two formats now, and the second one is the default: 48 kHz
+ * stereo, 192 KB/s, which is what the sink was already being *loaded* at
+ * (`lib/pipesink.js` says why — the module's ring is counted in frames, so a
+ * low rate is a long delay) and therefore what the desktop already has in its
+ * hand before any arithmetic happens at all. At 48 kHz stereo the whole
+ * resampling road degenerates into a copy: `Downsampler`'s factor becomes one
+ * and nothing is filtered, folded or downmixed on the way.
+ *
+ * The old format is the **baseline** and it never goes away, because an app
+ * built before this change reads `rate` and `channels` straight out of the
+ * `play` instruction and opens a mono track at whatever it finds there. So
+ * the instruction keeps carrying the baseline in those two fields, and what
+ * is new travels in a field an old build does not read — `offer`. A phone
+ * that understands it opens the offered format and *says which format it
+ * opened* in its `audio.playing` answer; a phone that does not answers as it
+ * always has, and the desktop hears the absence of those fields as the
+ * baseline. Neither end has to know the other's version number.
+ *
+ * The phone's answer is the authority rather than the desktop's request, and
+ * that is the point of the round trip: `AudioTrack.getMinBufferSize` refuses
+ * some rates on some hardware, and headset mode forces the baseline for its
+ * echo canceller's sake. The desktop cannot know any of that; the handset
+ * answers with what it actually got.
+ *
+ * What is deliberately *not* here is a format negotiated per chunk: a frame
+ * whose meaning depends on a state the two ends have to agree about is the
+ * one bug this whole road is arranged to avoid. The format is fixed for the
+ * life of one `stream` number, exactly as `lib/video.js` fixes a picture's
+ * size for the life of one camera run.
  */
 
 export const MAGIC = Buffer.from('OCS1')
 export const HEADER_BYTES = MAGIC.length + 8
 
-/** The wire's format, and `lib/mic.js`'s. One channel, one rate, both ways. */
+/**
+ * The baseline: what an end that has been told nothing else assumes.
+ *
+ * `lib/mic.js`'s format, and this road's original one. It stays exported
+ * under these names because that is what every other end of the link — the
+ * phone's `speakerframe.ts`, the suites that hold the two against each other
+ * — means by "the format", and because an old app opens exactly this when it
+ * reads a `play` instruction it only half understands.
+ */
 export const RATE = 16000
 export const CHANNELS = 1
 export const BYTES_PER_SAMPLE = 2
+
+/**
+ * What the desktop would rather send, and what it sends unless the handset
+ * says otherwise: the sink's own format, carried whole.
+ *
+ * Forty-eight kilohertz because that is what `lib/pipesink.js` loads the
+ * module at anyway and a wire that speaks it needs no resampling at all; two
+ * channels because the desktop's output *is* two channels, and this is the
+ * one direction where mono was a loss rather than a saving.
+ */
+export const OFFER_RATE = 48000
+export const OFFER_CHANNELS = 2
+
+/**
+ * Every rate and channel count either end may name.
+ *
+ * A closed set rather than a range, and for `lib/pipesink.js`'s arithmetic:
+ * the decimator drops whole samples, so a wire rate has to divide the rate
+ * the module is loaded at. 44100 does not divide 48000 and is therefore not
+ * on this list however much a person might expect it to be — the note in
+ * `lib/resample.js` is the long version.
+ */
+export const RATES = [16000, 48000]
+export const CHANNEL_COUNTS = [1, 2]
+
+/**
+ * A format from a request, or the nearest thing to one that this speaks.
+ *
+ * `lib/video.js`'s `readFormat` is the shape being followed, and the reason
+ * is the same: what a caller names wins, what it leaves out comes from the
+ * defaults behind it, and what nobody has an answer for falls back to the
+ * constants — so a `play` instruction with no `offer` in it, or an
+ * `audio.playing` answer from a build that has never heard of the field, is a
+ * request for the baseline rather than an error. Anything unrecognised is
+ * clamped to the baseline rather than refused: a format nobody can play is
+ * worse than a format that is merely old.
+ */
+export function readFormat({ rate, channels } = {}, defaults = {}) {
+  const pick = (value, allowed, fallback) => {
+    if (value === undefined || value === null || value === '') return fallback
+    const n = Math.round(Number(value))
+    return allowed.includes(n) ? n : fallback
+  }
+  const base = defaults || {}
+  return {
+    rate: pick(rate, RATES, pick(base.rate, RATES, RATE)),
+    channels: pick(channels, CHANNEL_COUNTS, pick(base.channels, CHANNEL_COUNTS, CHANNELS)),
+  }
+}
+
+/** The two numbers as everything else on this road passes them about. */
+export const BASELINE = { rate: RATE, channels: CHANNELS }
+export const OFFER = { rate: OFFER_RATE, channels: OFFER_CHANNELS }
+
+/** Is this the format an end that knows nothing else would have assumed? */
+export const isBaseline = (format) => format?.rate === RATE && format?.channels === CHANNELS
 
 /**
  * How much sound is in one frame: 20 ms, 640 bytes, fifty a second.
@@ -79,13 +162,29 @@ export const BYTES_PER_SAMPLE = 2
  */
 export const CHUNK_MS = 20
 
-/** How many bytes of PCM one chunk carries at the format above. */
-export const chunkBytes = (ms = CHUNK_MS) => Math.round((RATE * CHANNELS * BYTES_PER_SAMPLE * ms) / 1000)
+/**
+ * How many bytes of PCM one chunk carries at a given format.
+ *
+ * Defaults to the baseline, so every caller that was written when there was
+ * only one format still means what it meant. At the offered one a chunk is
+ * 3840 bytes rather than 640 — six times the sound, the same twenty
+ * milliseconds of it.
+ */
+export const chunkBytes = (ms = CHUNK_MS, format = BASELINE) => {
+  const { rate, channels } = readFormat(format)
+  return Math.round((rate * channels * BYTES_PER_SAMPLE * ms) / 1000)
+}
+
+/** How many bytes one sample of every channel is: the unit a frame aligns to. */
+export const frameBytes = (format = BASELINE) => readFormat(format).channels * BYTES_PER_SAMPLE
 
 /** A frame far larger than a chunk is not one this speaks; refuse it whole. */
 export const MAX_CHUNK_BYTES = 64 * 1024
 
-export const bytesPerSecond = () => RATE * CHANNELS * BYTES_PER_SAMPLE
+export const bytesPerSecond = (format = BASELINE) => {
+  const { rate, channels } = readFormat(format)
+  return rate * channels * BYTES_PER_SAMPLE
+}
 
 /** Is this decrypted frame desktop sound rather than the JSON everything else is? */
 export function isSpeakerFrame(frame) {

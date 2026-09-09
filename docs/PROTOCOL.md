@@ -1971,24 +1971,58 @@ omarchy-connect speaker on         # and `off`, and `status`
 
 Under the hood that is a FIFO in `$XDG_RUNTIME_DIR/omarchy-connect/speaker.pipe`
 and pipewire-pulse's own `module-pipe-sink` pointed at it, loaded as `s16le`,
-**mono**, at **48 kHz**. Mono because pipewire-pulse then does the downmix for
-every stereo program on the way in, which is free and better than anything this
-daemon would do with two channels it is about to add together. Forty-eight
-kilohertz for the reason the source is loaded at ninety-six — the module is
-`module-pipe-tunnel` underneath either way, so it keeps the same ring of 8192
-frames and the same table applies (512 ms at 16 kHz, 171 ms at 48, 85 at 96).
-The wire, though, still speaks 16 kHz mono, so the daemon takes the rate back
-down with a real anti-alias filter in front of it (`Downsampler` in
-`daemon/src/lib/resample.js`, the interpolator's mirror), and
-`OMARCHY_CONNECT_OUTPUT_RATE` picks another multiple of 16000 for anyone who
-wants to trade delay for wake-ups.
+**stereo**, at **48 kHz** — the desktop's own sound, in the shape it already
+has. Forty-eight kilohertz for the reason the source is loaded at ninety-six:
+the module is `module-pipe-tunnel` underneath either way, so it keeps the same
+ring of 8192 frames and the same table applies (512 ms at 16 kHz, 171 ms at 48,
+85 at 96). `OMARCHY_CONNECT_OUTPUT_RATE` picks another multiple of 16000 for
+anyone who wants to trade delay for wake-ups.
 
-**The format is the wire's, and that is a decision with a price.** 16 kHz mono
-is 32 KB/s for the whole desktop's sound, against 192 KB/s for 48 kHz stereo,
-and it is telephone quality: right for a meeting, for a call, for anything
-anybody would put a phone on the table for, and audibly not a hi-fi. A second
-format is one field in the `play` instruction and an `AudioTrack` built to
-match it, and both fit inside the 1 MB `maxPayload` with room to spare.
+**Two formats, agreed once per run.** This road began at 16 kHz mono because
+that is what the *microphone* direction speaks and the number was carried
+across without anybody choosing it, and the price was written down here as a
+compromise to be removed later. It has been removed. There are two formats
+now:
+
+| | rate | channels | bytes/s | what it is |
+|---|---|---|---|---|
+| **baseline** | 16000 | 1 | 32 KB/s | telephone quality — nothing above ~7.2 kHz |
+| **offer** | 48000 | 2 | 192 KB/s | the desktop's own sound, unaltered |
+
+The offer is the default, and at it the whole resampling road degenerates into
+a copy: the sink is already 48 kHz stereo, so the `Downsampler`'s factor is one
+and nothing is filtered, folded or downmixed on the way. The baseline is what
+the arithmetic exists for — the sink's two channels are averaged into one and
+`Downsampler` (`daemon/src/lib/resample.js`, the interpolator's mirror) takes
+the rate down with a real anti-alias filter in front of it, so a 12 kHz tone in
+the music is *removed* rather than folded down to a 4 kHz whistle.
+
+**Which of the two is a round trip, not a guess.** An app built before this
+change reads `rate` and `channels` out of the `play` instruction and opens a
+mono track at whatever it finds there, so those two fields keep carrying the
+baseline forever and the better format travels beside them in `offer` — a field
+an old build does not read. A phone that understands `offer` opens it and
+**says which format it opened** in its `audio.playing` answer; a phone that
+does not answers `ok` and nothing else, and the desktop reads the absence of
+those fields as the baseline. Neither end has to know the other's version.
+
+The handset's answer is the authority rather than the desktop's request, and
+that is what the round trip is for: `AudioTrack.getMinBufferSize` refuses some
+rate and mask combinations on some hardware with no list anywhere of which, so
+a phone that is refused the offered track retries at the baseline and reports
+what it got. The desktop sends what the answer names. A phone that answered
+with the format it *asked* for would be sent six times the bytes it can play,
+through a track that renders them as noise at three times the speed, with
+every counter at both ends reporting a healthy link.
+
+Headset mode is the one place the offer is not made at all: that track joins
+the microphone's session behind the platform's echo canceller, which is a
+16 kHz mono thing, and `Headset.kt` opens the baseline whatever it is sent.
+Both ends know it — the desktop leaves `offer` out of the instruction, and the
+handset answers with the baseline even if it arrives.
+
+Both formats fit inside the 1 MB `maxPayload` with room to spare: one chunk is
+640 bytes at the baseline and 3840 at the offer.
 
 **The switch, and then the handset.** `/api/speaker` loads the sink *first* and
 only then asks the phone, because a program picks its output before anybody
@@ -1997,12 +2031,18 @@ sink and an error, and a handset that was asleep can be asked again. The
 instruction and the answer are `mic`'s, one word apart:
 
 ```jsonc
-// desktop → phone, on the audio channel
+// desktop → phone, on the audio channel. `rate` and `channels` are the
+// baseline and always will be; `offer` is what this desktop would rather send,
+// and is absent in headset mode and from any desktop older than it.
 { "t": "ev", "event": "audio", "data": { "action": "play", "id": "<uuid>", "stream": 1,
-  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 20 } }
+  "encoding": "s16le", "rate": 16000, "channels": 1, "chunkMs": 20,
+  "offer": { "rate": 48000, "channels": 2 } } }
 
-// phone → desktop, once its track is actually open
-{ "t": "req", "id": 6, "method": "audio.playing", "params": { "id": "<uuid>", "ok": true } }
+// phone → desktop, once its track is actually open, naming the format the
+// track was *built* at. An app that has never heard of `offer` sends neither
+// field, and the desktop reads that as the baseline.
+{ "t": "req", "id": 6, "method": "audio.playing", "params": { "id": "<uuid>", "ok": true,
+  "rate": 48000, "channels": 2 } }
 
 // desktop → phone, when the switch goes off or the sink goes away
 { "t": "ev", "event": "audio", "data": { "action": "hush", "stream": 1 } }
@@ -2016,7 +2056,10 @@ everything else:
   4            4                  4          n
 ```
 
-`OCA1`'s header with one letter changed. `stream` is what the desktop handed
+`OCA1`'s header with one letter changed, and the PCM inside it is at whatever
+format the two ends agreed on for this `stream` — never per chunk, because a
+frame whose meaning depends on a state the two ends have to agree about is the
+one bug this whole road is arranged to avoid. `stream` is what the desktop handed
 out when the switch went on, so a chunk of a run that has ended — one in flight
 when the sink went away, one that arrives after a reconnect — is dropped by the
 phone rather than played into the middle of the next one; `seq` counts from
@@ -2041,9 +2084,11 @@ other direction. The module writes at real time whether or not the daemon is
 draining, so a daemon that fell behind comes back to a pipe holding sound that
 is already too old to play in front of sound that is not. Every tick drains
 everything and keeps only the newest 100 ms; the rest is counted in `dropped`.
-A read that ends between the two halves of a sample keeps the odd byte for the
-next tick rather than dropping it — a byte dropped there is not a shorter sound
-but a louder one, every sample after it read from the wrong pair of bytes.
+A read that ends part-way through a frame — four bytes now that the sink is
+stereo, not two — keeps the remainder for the next tick rather than dropping
+it. A byte dropped there is not a shorter sound but a louder one, every sample
+after it read from the wrong pair of bytes; and at two channels it is worse
+than that, because the two swap for the rest of the run and never swap back.
 
 **Four places take sound off this road, and each has its own number**, because
 somebody who can hear a gap needs to know which end to blame. `dropped` is what
@@ -2054,7 +2099,9 @@ the socket refused — unencrypted, closing, or already carrying more than
 status that showed only what it carried would read as a healthy one. The
 fourth is on the handset and is in its log rather than in this protocol: one
 `evt=speaker` line every ten seconds of playback with `chunks`, `short`,
-`carried` and `dropped` on it. `AudioTrack`'s buffer is sixteen chunks, 320 ms,
+`carried` and `dropped` on it, and one `evt=speaker.start` naming the `rate`
+and `channels` the track was actually built at. `AudioTrack`'s buffer is
+sixteen chunks, 320 ms,
 which is over the 150–190 ms jitter tail this hop was measured at — nothing
 else in this direction absorbs it, since the module's own 8192-frame ring
 stands ahead of the network rather than behind it.

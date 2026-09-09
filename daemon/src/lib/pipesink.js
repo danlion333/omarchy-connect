@@ -6,7 +6,14 @@ import path from 'node:path'
 import { has } from './exec.js'
 import { log } from './log.js'
 import { Downsampler } from './resample.js'
-import { CHANNELS as WIRE_CHANNELS, CHUNK_MS, RATE as WIRE_RATE, chunkBytes } from './speaker.js'
+import {
+  BASELINE,
+  CHUNK_MS,
+  OFFER_CHANNELS,
+  RATE as BASE_RATE,
+  chunkBytes,
+  readFormat,
+} from './speaker.js'
 
 /**
  * The phone's speaker, as a device the rest of this desktop can pick.
@@ -64,9 +71,25 @@ import { CHANNELS as WIRE_CHANNELS, CHUNK_MS, RATE as WIRE_RATE, chunkBytes } fr
  * mean the daemon has to be woken more often to say the same thing.
  * `OMARCHY_CONNECT_OUTPUT_RATE` moves it for anyone who wants to.
  *
- * Mono, and the sink says so: pipewire-pulse downmixes every stereo program
- * into it on the way, which is both free and better than anything this file
- * would do with two channels it is about to add together anyway.
+ * ## Why the sink is stereo even when the wire is not
+ *
+ * It was mono once, and the argument for it was a good one: pipewire-pulse
+ * downmixes every stereo program on the way in, which is free and better than
+ * anything this file would do with two channels it was about to add together.
+ * What broke that argument is that the wire is no longer always about to add
+ * them together — `lib/speaker.js` offers 48 kHz stereo now, and the handset
+ * answers which of the two formats it actually opened.
+ *
+ * That answer arrives *after* the sink is loaded, and it has to: a program
+ * picks its output before anybody presses play, so the device exists before
+ * the phone has been asked (`plugins/audio.js` argues the ordering). A sink
+ * whose channel count depended on the answer would have to be unloaded and
+ * reloaded when it came, which takes every program on the machine off the
+ * device it had chosen. So the sink is loaded once, in the format that can
+ * become either of them — the desktop's own, two channels at 48 kHz — and
+ * `setWire` decides afterwards what is made of it. Downmixing two channels
+ * into one is an addition and a shift; there is no format going the other way
+ * that could be recovered from a mono sink at all.
  *
  * ## Silence is silence, not an outage
  *
@@ -122,9 +145,15 @@ export const SINK_NAME = 'omarchy_connect_phone'
  */
 export const SINK_DESCRIPTION = 'Omarchy Connect (phone)'
 
-/** The wire's format — but see `RATE`: the module is told more than that. */
+/** The wire's encoding — but see `RATE` and `CHANNELS`: the module is told more. */
 export const FORMAT = 's16le'
-export const CHANNELS = WIRE_CHANNELS
+
+/**
+ * What the module is loaded with, which is the desktop's own sound and not
+ * the wire's: two channels, so that `setWire` has both of them to hand when
+ * the handset turns out to be able to play them.
+ */
+export const CHANNELS = OFFER_CHANNELS
 
 /**
  * How many frames the module keeps behind every writer, whatever the rate.
@@ -146,12 +175,28 @@ export const DEFAULT_RATE = 48000
 export function moduleRate(asked = process.env.OMARCHY_CONNECT_OUTPUT_RATE) {
   if (asked === undefined || asked === '') return DEFAULT_RATE
   const rate = Number(asked)
-  if (Number.isInteger(rate) && rate >= WIRE_RATE && rate % WIRE_RATE === 0 && rate <= 768000) return rate
-  log.warn(`OMARCHY_CONNECT_OUTPUT_RATE=${asked} is not a multiple of ${WIRE_RATE}; using ${DEFAULT_RATE}`)
+  if (Number.isInteger(rate) && rate >= BASE_RATE && rate % BASE_RATE === 0 && rate <= 768000) return rate
+  log.warn(`OMARCHY_CONNECT_OUTPUT_RATE=${asked} is not a multiple of ${BASE_RATE}; using ${DEFAULT_RATE}`)
   return DEFAULT_RATE
 }
 
 export const RATE = moduleRate()
+
+/**
+ * Which of `lib/speaker.js`'s formats a sink at this rate can actually feed.
+ *
+ * The decimator drops whole samples, so a wire rate the module rate is not a
+ * whole multiple of cannot be reached from here at all — and the one place
+ * that matters is a person who has set `OMARCHY_CONNECT_OUTPUT_RATE` to
+ * something like 80000, which is a multiple of the baseline's 16000 and not
+ * of the offer's 48000. Rather than offering the handset a format this
+ * desktop would then have to refuse, the offer is quietly reduced to what the
+ * arithmetic allows. The channel count is never reduced: the sink has two
+ * whatever its rate is.
+ */
+export function offerFor(rate = RATE) {
+  return readFormat({ rate: rate % 48000 === 0 ? 48000 : BASE_RATE, channels: CHANNELS })
+}
 
 /** How often the pipe is drained. One chunk's worth, the same 20 ms. */
 export const POLL_MS = CHUNK_MS
@@ -259,23 +304,33 @@ export class PipeSink {
     name = SINK_NAME,
     description = SINK_DESCRIPTION,
     rate = RATE,
+    wire = BASELINE,
     pollMs = POLL_MS,
     onChunk = null,
     onGone = null,
   } = {}) {
-    if (!Number.isInteger(rate) || rate < WIRE_RATE || rate % WIRE_RATE !== 0) {
-      throw new Error(`the sink rate must be a whole multiple of ${WIRE_RATE}, not ${rate}`)
+    if (!Number.isInteger(rate) || rate < BASE_RATE || rate % BASE_RATE !== 0) {
+      throw new Error(`the sink rate must be a whole multiple of ${BASE_RATE}, not ${rate}`)
     }
     this.file = file
     this.name = name
     this.description = description
     this.rate = rate
     this.pollMs = pollMs
+    /**
+     * What the handset agreed to be sent, which is not what the sink is
+     * loaded as. The baseline until somebody says otherwise: a run whose
+     * `audio.playing` answer never mentioned a format is a run with an app
+     * that has never heard of the offer, and that app opened a mono track at
+     * 16 kHz.
+     */
+    this.wire = readFormat(wire)
+    /** One per wire channel while the rate has to come down; null when it does not. */
+    this.downsamplers = null
     /** Where a chunk of the desktop's sound goes, at the wire's rate. */
     this.onChunk = onChunk
     /** Somebody unloaded the module underneath us. */
     this.onGone = onGone
-    this.downsampler = null
     this.module = null
     this.fd = null
     this.timer = null
@@ -301,6 +356,48 @@ export class PipeSink {
   /** How many bytes of sink-rate PCM one second is. The unit everything here counts in. */
   get bytesPerSecond() {
     return this.rate * CHANNELS * 2
+  }
+
+  /**
+   * How many bytes one sample of every channel is, on the sink's side.
+   *
+   * The number every read has to be aligned to, and it is four rather than
+   * two now that the sink is stereo. A buffer cut at an odd multiple of two
+   * does not shift the sound by half a sample — it swaps the two channels for
+   * everything after the cut and keeps them swapped, which is a stereo image
+   * that turns inside out in the middle of a track and never turns back.
+   */
+  get frameBytes() {
+    return CHANNELS * 2
+  }
+
+  /**
+   * What the handset said it opened, and therefore what is made of the sink's
+   * sound from here on.
+   *
+   * Called once per playback, between the phone's answer and the first chunk
+   * — `plugins/audio.js` only pushes while a run is live, and a run is not
+   * live until the answer has arrived. Safe at any other time all the same:
+   * whatever was half-assembled for the old format is dropped rather than
+   * reinterpreted under the new one, because a chunk that is 640 bytes of one
+   * format and 3200 of another is not a chunk of either.
+   */
+  setWire(format) {
+    const wanted = readFormat(format)
+    const factor = this.rate / wanted.rate
+    // A rate the module's own is not a whole multiple of cannot be decimated
+    // to, and there is nothing to be done about it here but say so and keep
+    // the format that always works. `offerFor` is what stops this from ever
+    // being reached by an offer this desktop made itself.
+    if (!Number.isInteger(factor) || factor < 1) {
+      log.warn(`a wire at ${wanted.rate} Hz is not a whole division of the ${this.rate} Hz sink; staying at ${this.wire.rate}`)
+      return this.wire
+    }
+    this.wire = wanted
+    this.rest = Buffer.alloc(0)
+    this.downsamplers =
+      factor === 1 ? null : Array.from({ length: wanted.channels }, () => new Downsampler({ factor }))
+    return this.wire
   }
 
   /**
@@ -372,7 +469,7 @@ export class PipeSink {
     // reading of `vanished` honest.
     napSync(20)
 
-    this.downsampler = new Downsampler({ factor: this.rate / WIRE_RATE })
+    this.setWire(this.wire)
     this.rest = Buffer.alloc(0)
     this.half = Buffer.alloc(0)
     this.bytes = 0
@@ -441,9 +538,11 @@ export class PipeSink {
     // rounded up to a whole sample: a front dropped at an odd offset would
     // leave every sample after it read from the wrong pair of bytes, which is
     // not a shorter sound but a loud one.
+    const align = this.frameBytes
     const ceiling = Math.round((this.bytesPerSecond * MAX_BACKLOG_MS) / 1000)
     if (pcm.length > ceiling) {
-      const from = pcm.length - ceiling + ((pcm.length - ceiling) % 2)
+      const short = pcm.length - ceiling
+      const from = short + ((align - (short % align)) % align)
       this.dropped += from
       pcm = pcm.subarray(from)
     }
@@ -452,20 +551,42 @@ export class PipeSink {
     // by a byte. Waits, and is not thrown away — dropping it would put the
     // *next* read half a sample out of step and keep it there, which is the
     // same misalignment heard as noise rather than as a gap.
-    const usable = pcm.length - (pcm.length % 2)
+    const usable = pcm.length - (pcm.length % align)
     if (usable !== pcm.length) {
       this.half = Buffer.from(pcm.subarray(usable))
       pcm = pcm.subarray(0, usable)
     }
     if (usable === 0) return 0
 
-    this.emit(this.downsampler.process(pcm))
+    this.emit(this.convert(pcm))
     return read
+  }
+
+  /**
+   * The sink's own sound, in the format the handset agreed to.
+   *
+   * Two steps, either of which may be nothing at all. The channels come down
+   * first, because downmixing before the filter is half the multiplications
+   * of downmixing after it and the result is the same sum either way; then
+   * the rate, one `Downsampler` per surviving channel, because the filter is
+   * a one-dimensional thing and two interleaved channels are two signals.
+   *
+   * At the offered format — 48 kHz stereo out of a 48 kHz stereo sink — both
+   * steps are skipped and this is a copy. That is the whole shape of the
+   * change: the good format is the cheap one, and the arithmetic exists for
+   * the handset that cannot play it.
+   */
+  convert(pcm) {
+    const lanes = this.wire.channels
+    const source = lanes === CHANNELS ? pcm : downmix(pcm, CHANNELS)
+    if (!this.downsamplers) return Buffer.from(source)
+    if (lanes === 1) return this.downsamplers[0].process(source)
+    return interleave(split(source, lanes).map((lane, i) => this.downsamplers[i].process(lane)))
   }
 
   /** Wire-rate PCM, cut into chunks and handed on. Leftovers wait for next tick. */
   emit(wire) {
-    const size = chunkBytes()
+    const size = chunkBytes(CHUNK_MS, this.wire)
     let buf = this.rest.length ? Buffer.concat([this.rest, wire]) : wire
     let at = 0
     while (buf.length - at >= size) {
@@ -567,9 +688,14 @@ export class PipeSink {
             since: this.startedAt,
             encoding: FORMAT,
             rate: this.rate,
-            wireRate: WIRE_RATE,
-            ringMs: ringMs(this.rate),
             channels: CHANNELS,
+            // What is actually going up the socket, which is the handset's
+            // answer and not this desktop's preference — `speaker status`
+            // prints these two rather than a constant for exactly that
+            // reason.
+            wireRate: this.wire.rate,
+            wireChannels: this.wire.channels,
+            ringMs: ringMs(this.rate),
             bytes: this.bytes,
             chunks: this.chunks,
             silent: this.silent,
@@ -578,6 +704,50 @@ export class PipeSink {
         : {}),
     }
   }
+}
+
+/**
+ * Two channels into one, by the average of them.
+ *
+ * The sum divided by the count rather than the sum: two channels carrying the
+ * same loud note add up past what sixteen bits can say, and a clip there is
+ * heard as distortion on exactly the passages that are loudest. Rounded
+ * rather than truncated, because a truncation towards zero on a signed
+ * waveform is a half-bit of asymmetric noise on everything quiet.
+ */
+export function downmix(pcm, channels) {
+  if (channels <= 1) return pcm
+  const frames = Math.floor(pcm.length / (channels * 2))
+  const out = Buffer.allocUnsafe(frames * 2)
+  for (let f = 0; f < frames; f += 1) {
+    let sum = 0
+    for (let c = 0; c < channels; c += 1) sum += pcm.readInt16LE((f * channels + c) * 2)
+    const v = Math.round(sum / channels)
+    out.writeInt16LE(v < -32768 ? -32768 : v > 32767 ? 32767 : v, f * 2)
+  }
+  return out
+}
+
+/** Interleaved PCM into one buffer per channel, so a mono filter can be run over each. */
+export function split(pcm, channels) {
+  if (channels <= 1) return [pcm]
+  const frames = Math.floor(pcm.length / (channels * 2))
+  const lanes = Array.from({ length: channels }, () => Buffer.allocUnsafe(frames * 2))
+  for (let f = 0; f < frames; f += 1) {
+    for (let c = 0; c < channels; c += 1) lanes[c].writeInt16LE(pcm.readInt16LE((f * channels + c) * 2), f * 2)
+  }
+  return lanes
+}
+
+/** And back again. The shortest lane decides, so a ragged set cannot run off an end. */
+export function interleave(lanes) {
+  if (lanes.length === 1) return lanes[0]
+  const frames = Math.min(...lanes.map((lane) => lane.length >> 1))
+  const out = Buffer.allocUnsafe(frames * lanes.length * 2)
+  for (let f = 0; f < frames; f += 1) {
+    for (let c = 0; c < lanes.length; c += 1) out.writeInt16LE(lanes[c].readInt16LE(f * 2), (f * lanes.length + c) * 2)
+  }
+  return out
 }
 
 /**

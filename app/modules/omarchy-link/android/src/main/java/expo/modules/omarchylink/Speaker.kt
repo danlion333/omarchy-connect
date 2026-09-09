@@ -18,13 +18,31 @@ import java.util.concurrent.atomic.AtomicBoolean
  * only class on Android that plays PCM as it arrives rather than a file that
  * has finished arriving.
  *
- * Deliberately dumb, in the same way. It opens one track at one format, takes
- * whole chunks from whoever calls `write`, and does no decoding, no
- * resampling, no mixing and no buffering of its own beyond the track's. The
- * bytes are 16 kHz mono `s16le` because that is what the channel carries in
- * both directions (`daemon/src/lib/speaker.js` explains why that and not
- * 48 kHz stereo), and a chunk that arrives with no track open is dropped by
- * the layer above rather than stored by this one.
+ * Deliberately dumb, in the same way. It opens one track at the format the
+ * desktop and this phone agreed on, takes whole chunks from whoever calls
+ * `write`, and does no decoding, no resampling, no mixing and no buffering of
+ * its own beyond the track's. A chunk that arrives with no track open is
+ * dropped by the layer above rather than stored by this one.
+ *
+ * ## The format is a parameter, and the answer says which one was got
+ *
+ * There are two: the baseline, 16 kHz mono, which is what this road carried
+ * for its whole life and what an old build of this app is the only thing
+ * that can open; and 48 kHz stereo, which is what a desktop's own output
+ * actually is and what `daemon/src/lib/speaker.js` offers by default. Both
+ * are `ENCODING_PCM_16BIT`; what changes is the sample rate and the channel
+ * mask, and neither can be changed on a track that has been built.
+ *
+ * `start` therefore returns what it opened rather than a bare true, because
+ * the two differ in two situations and both are silent failures if the
+ * desktop is not told. Headset mode forces the baseline — that track is on a
+ * voice session behind the platform's echo canceller, which works at 16 kHz
+ * mono, and `Headset.kt` is out of this change's scope on purpose. And
+ * `AudioTrack.getMinBufferSize` refuses some rate and mask combinations on
+ * some hardware with no list anywhere of which; the caller retries at the
+ * baseline, and what it must not do is report a format the track was not
+ * built at. A desktop sending 48 kHz stereo into a 16 kHz mono track is not
+ * quieter or slower — it is noise at three times the speed.
  *
  * ## Why `MUSIC` and not `VOICE_COMMUNICATION`
  *
@@ -61,11 +79,18 @@ import java.util.concurrent.atomic.AtomicBoolean
  * and never catch up.
  */
 internal object Speaker {
-  /** The one format. Matches `daemon/src/lib/speaker.js` byte for byte. */
+  /** The baseline, and the fallback for everything. `daemon/src/lib/speaker.js`'s. */
   const val RATE = 16000
-  private const val CHANNEL = AudioFormat.CHANNEL_OUT_MONO
+  const val CHANNELS = 1
   private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
   private const val BYTES_PER_SAMPLE = 2
+
+  /** Every rate the desktop may name. Anything else is the baseline. */
+  private val RATES = intArrayOf(16000, 48000)
+
+  /** The mask for a channel count, and mono for anything this does not know. */
+  private fun maskFor(channels: Int) =
+    if (channels == 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
 
   /** Bounds on what a caller may ask for a chunk to be. */
   private const val MIN_CHUNK_MS = 20
@@ -110,6 +135,10 @@ internal object Speaker {
   private val running = AtomicBoolean(false)
   private var track: AudioTrack? = null
 
+  /** The format the open track was built at, for a second `start` to answer with. */
+  @Volatile
+  private var current: Map<String, Any>? = null
+
   /**
    * What one chunk of the agreed format is, so the tail below can be bounded
    * in sound rather than in bytes. Set when the track is opened.
@@ -153,11 +182,26 @@ internal object Speaker {
    * Idempotent in the only direction that matters: a second start while one is
    * playing answers true rather than costing the desktop the track it has.
    */
-  fun start(context: Context, rate: Int, chunkMs: Int): Boolean {
-    if (running.get()) return true
+  fun start(context: Context, rate: Int, channels: Int, chunkMs: Int): Map<String, Any> {
     val window = chunkMs.coerceIn(MIN_CHUNK_MS, MAX_CHUNK_MS)
-    val hz = if (rate > 0) rate else RATE
-    val chunkBytes = hz * BYTES_PER_SAMPLE * window / 1000
+    // Headset mode is the one caller whose format is not the desktop's to
+    // choose: that track joins the microphone's session behind the platform's
+    // echo canceller, which is a 16 kHz mono thing, and a stereo track on it
+    // would either be refused or cancel nothing. The answer says so rather
+    // than the desktop finding out from the sound.
+    val duplex = Headset.wanted
+    val hz = if (duplex || !RATES.contains(rate)) RATE else rate
+    val lanes = if (duplex || channels != 2) CHANNELS else 2
+    val opened: Map<String, Any> = mapOf("ok" to true, "rate" to hz, "channels" to lanes)
+    /** Nothing was built. The layer above turns this into a sentence, or a retry. */
+    val refused: Map<String, Any> = mapOf("ok" to false)
+    // A second start while one is playing answers with the track that exists
+    // rather than with the one that was asked for — it is the running track
+    // the desktop's chunks are going into, and saying otherwise would have it
+    // send a format nothing here can play.
+    if (running.get()) return current ?: opened
+    val channel = maskFor(lanes)
+    val chunkBytes = hz * lanes * BYTES_PER_SAMPLE * window / 1000
     this.chunkBytes = chunkBytes
     tail = ByteArray(0)
     wrote = 0
@@ -171,11 +215,11 @@ internal object Speaker {
     // the moment the track starts.
     LinkService.holdPlayback(true)
 
-    val minimum = AudioTrack.getMinBufferSize(hz, CHANNEL, ENCODING)
+    val minimum = AudioTrack.getMinBufferSize(hz, channel, ENCODING)
     if (minimum <= 0) {
-      Trace.warn("speaker.start.refused", "reason" to "no-buffer-size", "code" to minimum)
+      Trace.warn("speaker.start.refused", "reason" to "no-buffer-size", "code" to minimum, "rate" to hz, "channels" to lanes)
       LinkService.holdPlayback(false)
-      return false
+      return refused
     }
     // Slack against the Wi-Fi hop that feeds this track, and the only slack
     // there is: see `BUFFER_CHUNKS` for why it is sixteen of them and not the
@@ -184,13 +228,13 @@ internal object Speaker {
 
     // Headset mode changes both halves of what a track declares, and neither
     // can be changed afterwards — which is why the mode is entered before
-    // anything is opened. `USAGE_VOICE_COMMUNICATION` is what puts this sound
+    // anything is opened, and why `hz` and `lanes` above are already the
+    // baseline by the time this is read. `USAGE_VOICE_COMMUNICATION` is what puts this sound
     // on the path the platform's echo canceller knows about, and the session
     // is the microphone's own, so what comes out of the speaker is what the
     // canceller subtracts from what goes into the microphone. Outside the
     // mode this is `USAGE_MEDIA` on a session of its own, for every reason
     // argued above.
-    val duplex = Headset.wanted
     val session = Headset.sessionId
 
     val output = try {
@@ -205,7 +249,7 @@ internal object Speaker {
           AudioFormat.Builder()
             .setEncoding(ENCODING)
             .setSampleRate(hz)
-            .setChannelMask(CHANNEL)
+            .setChannelMask(channel)
             .build(),
         )
         .setBufferSizeInBytes(bufferBytes)
@@ -222,20 +266,21 @@ internal object Speaker {
     } catch (error: Exception) {
       Trace.fail("speaker.start.failed", error)
       LinkService.holdPlayback(false)
-      return false
+      return refused
     }
     if (output.state != AudioTrack.STATE_INITIALIZED) {
-      Trace.warn("speaker.start.refused", "reason" to "uninitialised", "state" to output.state)
+      Trace.warn("speaker.start.refused", "reason" to "uninitialised", "state" to output.state, "rate" to hz, "channels" to lanes)
       try {
         output.release()
       } catch (error: Exception) {
         /* nothing to release that was ever initialised */
       }
       LinkService.holdPlayback(false)
-      return false
+      return refused
     }
 
     track = output
+    current = opened
     running.set(true)
     try {
       output.play()
@@ -243,25 +288,32 @@ internal object Speaker {
       Trace.fail("speaker.start.play.failed", error)
       running.set(false)
       track = null
+      current = null
       try {
         output.release()
       } catch (ignored: Exception) {
         /* already gone */
       }
       LinkService.holdPlayback(false)
-      return false
+      return refused
     }
 
+    // `state` is in the line because the one thing a desktop cannot see from
+    // its end is whether the track it asked for was actually built: a refusal
+    // is `speaker.start.refused` and this is its opposite, and both name the
+    // rate and the channel count they happened at.
     Trace.evt(
       "speaker.start",
       "rate" to hz,
+      "channels" to lanes,
+      "state" to output.state,
       "chunkMs" to window,
       "buffer" to bufferBytes,
-      "bufferMs" to (bufferBytes.toLong() * 1000 / (hz * BYTES_PER_SAMPLE)),
+      "bufferMs" to (bufferBytes.toLong() * 1000 / (hz * lanes * BYTES_PER_SAMPLE)),
       "headset" to duplex,
       "session" to session,
     )
-    return true
+    return opened
   }
 
   /**
@@ -377,6 +429,7 @@ internal object Speaker {
    */
   fun stop() {
     if (!running.getAndSet(false)) return
+    current = null
     // Last, and whatever the clock says: a run shorter than one summary
     // window is the run somebody was listening to when it broke.
     summarise(true)

@@ -147,7 +147,7 @@ declare class OmarchyLink extends NativeModule<Events> {
   isCameraRunning(): boolean
   hasCameraPermission(): boolean
   requestCameraPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
-  startSpeaker(rate: number, chunkMs: number): boolean
+  startSpeaker(rate: number, channels: number, chunkMs: number): { ok: boolean; rate: number; channels: number }
   stopSpeaker(): void
   isSpeakerRunning(): boolean
   writeSpeaker(pcm: string): boolean
@@ -562,17 +562,30 @@ export function speakerSupported(): boolean {
 }
 
 /**
- * Open a track for the desktop's sound.
+ * Open a track for the desktop's sound, and say what was actually opened.
  *
  * No permission anywhere: playing is not recording, and Android asks for
  * nothing to do it. Throws rather than returning false when it cannot, because
  * every reason it cannot is a sentence the desktop is holding a request open
  * for.
+ *
+ * The return value is the format the track was *built* at rather than the one
+ * that was asked for, and the two can differ: headset mode forces 16 kHz mono
+ * on a voice session whatever the desktop offered, because that is the format
+ * the platform's echo canceller works in. The desktop sends what this answer
+ * says, so the answer has to be the truth about the track and not an echo of
+ * the request.
  */
-export function startSpeaker(rate: number, chunkMs: number): void {
+export function startSpeaker(
+  rate: number,
+  channels: number,
+  chunkMs: number,
+): { rate: number; channels: number } {
   const native = linkService()
   if (!native) throw new Error('this build cannot play the desktop’s sound')
-  if (!native.startSpeaker(rate, chunkMs)) throw new Error('the phone would not open its speaker')
+  const opened = native.startSpeaker(rate, channels, chunkMs)
+  if (!opened?.ok) throw new Error('the phone would not open its speaker')
+  return { rate: Number(opened.rate) || rate, channels: Number(opened.channels) || channels }
 }
 
 /** Stop, and give the track back. Safe when nothing is playing. */

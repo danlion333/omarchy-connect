@@ -17,12 +17,13 @@ import {
   readGain,
 } from '../lib/mic.js'
 import { PipeSource, SOURCE_DESCRIPTION, SOURCE_NAME, available as pipeAvailable } from '../lib/pipesource.js'
-import { PipeSink, SINK_DESCRIPTION, SINK_NAME, available as sinkAvailable } from '../lib/pipesink.js'
+import { PipeSink, SINK_DESCRIPTION, SINK_NAME, available as sinkAvailable, offerFor } from '../lib/pipesink.js'
 import {
-  CHANNELS as WIRE_CHANNELS,
+  BASELINE as PLAY_BASELINE,
   CHUNK_MS as WIRE_CHUNK_MS,
-  RATE as WIRE_RATE,
   buildFrame as buildSpeakerFrame,
+  isBaseline as isBaselineFormat,
+  readFormat as readPlayFormat,
 } from '../lib/speaker.js'
 
 /**
@@ -169,11 +170,43 @@ let askedHeadset = null
 
 const format = () => ({ encoding: 's16le', rate: RATE, channels: CHANNELS, chunkMs: CHUNK_MS })
 
-/** The other direction's format. The same wire, the same numbers, going out. */
+/**
+ * The other direction's format, as an app that has never heard of the offer
+ * reads it.
+ *
+ * Sixteen kilohertz mono, forever, in the two fields an old build takes
+ * literally — `lib/speaker.js` explains at length why the new format could
+ * not simply be written into them. Everything a newer app needs is in
+ * `offer`, beside these rather than instead of them.
+ */
+const playBaseline = () => ({
+  encoding: 's16le',
+  ...PLAY_BASELINE,
+  chunkMs: WIRE_CHUNK_MS,
+})
+
+/**
+ * What this desktop would rather send, when the handset can take it.
+ *
+ * Not a constant: a sink loaded at a rate the offer does not divide can only
+ * feed the baseline, and `offerFor` in `lib/pipesink.js` is where that
+ * arithmetic lives. Headset mode is the other thing that takes the offer off
+ * the table, and that is decided at the instruction rather than here — a
+ * capability list is what this desktop can do, not what it is doing.
+ */
+const playOffer = () => offerFor(output?.rate)
+
+/**
+ * The format of the playback that is actually running, or the baseline when
+ * nothing is.
+ *
+ * The thing `omarchy-connect speaker status` prints. It is the handset's
+ * answer rather than this desktop's request, because the handset is the end
+ * that opened a track and the only end that knows what Android gave it.
+ */
 const playFormat = () => ({
   encoding: 's16le',
-  rate: WIRE_RATE,
-  channels: WIRE_CHANNELS,
+  ...(playing?.format || PLAY_BASELINE),
   chunkMs: WIRE_CHUNK_MS,
 })
 
@@ -277,6 +310,14 @@ export function outputSummary() {
         }
       : {}),
     ...(output ? output.summary() : { enabled: false }),
+    // The format this run is actually being sent in, which used to be a pair
+    // of constants and is now the handset's own answer. It comes from the
+    // sink while there is one — the sink is the thing that was told, so it is
+    // the thing that knows — and from the run itself when the sink has
+    // already gone but the answer has not been forgotten yet. A person whose
+    // music still sounds like a telephone line reads these two numbers to
+    // find out whether their phone took the offer.
+    ...(playing && !output ? { wireRate: playing.format.rate, wireChannels: playing.format.channels } : {}),
   }
 }
 
@@ -409,7 +450,20 @@ function askPhoneToPlay() {
     }
     askedToPlay.timer.unref?.()
   })
-  bus.emit('event', 'audio', { action: 'play', id, stream, ...playFormat() })
+  // The baseline in the fields an old build reads, and the offer in a field it
+  // does not — except in headset mode, where the whole point of the track is
+  // the platform's echo canceller and that wants 16 kHz mono on a voice
+  // session. A handset in the mode would refuse the offer anyway; not making
+  // it is one round trip fewer and one less thing to go wrong in the middle of
+  // a call.
+  const offer = headset ? null : playOffer()
+  bus.emit('event', 'audio', {
+    action: 'play',
+    id,
+    stream,
+    ...playBaseline(),
+    ...(offer && !isBaselineFormat(offer) ? { offer } : {}),
+  })
   return { id, stream, outcome }
 }
 
@@ -1011,8 +1065,12 @@ export default {
       // has one and not the other must draw one button and not two.
       output: outputSummary(),
       // The format the desktop will send when it does. Advertised so an app
-      // can build its track before the first chunk lands rather than after.
-      play: playFormat(),
+      // can build its track before the first chunk lands rather than after —
+      // the baseline in the fields it has always been in, and beside them the
+      // better format this desktop would rather send if the handset can open
+      // a track for it. An app that does not read `offer` is an app that gets
+      // exactly what it got before.
+      play: { ...playBaseline(), offer: playOffer() },
       // And whether the two can be had at once. False wherever `input` and
       // `output` are false, because a headset is those two and not a third
       // thing — the app draws one switch for it, or none.
@@ -1125,7 +1183,7 @@ export default {
      * speaker` prints it rather than timing out on sound that was never going
      * to be played.
      */
-    'audio.playing'({ id, ok = true, error } = {}, ctx = {}) {
+    'audio.playing'({ id, ok = true, error, rate, channels } = {}, ctx = {}) {
       const pending = askedToPlay
       if (!pending || pending.id !== id) throw new Error('nothing is waiting on that speaker request')
       clearTimeout(pending.timer)
@@ -1134,6 +1192,17 @@ export default {
         pending.reject(new Error(error || 'the phone could not open its speaker'))
         return { ok: false }
       }
+      // What the handset says it opened, which is the authority on this road:
+      // an app that never heard of the offer names no format at all and gets
+      // the baseline, and one that tried the offer and was refused a track by
+      // Android names what it settled for. The sink is told before the first
+      // chunk is built, and `playing` is what lets any chunk be built at all.
+      const agreed = readPlayFormat({ rate, channels })
+      try {
+        if (output) output.setWire(agreed)
+      } catch (err) {
+        log.warn(`could not put the sink on ${agreed.rate} Hz: ${err.message}`)
+      }
       playing = {
         stream: pending.stream,
         session: ctx.session,
@@ -1141,11 +1210,14 @@ export default {
         seq: 0,
         sent: 0,
         missed: 0,
+        format: agreed,
       }
-      log.ok('the phone is this desktop\'s speaker')
+      log.ok(
+        `the phone is this desktop's speaker at ${agreed.rate} Hz ${agreed.channels === 2 ? 'stereo' : 'mono'}`,
+      )
       changed()
       pending.resolve({ ok: true, stream: playing.stream, ...playFormat() })
-      return { ok: true, stream: playing.stream }
+      return { ok: true, stream: playing.stream, ...agreed }
     },
 
     /**
