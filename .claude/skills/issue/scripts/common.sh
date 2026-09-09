@@ -77,3 +77,29 @@ wake_phone() {
   echo "screen after: ${state:-unknown}"
   grep -q 'ON' <<<"$state"
 }
+
+# The desktop's own certificate, copied from one checkout into another.
+#
+# `omarchy-connect tls trust` writes `app/assets/desktop-ca.pem`, and
+# `app/.gitignore` keeps it out of git on purpose: it belongs to one machine,
+# not to the project. A worktree cut from master therefore never has it, and
+# `plugins/withDesktopCa.js` reads it off the project root it is prebuilding —
+# so a prebuild in a worktree silently takes the branch that ships no trust
+# anchor at all, and the APK that comes out cannot verify the desktop it is
+# supposed to dial. That failure looks like a broken network from every angle
+# except the one that explains it, which cost #58 and #57 a red verification
+# each. So every worktree gets the file, whatever the issue's class is.
+#
+# A checkout that has never run `tls trust` has nothing to copy, and that is
+# not an error: it is a desktop with no certificate yet, and saying so is all
+# this can usefully do.
+copy_desktop_ca() {
+  local from="$1" to="$2" rel="app/assets/desktop-ca.pem"
+  if [ ! -f "$from/$rel" ]; then
+    echo "no $rel in $from — run 'omarchy-connect tls trust' before building an APK"
+    return 0
+  fi
+  mkdir -p "$to/app/assets"
+  cp -p "$from/$rel" "$to/$rel"
+  echo "copying $rel (this desktop's certificate, generated and not tracked)"
+}

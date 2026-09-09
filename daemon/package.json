@@ -15,6 +15,7 @@
     "pair": "node bin/omarchy-connect.js pair",
     "test": "node ../tools/run-tests.mjs daemon",
     "test:tls": "node test/tls.mjs",
+    "test:harness-ca": "node test/harness-ca.mjs",
     "test:calls": "node test/calls.mjs",
     "test:call-close": "node test/call-close.mjs",
     "test:call-abandoned": "node test/call-abandoned.mjs",
