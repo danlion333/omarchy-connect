@@ -726,10 +726,15 @@ async function cmdSpeaker(args) {
   } else if (!output.playing) {
     log.info('nothing is playing it on the phone yet')
   } else {
-    // What was heard, and what never left. `silent` is the sink idling rather
-    // than a fault — a loaded sink writes zeroes for as long as nothing is
-    // playing, and those are dropped here rather than carried across Wi-Fi.
-    const parts = [`${output.chunks || 0} chunks sent`]
+    // What was heard, and what never left. Four different things take sound
+    // off this road and each has its own number, because a person who can
+    // hear a gap needs to know which of them to blame: `missed` is the
+    // socket refusing a chunk it could not carry in time, `silent` is the
+    // sink idling — a loaded sink writes zeroes for as long as nothing is
+    // playing, and those are dropped here rather than carried across
+    // Wi-Fi — and `dropped` is sound that had already gone stale in the pipe
+    // before it could be read.
+    const parts = [`${output.sent || 0} chunks sent`, `${output.missed || 0} missed`]
     if (output.silent) parts.push(`${output.silent} of silence dropped`)
     if (output.dropped) parts.push(`${output.dropped} bytes too old to play`)
     log.info(parts.join(', '))

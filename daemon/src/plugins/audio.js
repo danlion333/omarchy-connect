@@ -262,7 +262,20 @@ export function outputSummary() {
     name: SINK_NAME,
     description: SINK_DESCRIPTION,
     playing: Boolean(playing),
-    ...(playing ? { stream: playing.stream, playingSince: playing.startedAt, sent: playing.sent } : {}),
+    // `sent` and `missed` are the two halves of one fact and are only ever
+    // read together: a run with a hundred of each is a link that is carrying
+    // half the sound, and a status that printed the hundred it carried would
+    // read as a healthy one. `PipeSink.summary` already tells the same story
+    // about the desktop end of the road (`silent`, `dropped`); this is the
+    // socket's end of it.
+    ...(playing
+      ? {
+          stream: playing.stream,
+          playingSince: playing.startedAt,
+          sent: playing.sent,
+          missed: playing.missed,
+        }
+      : {}),
     ...(output ? output.summary() : { enabled: false }),
   }
 }
@@ -277,8 +290,14 @@ export const outputEnabled = () => Boolean(output?.running)
  * worthless by the time there is a socket again — the moment it belonged to
  * has passed — which is the very rule `client.sendBytes` keeps on the phone
  * for the microphone going the other way. What a refused chunk earns is a
- * number in the summary, so a link that cannot keep up is visible as sound
- * that never left rather than as a mystery.
+ * number in the summary — `missed`, beside `sent`, printed by `omarchy-connect
+ * speaker status` — so a link that cannot keep up is visible as sound that
+ * never left rather than as a mystery.
+ *
+ * There are exactly three ways `audio.bytes` answers false, and all three are
+ * this counter's business: the socket is not encrypted (sound is never put on
+ * a plaintext link), the socket is closing, or its buffer is already deeper
+ * than live sound can be carried through (`SOCKET_BACKLOG_BYTES`).
  */
 function pushChunk(pcm) {
   if (!playing || !bus) return
@@ -349,7 +368,10 @@ function hushPhone(why, { tell = true } = {}) {
   const current = playing
   if (!current) return null
   playing = null
-  log.info(`the phone stopped being this desktop's speaker (${why}): ${current.sent} chunks sent`)
+  log.info(
+    `the phone stopped being this desktop's speaker (${why}): ${current.sent} chunks sent` +
+      (current.missed ? `, ${current.missed} the socket could not take` : ''),
+  )
   if (tell) bus?.emit('event', 'audio', { action: 'hush', stream: current.stream })
   // The other half of the same rule `finish` keeps: a mode neither direction
   // is left in is a mode the phone should not still be sitting in.

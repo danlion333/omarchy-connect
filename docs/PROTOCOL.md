@@ -2024,7 +2024,10 @@ zero within a stream, and a gap in it is a chunk the desktop could not get onto
 the socket in time. Nothing is queued at either end: a chunk that missed its
 socket is worthless by the time there is a socket again, so the desktop drops
 it against a `bufferedAmount` ceiling and the phone's `AudioTrack` write is
-non-blocking.
+non-blocking. A non-blocking write that is *short*, though, is not a chunk
+refused but half of one accepted: the rest is held and written in front of the
+next chunk, at most one chunk late, and only what is still unwritten a whole
+chunk later is given up on.
 
 **Silence is silence.** A `pipe-sink` that has been used once keeps writing for
 as long as it is `IDLE` — zeroes, at the sink's full rate — and carrying those
@@ -2038,6 +2041,23 @@ other direction. The module writes at real time whether or not the daemon is
 draining, so a daemon that fell behind comes back to a pipe holding sound that
 is already too old to play in front of sound that is not. Every tick drains
 everything and keeps only the newest 100 ms; the rest is counted in `dropped`.
+A read that ends between the two halves of a sample keeps the odd byte for the
+next tick rather than dropping it — a byte dropped there is not a shorter sound
+but a louder one, every sample after it read from the wrong pair of bytes.
+
+**Four places take sound off this road, and each has its own number**, because
+somebody who can hear a gap needs to know which end to blame. `dropped` is what
+had gone stale in the pipe; `silent` is the sink idling; `missed` is a chunk
+the socket refused — unencrypted, closing, or already carrying more than
+`SOCKET_BACKLOG_BYTES` — and it stands beside `sent` in the answer to
+`audio.speaker` and in what `omarchy-connect speaker status` prints, because a
+status that showed only what it carried would read as a healthy one. The
+fourth is on the handset and is in its log rather than in this protocol: one
+`evt=speaker` line every ten seconds of playback with `chunks`, `short`,
+`carried` and `dropped` on it. `AudioTrack`'s buffer is sixteen chunks, 320 ms,
+which is over the 150–190 ms jitter tail this hop was measured at — nothing
+else in this direction absorbs it, since the module's own 8192-frame ring
+stands ahead of the network rather than behind it.
 
 **A socket that dies takes the sink with it**, and this is the one place the
 two directions deliberately differ. A source with nobody speaking into it is a

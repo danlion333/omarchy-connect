@@ -37,6 +37,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import WebSocket from 'ws'
+
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
@@ -191,8 +193,8 @@ async function waitForDaemon(at) {
   throw new Error('daemon did not start')
 }
 
-const speaker = (body, at = base) =>
-  fetch(`${at}/api/speaker`, { method: 'POST', headers: local(), body: JSON.stringify(body) }).then(async (r) => ({
+const speaker = (body, at = base, headers = local) =>
+  fetch(`${at}/api/speaker`, { method: 'POST', headers: headers(), body: JSON.stringify(body) }).then(async (r) => ({
     status: r.status,
     body: await r.json(),
   }))
@@ -313,8 +315,17 @@ for (let i = 0; i < samples; i += 1) source.writeInt16LE(Math.round(12000 * Math
 // in one go would be a backlog rather than playback, and the daemon would
 // rightly drop the front of it (`MAX_BACKLOG_MS`) — which is a different
 // property, and the one the `dropped` counter is for.
-for (let at = 0; at < source.length; at += Math.round(source.length / 5)) {
-  play(source.subarray(at, at + Math.round(source.length / 5)))
+//
+// An *odd* number of bytes in each of them, deliberately. A FIFO is a byte
+// stream: a write of 4801 bytes is a read of 4801 bytes, which ends between
+// the two halves of a sample, and what the daemon does with that last byte is
+// the difference between a sound and a noise. Drop it and every sample of
+// everything that follows is read from the wrong pair of bytes — which the
+// sample-for-sample check below is what catches, because there is nothing in
+// a count of chunks or a screenshot that would.
+const step = 4801
+for (let at = 0; at < source.length; at += step) {
+  play(source.subarray(at, at + step))
   await wait(120)
 }
 
@@ -342,6 +353,16 @@ check(
   'and the samples are the ones this desktop played, at the wire\'s rate',
   got.length > 0 && expected.subarray(0, got.length).equals(got),
   `${got.length} of ${expected.length} bytes`,
+)
+// The same bytes, said as the property that produced them: every one of the
+// writes above ended mid-sample, so a daemon that threw away the half-sample
+// at the end of a read would have handed the decimator a stream shifted by
+// one byte from the first of them onwards — and what came out of it would not
+// be quieter or shorter, it would be noise.
+check(
+  'a read that ends mid-sample keeps the byte for the next one',
+  got.length > chunkBytes() * 4 && expected.subarray(0, got.length).equals(got),
+  `${got.length} bytes across ${Math.ceil(source.length / step)} odd-sized writes`,
 )
 
 /* ── and the silence it does not ───────────────────────────────────────── */
@@ -455,5 +476,102 @@ check(
 )
 check('having loaded nothing', modules().length === 0, modules().join(' | '))
 deaf.kill('SIGTERM')
+
+/* ── the chunks that never left ────────────────────────────────────────── */
+
+/**
+ * `missed`, and the one refusal a suite can produce on purpose.
+ *
+ * Three things make `audio.bytes` answer false — a socket that is closing,
+ * one whose buffer is already deeper than live sound can be pushed through
+ * (`SOCKET_BACKLOG_BYTES`), and one that is not encrypted — and only the
+ * third can be arranged from here without racing something. It is not a
+ * contrivance either: raw PCM of everything a desktop is playing is exactly
+ * what must never go onto a plaintext link, and a desktop where somebody has
+ * turned `requireEncryption` off is a desktop where every chunk is refused
+ * for the life of the run. What is being asserted is what the refusal costs
+ * and where a person reads it: `sent` stays at nothing, `missed` climbs, and
+ * both are in the same answer — a status showing only what it carried would
+ * read as a healthy link.
+ */
+fs.writeFileSync(modulesFile, '')
+fs.writeFileSync(playing, '')
+const PLAIN_PORT = PORT + 2
+quietBluetooth(sandbox, { port: PLAIN_PORT, deviceName: 'audio-output-test', devices: [], requireEncryption: false })
+const plainState = path.join(sandbox, 'plain-state')
+const plain = spawn(process.execPath, [path.join(root, 'bin', 'omarchy-connect.js'), 'start', '--port', String(PLAIN_PORT)], {
+  env: { ...env, OMARCHY_CONNECT_STATE: plainState },
+  stdio: ['ignore', 'ignore', 'inherit'],
+})
+process.on('exit', () => plain.kill('SIGKILL'))
+const plainBase = `http://127.0.0.1:${PLAIN_PORT}`
+await waitForDaemon(plainBase)
+const plainLocal = () => localHeaders(plainState)
+
+const plainCode = await (await fetch(`${plainBase}/api/pair-code`, { method: 'POST', headers: plainLocal() })).json()
+const bare = new WebSocket(`ws://127.0.0.1:${PLAIN_PORT}/ws`)
+let bareStream = null
+const bareGreeted = new Promise((resolve, reject) => {
+  bare.on('error', reject)
+  bare.on('open', () =>
+    bare.send(
+      JSON.stringify({
+        t: 'hello',
+        pairCode: plainCode.code,
+        device: { id: 'plaintext-output', name: 'Plaintext Phone', platform: 'android' },
+      }),
+    ),
+  )
+  bare.on('message', (raw) => {
+    const msg = JSON.parse(Buffer.from(raw).toString())
+    if (msg.t === 'hello.ok') resolve(msg)
+    if (msg.t === 'hello.err') reject(new Error(msg.error))
+    if (msg.t === 'ev' && msg.event === 'audio' && msg.data?.action === 'play') {
+      bareStream = msg.data.stream
+      bare.send(JSON.stringify({ t: 'req', id: 900, method: 'audio.playing', params: { id: msg.data.id, ok: true } }))
+    }
+  })
+})
+await bareGreeted
+bare.send(JSON.stringify({ t: 'sub', events: ['audio'] }))
+
+const plainOn = await speaker({ op: 'on' }, plainBase, plainLocal)
+check(
+  'a phone on a plaintext socket can still be asked to play',
+  plainOn.body?.audio?.output?.playing === true && bareStream !== null,
+  JSON.stringify(plainOn.body?.audio?.output),
+)
+
+// A quarter of a second of the same sound, written the same way. None of it
+// can go anywhere, which is the point.
+for (let at = 0; at < source.length; at += step) {
+  play(source.subarray(at, at + step))
+  await wait(120)
+}
+const missing = await (async () => {
+  for (let i = 0; i < 40; i += 1) {
+    const now = await speaker({ op: 'status' }, plainBase, plainLocal)
+    if ((now.body?.audio?.output?.missed || 0) > 0) return now.body.audio.output
+    await wait(100)
+  }
+  return (await speaker({ op: 'status' }, plainBase, plainLocal)).body?.audio?.output
+})()
+check(
+  `a chunk the socket refuses is counted rather than lost (${missing?.missed} missed)`,
+  (missing?.missed || 0) > 0,
+  JSON.stringify({ sent: missing?.sent, missed: missing?.missed }),
+)
+check(
+  'and none of this desktop\'s sound went down an unencrypted socket',
+  missing?.sent === 0,
+  JSON.stringify({ sent: missing?.sent, missed: missing?.missed }),
+)
+check(
+  'status carries both halves of the fact, not only the good one',
+  typeof missing?.sent === 'number' && typeof missing?.missed === 'number',
+  JSON.stringify(missing),
+)
+bare.close()
+plain.kill('SIGTERM')
 
 done('phone speaker checks')
