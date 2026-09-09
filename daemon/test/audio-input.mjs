@@ -207,22 +207,32 @@ const mic = (body, at = base) =>
   }))
 
 /** The app's side: answers an `audio` instruction and can speak into it. */
-async function connect(pairCode) {
+async function connect({ pairCode = null, token = null } = {}) {
   const info = await (await fetch(`${base}/api/info`)).json()
   const phone = connectPhone(PORT, info.publicKey)
   let stream = null
   let sent = 0
+  const heard = []
+  // Well clear of the `audio.started` answers below, which are 900 + stream.
+  let nextId = 3000
+  let issued = null
 
   const hello = await new Promise((resolve, reject) => {
     phone.ready
       .then(() =>
-        phone.send({ t: 'hello', pairCode, device: { id: 'audio-input', name: 'Input Phone', platform: 'android' } }),
+        phone.send({
+          t: 'hello',
+          ...(token ? { token } : { pairCode }),
+          device: { id: 'audio-input', name: 'Input Phone', platform: 'android' },
+        }),
       )
       .catch(reject)
     phone.on((msg) => {
+      if (msg.t === 'paired') issued = msg.token
       if (msg.t === 'hello.ok') resolve(msg)
       if (msg.t === 'hello.err') reject(new Error(msg.error))
       if (msg.t === 'ev' && msg.event === 'audio') {
+        heard.push(msg.data)
         if (msg.data.action === 'start') {
           stream = msg.data.stream
           phone.send({ t: 'req', id: 900 + stream, method: 'audio.started', params: { id: msg.data.id, ok: true } })
@@ -250,7 +260,20 @@ async function connect(pairCode) {
     return Buffer.concat(spoken)
   }
 
-  return { hello, phone, speak }
+  /** One request out on the JSON road, answered or refused. */
+  const req = (method, params = {}) =>
+    new Promise((resolve, reject) => {
+      const id = nextId++
+      const listen = (msg) => {
+        if (msg.t !== 'res' || msg.id !== id) return
+        msg.ok ? resolve(msg.data) : reject(new Error(msg.error))
+      }
+      phone.on(listen)
+      phone.send({ t: 'req', id, method, params })
+      setTimeout(() => reject(new Error(`${method} timed out`)), 8000)
+    })
+
+  return { hello, phone, speak, heard, req, token: () => issued }
 }
 
 await waitForDaemon(base)
@@ -258,7 +281,7 @@ await waitForDaemon(base)
 /* ── what the phone is told ────────────────────────────────────────────── */
 
 const pair = await (await fetch(`${base}/api/pair-code`, { method: 'POST', headers: local() })).json()
-const phone = await connect(pair.code)
+const phone = await connect({ pairCode: pair.code })
 const caps = phone.hello.capabilities?.audio?.input
 check('a desktop with a sound server offers the phone as an input', caps?.available === true, JSON.stringify(caps))
 check(
@@ -437,6 +460,29 @@ check('switching it off answers with a switch that is off', off.body?.audio?.inp
 check('the module is unloaded', modules().length === 0, modules().join(' | '))
 check('and the pipe is gone from the runtime directory', !fs.existsSync(fifo), fifo)
 check('nothing is left running behind it', !fs.readFileSync(path.join(pulse, 'reader.pid'), 'utf8').trim())
+
+/* ── the switch takes the microphone off the phone, whoever started it ─── */
+
+// The bug this is here for: `mic input off` used to tell the handset to stop
+// only when that same switch had started the stream, so a stream the phone had
+// offered itself — or one started with `mic start` — went on recording after
+// the desktop had given the microphone back. The indicator stayed lit and the
+// `AudioRecord` stayed open with nobody listening.
+// The same handset back on the wire with the token it was given, because the
+// socket above was terminated mid-word and a paired desktop mints no second
+// pairing code.
+const back = await connect({ token: phone.token() })
+const offered = await back.req('audio.offer', { op: 'start' })
+check('the phone can offer its microphone with the desktop switch off', offered?.streaming === true, JSON.stringify(offered))
+const gaveBack = await mic({ op: 'input', value: 'off' })
+await wait(200)
+check(
+  'and the switch tells the handset to stop even though it never started that stream',
+  back.heard.some((e) => e.action === 'stop'),
+  JSON.stringify(back.heard.map((e) => e.action)),
+)
+check('the desktop is not listening either', gaveBack.body?.audio?.streaming !== true, JSON.stringify(gaveBack.body?.audio))
+check('and the source is gone with it', modules().length === 0, modules().join(' | '))
 
 /* ── a daemon that stops ───────────────────────────────────────────────── */
 

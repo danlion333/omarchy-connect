@@ -156,10 +156,12 @@ let nextPlayStream = 1
  * The headset, when the phone is being one: both directions at once, in the
  * one state on the handset that keeps them from howling at each other.
  *
- * `startedMic` and `startedPlay` are this mode's version of
- * `startedTheStream`: the mode may have found one direction already running —
- * somebody had the speaker on and then asked for a headset — and turning the
- * mode off must not take away a switch it did not flip.
+ * `startedMic` and `startedPlay` say which of the two directions this mode
+ * raised itself: the mode may have found one already running — somebody had
+ * the speaker on and then asked for a headset — and turning the mode off must
+ * not take away a switch it did not flip. The input toggle makes no such
+ * distinction, for the reason `requestInput` gives: a microphone is a thing
+ * in somebody's pocket, and taking it off the desktop takes it off the phone.
  */
 let headset = null
 /** The `headset` instruction that has gone out and not been answered yet. */
@@ -509,13 +511,6 @@ export function setGain(value) {
 export const inputEnabled = () => Boolean(input?.running)
 
 /**
- * Did this toggle start the stream that is running? Only then does turning
- * the input off stop it — somebody who ran `mic start` for the recording and
- * then switched the input on has not asked for their recording to end.
- */
-let startedTheStream = false
-
-/**
  * The toggle as a person means it: an input on this desktop, with sound in it.
  *
  * `setInput` is the mechanism and this is the intent. Turning on loads the
@@ -533,9 +528,15 @@ export async function requestInput(op = 'status') {
   }
 
   if (['off', 'stop', 'disable'].includes(action)) {
-    const stopping = startedTheStream && live ? requestMic({ op: 'stop' }).outcome.catch(() => null) : null
-    startedTheStream = false
-    await stopping
+    // Told unconditionally, the way `setOutput(false)` hushes the speaker on
+    // the road right beside this one. It used to be asked only when *this*
+    // toggle had started the stream, which left the phone's `AudioRecord`
+    // open — indicator lit — whenever the stream had come up any other way:
+    // `mic start` from a terminal, or a second `on` that returned early below
+    // and so never set the flag the `off` was looking for. The state that
+    // matters is the handset's, and a desktop that has given the microphone
+    // back has no business leaving one recording in somebody's pocket.
+    if (live) await requestMic({ op: 'stop' }).outcome.catch(() => null)
     return setInput(false)
   }
 
@@ -543,7 +544,6 @@ export async function requestInput(op = 'status') {
   if (live || asked) return { ...state, streaming: Boolean(live) }
   try {
     await requestMic({ op: 'start' }).outcome
-    startedTheStream = true
     return { ...inputSummary(), streaming: true }
   } catch (err) {
     // The switch worked; the handset did not answer it. Both facts go back.
@@ -937,7 +937,6 @@ export default {
   },
 
   stop() {
-    startedTheStream = false
     // First, and without telling anybody: the socket is going with this
     // process, so the instruction would not arrive — and the phone leaves the
     // mode by itself when the socket dies, which is the half of it that has to

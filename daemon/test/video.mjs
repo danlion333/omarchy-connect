@@ -352,6 +352,32 @@ check('offering a camera that is already streaming is refused with a sentence', 
 check('offering it again did not disturb the stream that was running', (await camera('status')).body?.video?.stream === twice.stream, JSON.stringify(twice))
 await camera('stop')
 
+/* ── the switch takes the camera off the phone, whoever started it ─────── */
+
+// The bug this is here for: `camera device off` used to tell the handset to
+// stop only when that same switch had started the stream, so a stream the
+// phone had offered itself — or one started with `camera start` — went on
+// filming after the desktop had taken the camera away. The indicator stayed
+// lit and the `CameraDevice` stayed open with nobody watching.
+//
+// The device itself needs a loopback this machine may not have, and it does
+// not need one for this: the switch's `off` is the whole subject, and it is
+// the same `off` whether or not there was ever a node to take down.
+const raised = await phone.req('video.offer', { op: 'start' })
+check('the phone can offer its camera with the desktop switch off', raised?.streaming === true, JSON.stringify(raised))
+const stopsBefore = phone.heard.filter((e) => e.action === 'stop').length
+const given = await camera('device', 'off')
+await wait(200)
+check(
+  'and the switch tells the handset to stop even though it never started that stream',
+  phone.heard.filter((e) => e.action === 'stop').length === stopsBefore + 1,
+  JSON.stringify(phone.heard.map((e) => e.action)),
+)
+check('the desktop is not watching either', given.body?.video?.streaming !== true, JSON.stringify(given.body?.video))
+check('and the camera is not published here', given.body?.video?.device?.enabled === false, JSON.stringify(given.body?.video?.device))
+const stillAnswering = await camera('device', 'off')
+check('turning off a switch that is already off is still an answer rather than a throw', stillAnswering.status === 200, JSON.stringify(stillAnswering.body))
+
 /* ── a socket that dies mid-frame ──────────────────────────────────────── */
 
 const third = await camera('start')
