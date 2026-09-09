@@ -180,13 +180,6 @@ export function setDevice(on, { mode = 'auto' } = {}) {
 }
 
 /**
- * Did this toggle start the stream that is running? Only then does turning
- * the camera off stop it — somebody who ran `camera start` for the recording
- * and then published the device has not asked for their recording to end.
- */
-let startedTheStream = false
-
-/**
  * The toggle as a person means it: a camera on this desktop, with a picture
  * in it.
  *
@@ -205,9 +198,19 @@ export async function requestDevice(op = 'status', { mode = 'auto', ...wanted } 
   }
 
   if (['off', 'stop', 'disable'].includes(action)) {
-    const stopping = startedTheStream && live ? requestVideo({ op: 'stop' }).outcome.catch(() => null) : null
-    startedTheStream = false
-    await stopping
+    // Told unconditionally, exactly as `setOutput(false)` hushes the speaker
+    // and as turning the headset off tells the phone even when this desktop
+    // thinks it is already out of the mode: the state that matters is the
+    // handset's. This used to be asked only when *this* toggle had started
+    // the stream, which left the camera filming — indicator lit, `AudioRecord`
+    // or `CameraDevice` open — every time the stream had come up any other
+    // way: `camera start` from a terminal, the phone offering with
+    // `video.offer`, or a second `on` that returned early below and so never
+    // set the flag the `off` was looking for. Somebody who took the camera
+    // away from this desktop has taken it away from the phone too; a
+    // recording that only the desktop knew about is a poor reason to keep a
+    // lens open on a device in somebody's pocket.
+    if (live) await requestVideo({ op: 'stop' }).outcome.catch(() => null)
     return setDevice(false)
   }
 
@@ -215,7 +218,6 @@ export async function requestDevice(op = 'status', { mode = 'auto', ...wanted } 
   if (live || asked) return { ...state, streaming: Boolean(live) }
   try {
     await requestVideo({ op: 'start', ...wanted }).outcome
-    startedTheStream = true
     return { ...deviceSummary(), streaming: true }
   } catch (err) {
     // The switch worked; the handset did not answer it. Both facts go back.
@@ -373,7 +375,6 @@ export default {
   },
 
   stop() {
-    startedTheStream = false
     if (live) void finish('the daemon is stopping', { tell: false })
     // Before the listeners are cleared, and synchronously: a child left
     // running by a daemon on its way out is a camera in every picker on this
