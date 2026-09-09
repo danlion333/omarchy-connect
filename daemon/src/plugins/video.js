@@ -2,16 +2,15 @@ import crypto from 'node:crypto'
 
 import { log } from '../lib/log.js'
 import {
+  CAMERAS,
   Capture,
-  FPS,
-  HEIGHT,
   MAX_SECONDS,
-  QUALITY,
-  WIDTH,
   parseFrame,
   pathFor,
+  readCamera,
   readFormat,
 } from '../lib/video.js'
+import { loadConfig } from '../lib/config.js'
 import {
   DESCRIPTION as SINK_DESCRIPTION,
   NODE_NAME,
@@ -79,7 +78,20 @@ let sink = null
 /** Undo for the `onFrame` subscription that feeds it. */
 let unfeed = null
 
-const format = () => ({ encoding: 'jpeg', width: WIDTH, height: HEIGHT, fps: FPS, quality: QUALITY })
+/**
+ * The picture this desktop asks for when nobody says otherwise.
+ *
+ * Read from the config on every call rather than remembered, exactly as
+ * `currentGain` reads the microphone's: `loadConfig` re-reads the file when it
+ * has moved (`lib/config.js`), so editing `video` in it takes effect on the
+ * next `camera start` without restarting anything.
+ */
+const configured = () => {
+  const wanted = loadConfig().video || {}
+  return { camera: readCamera(wanted.camera), ...readFormat({}, wanted) }
+}
+
+const format = () => ({ encoding: 'jpeg', ...configured() })
 
 /**
  * Say, on this desktop only, that the camera picture has moved.
@@ -93,7 +105,12 @@ const format = () => ({ encoding: 'jpeg', width: WIDTH, height: HEIGHT, fps: FPS
 const changed = () => bus?.emit('video.state')
 
 export function summary() {
-  if (!live) return { streaming: false, device: deviceSummary() }
+  // The format is said whether or not anything is streaming, the way `audio`
+  // says its `gain` at rest: what the panel and `camera status` want to show
+  // is the picture the next `camera start` will ask for, and a status that
+  // only has an answer while the lens is open is no help to anybody deciding
+  // whether to open it.
+  if (!live) return { streaming: false, ...configured(), device: deviceSummary() }
   return {
     streaming: true,
     stream: live.stream,
@@ -140,6 +157,7 @@ export const deviceEnabled = () => Boolean(sink?.running)
 export function setDevice(on, { mode = 'auto' } = {}) {
   if (on) {
     if (sink?.running) return deviceSummary()
+    const next = configured()
     const state = sinkAvailable()
     if (!state.available) throw new Error(state.hint || 'this desktop cannot publish a camera')
     const started = new VideoSink({
@@ -148,9 +166,9 @@ export function setDevice(on, { mode = 'auto' } = {}) {
       // 1280×720 down to what its lens can do is not published at a size it
       // never sends. Nothing streaming yet means the format the next request
       // will ask for, which is the same default the phone clamps towards.
-      width: live?.format?.width ?? WIDTH,
-      height: live?.format?.height ?? HEIGHT,
-      fps: live?.format?.fps ?? FPS,
+      width: live?.format?.width ?? next.width,
+      height: live?.format?.height ?? next.height,
+      fps: live?.format?.fps ?? next.fps,
       // A child that died on its own — somebody killed the node, PipeWire went
       // away, the loopback device was unloaded underneath it. The switch has
       // to go back to where the truth is, or the panel offers an "off" for a
@@ -259,7 +277,7 @@ async function finish(why, { tell = true } = {}) {
  * Returns the promise the CLI holds open, exactly as `requestMic` does: a
  * success means the handset has actually opened the camera.
  */
-export function requestVideo({ op = 'start', camera = 'back', ...wanted } = {}) {
+export function requestVideo({ op = 'start', camera, ...wanted } = {}) {
   if (!bus) throw new Error('daemon is not running')
   const action = String(op || 'start').toLowerCase()
   if (!['start', 'stop'].includes(action)) throw new Error(`unknown camera action: ${op}`)
@@ -275,9 +293,17 @@ export function requestVideo({ op = 'start', camera = 'back', ...wanted } = {}) 
   if (live) throw new Error('the phone is already streaming its camera')
   if (asked) throw new Error('the phone has already been asked and has not answered yet')
 
-  const lens = String(camera || 'back').toLowerCase()
-  if (!['back', 'front'].includes(lens)) throw new Error(`unknown camera: ${camera} — it is "back" or "front"`)
-  const chosen = readFormat(wanted)
+  // The config is the base and the call is the override, for both halves of
+  // the request: a `camera start --width 1280` is one capture at 1280 and
+  // leaves the file alone, while `cam device on`, which names nothing, is
+  // whatever the file says. A lens named out loud and wrongly is still an
+  // error — that is a person's typo, not a missing setting.
+  const wish = loadConfig().video || {}
+  if (camera !== undefined && camera !== null && camera !== '' && !CAMERAS.includes(String(camera).toLowerCase())) {
+    throw new Error(`unknown camera: ${camera} — it is "back" or "front"`)
+  }
+  const lens = readCamera(camera, wish.camera)
+  const chosen = readFormat(wanted, wish)
 
   const stream = nextStream
   nextStream += 1
@@ -401,7 +427,7 @@ export default {
       // "this desktop is too old for that" instead of drawing a button that
       // answers `unknown method`.
       offer: true,
-      cameras: ['back', 'front'],
+      cameras: CAMERAS,
       // Whether this desktop can turn the stream into a camera the rest of
       // the system sees. False on a machine with no ffmpeg, and the app draws
       // no button for it — the same bargain `audio.input` makes about

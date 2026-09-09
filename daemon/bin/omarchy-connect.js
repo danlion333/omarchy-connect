@@ -836,15 +836,20 @@ async function cmdCamera(args) {
   if (!op) {
     log.error(
       'usage: omarchy-connect camera <start|stop|status|device on|device off> ' +
-        '[--front] [--width N] [--height N] [--fps N]',
+        '[--front] [--width N] [--height N] [--fps N] [--quality N]',
     )
     process.exit(1)
   }
+  // Only what was actually typed. A flag left out is not "the default" here:
+  // it is a question the desktop's `video` config answers, and sending `back`
+  // or 640 for every unnamed flag would be this command quietly overruling a
+  // file the person edited on purpose.
   const value = {
-    camera: args.front ? 'front' : args.back ? 'back' : 'back',
+    ...(args.front ? { camera: 'front' } : args.back ? { camera: 'back' } : {}),
     ...(args.width ? { width: Number(args.width) } : {}),
     ...(args.height ? { height: Number(args.height) } : {}),
     ...(args.fps ? { fps: Number(args.fps) } : {}),
+    ...(args.quality ? { quality: Number(args.quality) } : {}),
   }
   const res = await daemonRequest('/api/camera', { method: 'POST', body: { op, value }, timeout: 30_000 })
   if (!res.status) {
@@ -865,9 +870,19 @@ async function cmdCamera(args) {
     // in somebody's picker outlasts any one capture, and a person running
     // `cam status` is usually asking about that rather than about a file.
     printCameraDevice(video.device || {})
-    if (!video.streaming) return log.info('the phone is not streaming its camera')
+    if (!video.streaming) {
+      // Not streaming is not nothing to say: the format is what the next
+      // start will ask for, and printing it is how somebody sees that the
+      // `video` block they just edited is the one the daemon is reading.
+      return log.info(
+        'the phone is not streaming its camera\n' +
+          `  next capture: ${video.camera} lens at ${video.width}\u00d7${video.height}, ` +
+          `${video.fps} fps, quality ${video.quality}`,
+      )
+    }
     return log.ok(
-      `watching the ${video.camera} camera — ${video.frames} frames in ${video.seconds}s ` +
+      `watching the ${video.camera} camera at ${video.width}\u00d7${video.height} — ` +
+        `${video.frames} frames in ${video.seconds}s ` +
         `(${video.fps} fps, ${video.gaps} the phone never sent) into ${video.path}`,
     )
   }

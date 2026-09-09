@@ -68,6 +68,10 @@ export const VIDEO_DIR = path.join(XDG_CACHE, 'omarchy-connect', 'video')
 export const MAGIC = Buffer.from('OCV1')
 export const HEADER_BYTES = MAGIC.length + 8
 
+/** The two lenses a phone is asked for by name, and the one nobody names. */
+export const CAMERAS = ['back', 'front']
+export const CAMERA = 'back'
+
 /** What the desktop asks for, and what the phone clamps towards. */
 export const WIDTH = 640
 export const HEIGHT = 480
@@ -144,8 +148,21 @@ export function parseFrame(frame) {
   }
 }
 
-/** What a request may actually ask for, clamped rather than refused. */
-export function readFormat({ width, height, fps, quality } = {}) {
+/**
+ * What a request may actually ask for, clamped rather than refused.
+ *
+ * Two layers, and the second one is why this takes a second argument. What a
+ * caller names wins; what it leaves out comes from `defaults` — the desktop's
+ * own `video` config block, which is where the panel's switch and `cam device
+ * on` get their numbers from, since neither of them names any. Only when
+ * *neither* has an answer do the constants above decide, which is what keeps a
+ * desktop whose config has never been touched behaving as it always did.
+ *
+ * The defaults are clamped on their own way through, so a config file with
+ * `"width": 99999` in it is still a request for 1920 rather than a way around
+ * the bounds.
+ */
+export function readFormat({ width, height, fps, quality } = {}, defaults = {}) {
   const clamp = (value, low, high, fallback) => {
     // `null` and `''` both become 0 through `Number`, which a clamp would then
     // turn into the smallest legal value rather than the default — a request
@@ -155,12 +172,30 @@ export function readFormat({ width, height, fps, quality } = {}) {
     if (!Number.isFinite(n)) return fallback
     return Math.min(high, Math.max(low, n))
   }
+  const base = defaults || {}
   return {
-    width: clamp(width, MIN_WIDTH, MAX_WIDTH, WIDTH),
-    height: clamp(height, MIN_HEIGHT, MAX_HEIGHT, HEIGHT),
-    fps: clamp(fps, MIN_FPS, MAX_FPS, FPS),
-    quality: clamp(quality, 1, 100, QUALITY),
+    width: clamp(width, MIN_WIDTH, MAX_WIDTH, clamp(base.width, MIN_WIDTH, MAX_WIDTH, WIDTH)),
+    height: clamp(height, MIN_HEIGHT, MAX_HEIGHT, clamp(base.height, MIN_HEIGHT, MAX_HEIGHT, HEIGHT)),
+    fps: clamp(fps, MIN_FPS, MAX_FPS, clamp(base.fps, MIN_FPS, MAX_FPS, FPS)),
+    quality: clamp(quality, 1, 100, clamp(base.quality, 1, 100, QUALITY)),
   }
+}
+
+/**
+ * Which lens, from a request or from the config behind it.
+ *
+ * The same shape as `readFormat` and for the same reason: `cam device on`
+ * names no camera, so a desktop that has said `front` in its config should get
+ * the front one. A word neither side recognises is the back lens rather than
+ * an error here — `plugins/video.js` is where an explicitly wrong `--camera`
+ * is refused to the person's face, and a typo in a config file should not stop
+ * the camera from opening at all.
+ */
+export function readCamera(value, fallback = CAMERA) {
+  const named = String(value ?? '').toLowerCase()
+  if (CAMERAS.includes(named)) return named
+  const behind = String(fallback ?? '').toLowerCase()
+  return CAMERAS.includes(behind) ? behind : CAMERA
 }
 
 /** Old first, then merely surplus — the same bargain the recordings keep. */
