@@ -160,19 +160,20 @@ export function startVideoResponder(
   /**
    * One picture, straight onto the wire.
    *
-   * `atob` rather than a Buffer because this runs in Hermes, where there is no
-   * Node buffer and the global is the only decoder there is. It is tens of
-   * kilobytes fifteen times a second, which is a great deal more than the
-   * microphone asks of this loop and still far less than the camera itself is
-   * doing to produce the bytes.
+   * Straight in the literal sense: the bytes the native module encoded are the
+   * bytes that go into the frame, with no base64 in between. This used to
+   * `atob` the payload and then walk it with `charCodeAt` — the only decoder
+   * Hermes has — for tens of kilobytes fifteen times a second, which is
+   * hundreds of thousands of interpreted iterations a second on the same
+   * thread the interface is drawn on. The native side now hands over a
+   * `Uint8Array`, and the whole of that work is a slice of memory the JNI
+   * layer copied once. The microphone still sends base64 and should: a chunk
+   * is hundreds of bytes, and there is nothing there to win.
    */
   const frameOff = native?.addListener('onCameraFrame', ({ jpeg, seq }) => {
     if (stream === null) return
     try {
-      const binary = globalThis.atob(jpeg)
-      const bytes = new Uint8Array(binary.length)
-      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
-      client.sendBytes(frame(stream, seq, bytes))
+      client.sendBytes(frame(stream, seq, jpeg))
     } catch (err) {
       // The socket went away under a live capture. Stopping is the whole
       // answer — there is nowhere for the pictures to go, and a camera left

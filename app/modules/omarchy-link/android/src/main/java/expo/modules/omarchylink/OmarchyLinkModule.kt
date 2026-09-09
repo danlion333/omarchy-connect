@@ -129,6 +129,14 @@ class OmarchyLinkModule : Module() {
       // Same bargain otherwise: set here so `Camera` knows nothing about
       // React, and null when the runtime goes away, which the read side reads
       // as a frame with nowhere to go.
+      //
+      // The one difference from the microphone is the shape: a `ByteArray` in
+      // an event payload arrives in JavaScript as a `Uint8Array`, straight out
+      // of the JNI converter, while a base64 string would be a third more
+      // bytes on the way over and then a character-at-a-time loop in Hermes to
+      // undo. At tens of kilobytes fifteen times a second that loop was the
+      // largest thing on the app's JavaScript thread; sound stays base64
+      // because a chunk is hundreds of bytes and the change would buy nothing.
       Camera.onFrame = { jpeg, seq ->
         try {
           this@OmarchyLinkModule.sendEvent("onCameraFrame", mapOf("jpeg" to jpeg, "seq" to seq))
