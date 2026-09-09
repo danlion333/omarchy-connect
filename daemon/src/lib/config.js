@@ -92,6 +92,25 @@ const DEFAULTS = {
    * anybody has to remember.
    */
   audio: { auto: true, gain: 4 },
+  /**
+   * The picture the phone sends when this desktop asks for its camera.
+   *
+   * The microphone's neighbour above, and here for the same reason: the only
+   * place a media setting can live and still be true after a reboot is this
+   * file. Without it the numbers were constants in `lib/video.js`, which meant
+   * the panel's switch and `cam device on` — neither of which passes a
+   * format — always opened 640x480 at 15 fps, and the only way to ask for
+   * anything else was to type it out again on every `camera start`.
+   *
+   * `camera` is which lens, `width`/`height`/`fps` the shape of the stream and
+   * `quality` the JPEG knob, 1-100. These are wishes, not promises: every one
+   * of them is clamped to the bounds in `lib/video.js` on the way out and
+   * clamped again by the handset against what its lens can actually do, so a
+   * 4K number here comes back as the nearest thing the phone has. The values
+   * are the constants those bounds were written around, so a config nobody has
+   * touched behaves exactly as the constants did.
+   */
+  video: { camera: 'back', width: 640, height: 480, fps: 15, quality: 70 },
   otp: { enabled: true, autoCopy: false },
   devices: [],
 }
@@ -208,6 +227,30 @@ function keepOnePhone(cfg) {
 }
 
 /**
+ * Put a setting this file has never heard of into it, once.
+ *
+ * A default that only exists in this source file is a setting nobody can find:
+ * the way anybody changes `video` or `terminal` is by opening the config in an
+ * editor, and a key that is not written there is a key they would have to be
+ * told about. The values are the defaults, so writing them changes no
+ * behaviour whatsoever — it only makes the behaviour visible and editable.
+ *
+ * Done by taking the missing keys *out of the baseline* rather than by writing
+ * the whole object: that is how `saveConfig` is told "this process added
+ * these", so the write is a merge like any other and cannot step on a field
+ * another process changed in the meantime.
+ */
+function seedDefaults(parsed, base) {
+  let seeded = false
+  for (const key of Object.keys(DEFAULTS)) {
+    if (key in parsed) continue
+    delete base[key]
+    seeded = true
+  }
+  return seeded
+}
+
+/**
  * The config, from memory when the file has not moved and from disk when it
  * has.
  *
@@ -235,8 +278,9 @@ export function loadConfig() {
   if (parsed && isObject(parsed)) {
     cache = adopt(cache, { ...DEFAULTS, ...parsed })
     baseline = clone(cache)
+    const seeded = seedDefaults(parsed, baseline)
     stamp = at
-    if (keepOnePhone(cache)) saveConfig(cache)
+    if (keepOnePhone(cache) || seeded) saveConfig(cache)
   } else {
     // Nothing readable behind us, so there is nothing to merge with either:
     // this is the one write that is allowed to be the whole object.

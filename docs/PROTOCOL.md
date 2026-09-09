@@ -374,7 +374,7 @@ switch, the same way it draws no dictation button without `voxtype`. See
 | --- | --- | --- |
 | `video.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its camera. |
 | `video.stopped` | `{ stream, error }` | `{ ok, path, bytes, frames, seconds, fps, dropped, gaps }` — the phone saying it has stopped. |
-| `video.status` | — | `{ streaming, stream, since, camera, width, height, fps, quality, path, bytes, frames, seconds, dropped, gaps }`. |
+| `video.status` | — | `{ streaming, stream, since, camera, width, height, fps, quality, path, bytes, frames, seconds, dropped, gaps }`. With nothing streaming it is `{ streaming: false, camera, width, height, fps, quality, device }` — the format the *next* capture will ask for, the way `audio.status` gives its `gain` at rest. |
 | `video.offer` | `{ op, camera, width, height, fps, quality }` | `start`, `stop` or `status`. The phone offering its own camera instead of waiting to be asked. Answers with `video.status`'s shape plus the `path` the desktop opened, once the handset is actually filming. Refused on a `remote` socket. |
 
 The capability is
@@ -2159,6 +2159,17 @@ until the handset answers:
 { "t": "req", "id": 4, "method": "video.started",
   "params": { "id": "<uuid>", "ok": false, "error": "camera access is not granted on the phone" } }
 ```
+
+**The numbers have a home.** What a request leaves out is not a constant: it
+comes from the `video` block of `~/.config/omarchy-connect/config.json` —
+`{ camera, width, height, fps, quality }`, the microphone's `audio` block for
+pictures. That is what makes the panel's switch and `omarchy-connect cam device
+on` — neither of which names a format — open the camera somebody actually
+wants rather than 640×480 forever. A flag on a single `camera start` overrides
+the file for that one capture and leaves it unchanged, and the file is re-read
+whenever it moves, so an edit takes effect on the next start with no restart.
+The constants in `daemon/src/lib/video.js` are only the last word, for a config
+that has never been touched.
 
 `camera` is `"back"` or `"front"`. Everything else in the request is **clamped
 rather than refused** — 160–1920 wide, 120–1080 high, 1–30 fps, quality 1–100 —
