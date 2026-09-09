@@ -30,6 +30,7 @@ if [ "$class" = apk ] && [ ! -d "$wt/app/android" ]; then
   echo "copying app/android (native project is generated, not tracked)"
   rsync -a --exclude build --exclude .gradle --exclude .cxx "$REPO/app/android/" "$wt/app/android/"
 fi
+copy_desktop_ca "$REPO" "$wt"
 mkdir -p "$STATE/$n"
 echo "class=$class branch=$branch" | tee "$STATE/$n/meta"
 
