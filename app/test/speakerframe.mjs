@@ -23,6 +23,7 @@ import {
   frame,
   isSpeakerFrame,
   chunkBytes,
+  readPlayFormat,
   RATE,
   CHANNELS,
   CHUNK_MS,
@@ -32,10 +33,14 @@ import {
   buildFrame,
   parseFrame,
   isSpeakerFrame as daemonRecognises,
+  readFormat as daemonReadFormat,
   HEADER_BYTES as DAEMON_HEADER,
   RATE as DAEMON_RATE,
   CHANNELS as DAEMON_CHANNELS,
   CHUNK_MS as DAEMON_CHUNK_MS,
+  chunkBytes as daemonChunkBytes,
+  OFFER_RATE,
+  OFFER_CHANNELS,
   MAX_CHUNK_BYTES,
 } from '../../daemon/src/lib/speaker.js'
 import { MAGIC as MIC_MAGIC } from '../../daemon/src/lib/mic.js'
@@ -102,5 +107,102 @@ check(
   'and a microphone chunk is not mistaken for a speaker chunk',
   !isSpeakerFrame(new Uint8Array(Buffer.concat([MIC_MAGIC, Buffer.alloc(8 + 640)]))),
 )
+
+/* ── the format the two ends agree on for one run ──────────────────────── */
+
+/**
+ * The negotiation, from the phone's side.
+ *
+ * There is exactly one rule — take the `offer` when there is one this build
+ * recognises, and the baseline otherwise — and the reason it is worth a dozen
+ * checks is that every way of getting it wrong is silent. A phone that reads
+ * an offer it cannot play opens a track at a format the desktop is not
+ * sending; a phone that ignores an offer it *can* play leaves the owner with
+ * the telephone line this whole change exists to remove; and a phone that
+ * throws on a `play` instruction from an older desktop leaves that desktop
+ * holding a request open for fifteen seconds and then printing a timeout.
+ */
+check(
+  'a play instruction with no offer in it is the baseline',
+  readPlayFormat({ action: 'play', rate: 16000, channels: 1, chunkMs: 20 }).rate === RATE &&
+    readPlayFormat({ action: 'play', rate: 16000, channels: 1, chunkMs: 20 }).channels === CHANNELS,
+  JSON.stringify(readPlayFormat({ action: 'play', rate: 16000, channels: 1, chunkMs: 20 })),
+)
+check(
+  'and so is one from a desktop old enough to have no format fields at all',
+  JSON.stringify(readPlayFormat({ action: 'play' })) === JSON.stringify({ rate: 16000, channels: 1 }),
+  JSON.stringify(readPlayFormat({ action: 'play' })),
+)
+check(
+  'an offer this phone recognises is what the track is opened at',
+  JSON.stringify(readPlayFormat({ rate: 16000, channels: 1, offer: { rate: 48000, channels: 2 } })) ===
+    JSON.stringify({ rate: 48000, channels: 2 }),
+  JSON.stringify(readPlayFormat({ offer: { rate: 48000, channels: 2 } })),
+)
+check(
+  'which is the format the desktop offers by default',
+  OFFER_RATE === 48000 && OFFER_CHANNELS === 2,
+  `${OFFER_RATE}/${OFFER_CHANNELS}`,
+)
+// The baseline's fields are deliberately not read: they carry 16 kHz mono in
+// every instruction a desktop that knows about the offer sends, and a phone
+// that preferred them would downgrade itself on every single run.
+check(
+  'the instruction\'s own rate is not what decides',
+  readPlayFormat({ rate: 16000, channels: 1, offer: { rate: 48000, channels: 2 } }).rate === 48000,
+)
+for (const strange of [null, '', 'stereo', 42, { rate: 44100, channels: 2 }, { rate: 48000, channels: 7 }]) {
+  const read = readPlayFormat({ rate: 16000, channels: 1, offer: strange })
+  check(
+    `an offer of ${JSON.stringify(strange)} falls back rather than throwing`,
+    read.rate === 16000 || (read.rate === 48000 && read.channels === 1),
+    JSON.stringify(read),
+  )
+}
+check(
+  'a rate this end does not speak takes the baseline rather than the offer',
+  readPlayFormat({ offer: { rate: 44100, channels: 2 } }).rate === 16000,
+  JSON.stringify(readPlayFormat({ offer: { rate: 44100, channels: 2 } })),
+)
+
+// And the desktop reads its half of the same negotiation — the handset's
+// answer — by the same rules, which is what keeps a missing field meaning the
+// same thing in both directions.
+check(
+  'the desktop reads an answer with no format in it as the baseline',
+  JSON.stringify(daemonReadFormat({})) === JSON.stringify({ rate: 16000, channels: 1 }),
+  JSON.stringify(daemonReadFormat({})),
+)
+check(
+  'and an answer naming the offer as the offer',
+  JSON.stringify(daemonReadFormat({ rate: 48000, channels: 2 })) === JSON.stringify({ rate: 48000, channels: 2 }),
+)
+check(
+  'and an answer naming something neither end speaks as the baseline',
+  JSON.stringify(daemonReadFormat({ rate: 44100, channels: 6 })) === JSON.stringify({ rate: 16000, channels: 1 }),
+)
+
+/* ── and a chunk of the offered format crosses unchanged ───────────────── */
+
+const big = { rate: 48000, channels: 2 }
+check(
+  'a chunk of the offered format is 3840 bytes, and both ends say so',
+  chunkBytes(CHUNK_MS, big) === 3840 && daemonChunkBytes(CHUNK_MS, big) === 3840,
+  `${chunkBytes(CHUNK_MS, big)} vs ${daemonChunkBytes(CHUNK_MS, big)}`,
+)
+check('which is still well inside what one frame may carry', chunkBytes(CHUNK_MS, big) <= MAX_CHUNK_BYTES)
+
+// Interleaved stereo, with the two channels carrying different sounds: a
+// parser that lost or gained a byte anywhere would swap them for the rest of
+// the frame, which is the one corruption on this road that is not audible as
+// a fault.
+const stereo = Buffer.alloc(chunkBytes(CHUNK_MS, big))
+for (let f = 0; f * 4 < stereo.length; f += 1) {
+  stereo.writeInt16LE(Math.round(12000 * Math.sin((2 * Math.PI * 440 * f) / 48000)), f * 4)
+  stereo.writeInt16LE(Math.round(-9000 * Math.sin((2 * Math.PI * 1200 * f) / 48000)), f * 4 + 2)
+}
+const wide = parse(new Uint8Array(buildFrame(4, 11, stereo)))
+check('a stereo chunk reaches the phone sample for sample', Buffer.from(wide.pcm).equals(stereo), `${wide.pcm.length} bytes`)
+check('with its stream and sequence intact', wide.stream === 4 && wide.seq === 11)
 
 done('speaker frame checks')

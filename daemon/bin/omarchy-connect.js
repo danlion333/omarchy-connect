@@ -716,9 +716,11 @@ async function cmdSpeaker(args) {
     )
   }
   log.ok(`"${output.description}" is an output on this desktop — pick it in any app, or \`wpctl set-default\` it`)
+  const lanes = (n) => (n === 2 ? 'stereo' : n === 1 ? 'mono' : `${n} channels`)
   if (output.rate && output.ringMs) {
     log.info(
-      `loaded at ${output.rate} Hz mono, so PipeWire keeps ${output.ringMs} ms of it before the wire's ${output.wireRate} Hz`,
+      `loaded at ${output.rate} Hz ${lanes(output.channels)}, so PipeWire keeps ${output.ringMs} ms of it` +
+        ` before the wire's ${output.wireRate} Hz ${lanes(output.wireChannels)}`,
     )
   }
   if (output.phone) {
@@ -726,6 +728,17 @@ async function cmdSpeaker(args) {
   } else if (!output.playing) {
     log.info('nothing is playing it on the phone yet')
   } else {
+    // The format of *this* run, and not a constant: the handset is the end
+    // that opened the track, so what it answered with is the only honest
+    // answer to "what am I actually hearing". A person whose music still
+    // sounds like a telephone reads this line to find out whether the phone
+    // took the offer or fell back to the baseline.
+    log.info(
+      `the phone is playing it at ${output.wireRate} Hz ${lanes(output.wireChannels)}` +
+        (output.wireRate === 16000 && output.wireChannels === 1
+          ? ' — the baseline, which is what an app built before the offer opens'
+          : ''),
+    )
     // What was heard, and what never left. Four different things take sound
     // off this road and each has its own number, because a person who can
     // hear a gap needs to know which of them to blame: `missed` is the

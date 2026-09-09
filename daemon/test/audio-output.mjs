@@ -19,8 +19,10 @@
  *
  *   - the sink appears with the right name and format, exactly one of it, and
  *     goes away again — including when the daemon is killed with it on;
- *   - the desktop's sound reaches the handset as frames it can read, at the
- *     wire's rate, with the samples the desktop put in;
+ *   - the desktop's sound reaches the handset as frames it can read, in the
+ *     format the handset agreed to, with the samples the desktop put in —
+ *     both of the formats there are, because the negotiation has two answers
+ *     and only one of them is the one this desktop would prefer;
  *   - silence is not sent, because a loaded sink writes zeroes for as long as
  *     nothing is playing and a phone's track plays that silence for free;
  *   - a frame for a stream that has ended, or one with half a sample in it, is
@@ -42,8 +44,16 @@ import WebSocket from 'ws'
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
-import { RATE as WIRE_RATE, buildFrame, parseFrame, chunkBytes } from '../src/lib/speaker.js'
-import { SINK_NAME, SINK_DESCRIPTION, RATE as SINK_RATE, ringMs, isSilent } from '../src/lib/pipesink.js'
+import { RATE as BASE_RATE, OFFER, buildFrame, parseFrame, chunkBytes } from '../src/lib/speaker.js'
+import {
+  SINK_NAME,
+  SINK_DESCRIPTION,
+  RATE as SINK_RATE,
+  CHANNELS as SINK_CHANNELS,
+  downmix,
+  ringMs,
+  isSilent,
+} from '../src/lib/pipesink.js'
 import { Downsampler } from '../src/lib/resample.js'
 
 const PORT = Number(process.env.PORT || 8831)
@@ -200,12 +210,14 @@ const speaker = (body, at = base, headers = local) =>
   }))
 
 /** The app's side: answers a `play` instruction and collects what arrives. */
-async function connect(greeting) {
+async function connect(greeting, { answer = OFFER } = {}) {
   const info = await (await fetch(`${base}/api/info`)).json()
   const phone = connectPhone(PORT, info.publicKey)
   const heard = []
   let stream = null
   let hushes = 0
+  /** The last `play` instruction, so the offer in it can be read back. */
+  let told = null
 
   let paired = null
   const hello = await new Promise((resolve, reject) => {
@@ -224,7 +236,17 @@ async function connect(greeting) {
       if (msg.t === 'ev' && msg.event === 'audio') {
         if (msg.data.action === 'play') {
           stream = msg.data.stream
-          phone.send({ t: 'req', id: 800 + stream, method: 'audio.playing', params: { id: msg.data.id, ok: true } })
+          told = msg.data
+          // `answer` is what this stand-in handset says it opened. `null` is
+          // an app built before the offer existed: it answers `ok` and
+          // nothing else, exactly as `api/speaker.ts` did for this road's
+          // whole life until now.
+          phone.send({
+            t: 'req',
+            id: 800 + stream,
+            method: 'audio.playing',
+            params: { id: msg.data.id, ok: true, ...(answer || {}) },
+          })
         }
         if (msg.data.action === 'hush') {
           hushes += 1
@@ -240,7 +262,7 @@ async function connect(greeting) {
   phone.send({ t: 'sub', events: ['audio'] })
   await subscribed
 
-  return { hello, phone, heard, token: paired, hushes: () => hushes, stream: () => stream }
+  return { hello, phone, heard, token: paired, hushes: () => hushes, stream: () => stream, told: () => told }
 }
 
 /** Wait for a condition the daemon reaches on its own timer, or give up. */
@@ -269,11 +291,16 @@ check(
   JSON.stringify(caps),
 )
 check('which is off until somebody asks for it', caps?.enabled === false, JSON.stringify(caps))
+const advertised = link.hello.capabilities?.audio?.play
 check(
-  'and the format it will send is the wire\'s own',
-  link.hello.capabilities?.audio?.play?.rate === WIRE_RATE &&
-    link.hello.capabilities?.audio?.play?.channels === 1,
-  JSON.stringify(link.hello.capabilities?.audio?.play),
+  'and the format it names is the baseline, in the fields an old app reads',
+  advertised?.rate === BASE_RATE && advertised?.channels === 1,
+  JSON.stringify(advertised),
+)
+check(
+  'with the better one beside it rather than instead of it',
+  advertised?.offer?.rate === OFFER.rate && advertised?.offer?.channels === OFFER.channels,
+  JSON.stringify(advertised),
 )
 
 /* ── the switch ────────────────────────────────────────────────────────── */
@@ -288,10 +315,17 @@ check(
   modules()[0],
 )
 check(
-  'in the format the wire multiplies up from',
-  /format=s16le/.test(modules()[0] || '') && new RegExp(`rate=${SINK_RATE}`).test(modules()[0] || '') && /channels=1/.test(modules()[0] || ''),
+  'in the desktop\'s own format rather than the wire\'s',
+  /format=s16le/.test(modules()[0] || '') &&
+    new RegExp(`rate=${SINK_RATE}`).test(modules()[0] || '') &&
+    new RegExp(`channels=${SINK_CHANNELS}`).test(modules()[0] || ''),
   modules()[0],
 )
+// The reason the sink is stereo and not mono: what the handset can play is
+// not known when the module is loaded, and a channel count cannot be changed
+// on a loaded module without taking every program on the machine off the
+// device it chose.
+check('which is two channels, whatever the handset turns out to want', SINK_CHANNELS === 2, String(SINK_CHANNELS))
 check(
   'described the way it will appear in an output picker',
   modules()[0]?.includes(`node.description='${SINK_DESCRIPTION}'`),
@@ -301,15 +335,42 @@ check('and the switch says what the road costs', output?.rate === SINK_RATE && o
 const fifo = output?.file
 check('the pipe it reads exists', typeof fifo === 'string' && fs.existsSync(fifo), String(fifo))
 check('turning it on also asks the handset to play', output?.playing === true, JSON.stringify(output))
+check(
+  'the instruction carries the baseline in the fields an old app reads',
+  link.told()?.rate === BASE_RATE && link.told()?.channels === 1,
+  JSON.stringify(link.told()),
+)
+check(
+  'and the offer in a field an old app does not',
+  link.told()?.offer?.rate === OFFER.rate && link.told()?.offer?.channels === OFFER.channels,
+  JSON.stringify(link.told()),
+)
+check(
+  'a handset that took the offer is sent it — and the status says so',
+  output?.wireRate === OFFER.rate && output?.wireChannels === OFFER.channels,
+  JSON.stringify({ wireRate: output?.wireRate, wireChannels: output?.wireChannels }),
+)
 
 /* ── sound that this desktop plays ─────────────────────────────────────── */
 
-// A ramp rather than noise, so a chunk that arrived shifted, doubled or in the
-// wrong order is a failure rather than something nobody can see.
+// A tone rather than noise, so a chunk that arrived shifted, doubled or in
+// the wrong order is a failure rather than something nobody can see — and a
+// *different* tone in each channel, which is the check the mono road could
+// not make. Two channels carrying the same thing prove nothing about
+// interleaving: an end that dropped one of them, swapped them, or read the
+// pair off by a single sample would produce the very same bytes.
+//
+// The right channel is at 12 kHz on purpose. It is above the 7.2 kHz the
+// baseline's anti-alias filter passes, so it is the sound that this whole
+// issue is about: on the offered format it arrives, and on the baseline it is
+// filtered away — which is what the two runs below assert separately.
 const seconds = 0.25
 const samples = Math.round(SINK_RATE * seconds)
-const source = Buffer.alloc(samples * 2)
-for (let i = 0; i < samples; i += 1) source.writeInt16LE(Math.round(12000 * Math.sin((2 * Math.PI * 440 * i) / SINK_RATE)), i * 2)
+const source = Buffer.alloc(samples * SINK_CHANNELS * 2)
+for (let i = 0; i < samples; i += 1) {
+  source.writeInt16LE(Math.round(12000 * Math.sin((2 * Math.PI * 440 * i) / SINK_RATE)), i * 4)
+  source.writeInt16LE(Math.round(9000 * Math.sin((2 * Math.PI * 12000 * i) / SINK_RATE)), i * 4 + 2)
+}
 // In fifths of what it is, with a pause between them, because that is what a
 // sink does: it writes at real time. Handing the daemon a quarter of a second
 // in one go would be a backlog rather than playback, and the daemon would
@@ -329,7 +390,48 @@ for (let at = 0; at < source.length; at += step) {
   await wait(120)
 }
 
-const wanted = Math.floor((samples / (SINK_RATE / WIRE_RATE)) / (chunkBytes() / 2)) - 2
+/**
+ * One channel of interleaved PCM, as an array of samples.
+ */
+const lane = (buf, channels, which) => {
+  const out = []
+  for (let f = 0; (f * channels + which) * 2 + 1 < buf.length; f += 1) out.push(buf.readInt16LE((f * channels + which) * 2))
+  return out
+}
+
+/**
+ * How loud one frequency is in a run of samples: a single DFT bin, by hand.
+ *
+ * The whole issue in one number. "Telephone quality" is not a mood, it is
+ * everything above about 7.2 kHz being gone, and the only way to assert that
+ * it is gone — or that it has stopped being gone — is to go and look for a
+ * tone at a named frequency and say how much of it is there. Normalised by
+ * the number of samples so that two runs of different lengths compare, and
+ * against the same measurement of a 440 Hz tone that both formats carry, so
+ * that the answer is a ratio rather than a unit nobody can read.
+ */
+const tone = (samples, hz, rate) => {
+  let re = 0
+  let im = 0
+  for (let i = 0; i < samples.length; i += 1) {
+    const w = (2 * Math.PI * hz * i) / rate
+    re += samples[i] * Math.cos(w)
+    im -= samples[i] * Math.sin(w)
+  }
+  return (2 * Math.sqrt(re * re + im * im)) / Math.max(1, samples.length)
+}
+
+/**
+ * How many whole chunks a run of `bytes` of sink-side sound becomes on the
+ * wire, less two for the seams at either end.
+ */
+const chunksFor = (bytes, wire) => {
+  const frames = bytes / (SINK_CHANNELS * 2)
+  const onWire = (frames * wire.rate) / SINK_RATE
+  return Math.floor((onWire * wire.channels * 2) / chunkBytes(20, wire)) - 2
+}
+
+const wanted = chunksFor(source.length, OFFER)
 const arrived = await until(() => link.heard.length >= wanted, 8000)
 check(`the desktop's sound reaches the phone (${link.heard.length} chunks)`, arrived, `wanted ${wanted}`)
 check(
@@ -339,20 +441,48 @@ check(
 )
 check(
   'each carrying one chunk of the agreed length',
-  link.heard.every((c) => c.pcm.length === chunkBytes()),
-  String(link.heard[0]?.pcm.length),
+  link.heard.every((c) => c.pcm.length === chunkBytes(20, OFFER)),
+  `${link.heard[0]?.pcm.length} — wanted ${chunkBytes(20, OFFER)}`,
 )
+check('which is six times what the baseline carried', chunkBytes(20, OFFER) === 6 * chunkBytes(), String(chunkBytes(20, OFFER)))
 
-// What the phone got is what the desktop played, taken down to the wire's rate
-// by the very interpolator's mirror the daemon used. Held sample for sample
-// rather than approximately: the decimator is deterministic, so anything else
-// means the two ends disagree about the arithmetic.
-const expected = new Downsampler({ factor: SINK_RATE / WIRE_RATE }).process(source)
+// What the phone got is exactly what the desktop played, byte for byte: at
+// the offered format the sink's rate is the wire's rate and the sink's
+// channel count is the wire's, so nothing is filtered, folded or downmixed at
+// all. That is the whole shape of this change — the good format is the one
+// with no arithmetic in it, and the resampler exists for the handset that
+// cannot take it.
 const got = Buffer.concat(link.heard.map((c) => Buffer.from(c.pcm)))
+const expected = source
 check(
-  'and the samples are the ones this desktop played, at the wire\'s rate',
+  'and the samples are the ones this desktop played, unaltered',
   got.length > 0 && expected.subarray(0, got.length).equals(got),
   `${got.length} of ${expected.length} bytes`,
+)
+// The property the mono road could not test at all: the two channels are
+// still two channels, still in the order the desktop wrote them, still
+// carrying different sound. A frame boundary read two bytes out would swap
+// them for the rest of the stream and nothing else here would notice.
+const heardLeft = []
+const heardRight = []
+for (let f = 0; (f + 1) * 4 <= got.length; f += 1) {
+  heardLeft.push(got.readInt16LE(f * 4))
+  heardRight.push(got.readInt16LE(f * 4 + 2))
+}
+check(
+  'with the two channels still apart, and still in the order they were written',
+  heardLeft.length > 480 && heardLeft.some((v, i) => v !== heardRight[i]),
+  `${heardLeft.length} frames`,
+)
+// The measurement the issue is actually about, made where it can be made
+// exactly. The right channel is a 12 kHz tone; at the offered format it
+// arrives at very nearly the amplitude it was written with, which is what
+// nothing above 7.2 kHz surviving used to make impossible.
+const wideTone = tone(heardRight, 12000, OFFER.rate)
+check(
+  `the 12 kHz tone arrives at the offered format (${Math.round(wideTone)} of 9000)`,
+  wideTone > 9000 * 0.8,
+  String(Math.round(wideTone)),
 )
 // The same bytes, said as the property that produced them: every one of the
 // writes above ended mid-sample, so a daemon that threw away the half-sample
@@ -360,16 +490,16 @@ check(
 // one byte from the first of them onwards — and what came out of it would not
 // be quieter or shorter, it would be noise.
 check(
-  'a read that ends mid-sample keeps the byte for the next one',
-  got.length > chunkBytes() * 4 && expected.subarray(0, got.length).equals(got),
-  `${got.length} bytes across ${Math.ceil(source.length / step)} odd-sized writes`,
+  'a read that ends mid-frame keeps the bytes for the next one',
+  got.length > chunkBytes(20, OFFER) * 4 && expected.subarray(0, got.length).equals(got),
+  `${got.length} bytes across ${Math.ceil(source.length / step)} ragged writes`,
 )
 
 /* ── and the silence it does not ───────────────────────────────────────── */
 
 await wait(400) // whatever was still in the pipe from the sound above
 const before = link.heard.length
-play(Buffer.alloc(SINK_RATE * 2 * 0.2)) // a fifth of a second of pure silence
+play(Buffer.alloc(SINK_RATE * SINK_CHANNELS * 2 * 0.2)) // a fifth of a second of pure silence
 await wait(700)
 check(
   'no chunk of silence is carried across the link',
@@ -443,10 +573,83 @@ check(
 
 /* ── a daemon that is killed with it on ────────────────────────────────── */
 
-const relit = await connect({ token })
+// And it reconnects as an app built before any of this existed: it answers
+// `audio.playing` with `ok` and nothing else, exactly as `api/speaker.ts` did
+// for this road's whole life. Everything below is the compatibility promise
+// this negotiation is shaped around — the daemon on the desktop and the app
+// on the phone are updated days apart, and the desktop must not send a format
+// the handset never said it could play.
+const relit = await connect({ token }, { answer: null })
+// A clean pipe under it, and the truncation done while no module is loaded:
+// the stand-in writer copies whatever it has not sent yet and would not
+// notice a file that had got shorter, which is a property of the stand-in and
+// not of anything the daemon does.
+await speaker({ op: 'off' })
+fs.writeFileSync(playing, '')
 const back = await speaker({ op: 'on' })
 check('a reconnected phone can be offered the sink again', back.body?.audio?.output?.playing === true, JSON.stringify(back.body?.audio?.output))
 check('with one module and not two', modules().length === 1, modules().join(' | '))
+check(
+  'an app that answers with no format at all is sent the baseline',
+  back.body?.audio?.output?.wireRate === BASE_RATE && back.body?.audio?.output?.wireChannels === 1,
+  JSON.stringify({ wireRate: back.body?.audio?.output?.wireRate, wireChannels: back.body?.audio?.output?.wireChannels }),
+)
+check(
+  'while the sink under it is unchanged — one device, two possible wires',
+  back.body?.audio?.output?.rate === SINK_RATE && back.body?.audio?.output?.channels === SINK_CHANNELS,
+  JSON.stringify({ rate: back.body?.audio?.output?.rate, channels: back.body?.audio?.output?.channels }),
+)
+
+// The same quarter second of stereo, played the same ragged way. What must
+// come out of the far end is that sound downmixed and then decimated — and
+// held sample for sample against the very classes the daemon used, because
+// the decimator is deterministic and anything else means the two ends
+// disagree about the arithmetic rather than about the sound.
+const beforeOld = relit.heard.length
+for (let at = 0; at < source.length; at += step) {
+  play(source.subarray(at, at + step))
+  await wait(120)
+}
+const oldWanted = chunksFor(source.length, { rate: BASE_RATE, channels: 1 })
+const oldArrived = await until(() => relit.heard.length - beforeOld >= oldWanted, 8000)
+check(
+  `an older app still hears this desktop (${relit.heard.length - beforeOld} chunks)`,
+  oldArrived,
+  `wanted ${oldWanted}`,
+)
+check(
+  'in chunks of the baseline\'s own length',
+  relit.heard.slice(beforeOld).every((c) => c.pcm.length === chunkBytes()),
+  String(relit.heard.at(-1)?.pcm.length),
+)
+const oldGot = Buffer.concat(relit.heard.slice(beforeOld).map((c) => Buffer.from(c.pcm)))
+const oldWant = new Downsampler({ factor: SINK_RATE / BASE_RATE }).process(downmix(source, SINK_CHANNELS))
+check(
+  'downmixed and taken down to 16 kHz, sample for sample',
+  oldGot.length > 0 && oldWant.subarray(0, oldGot.length).equals(oldGot),
+  `${oldGot.length} of ${oldWant.length} bytes`,
+)
+// And the same measurement, on the format this issue is about removing. The
+// baseline's Nyquist is 8 kHz, so a 12 kHz tone cannot be in it at all — the
+// only two things that can happen to it are that the filter removes it or
+// that the decimator folds it down to 4 kHz, and the second would be a
+// whistle in the middle of the music that is louder than the music. What is
+// asserted is that it is gone rather than moved: nothing at 4 kHz, while the
+// 440 Hz tone that both formats carry is still there.
+const oldMono = lane(oldGot, 1, 0)
+const folded = tone(oldMono, 4000, BASE_RATE)
+const kept = tone(oldMono, 440, BASE_RATE)
+check(
+  `the baseline carries the 440 Hz tone (${Math.round(kept)})`,
+  kept > 4000,
+  String(Math.round(kept)),
+)
+check(
+  `and neither carries nor folds the 12 kHz one (${Math.round(folded)} at 4 kHz)`,
+  folded < kept / 20,
+  `${Math.round(folded)} against ${Math.round(kept)}`,
+)
+
 daemon.kill('SIGTERM')
 const reaped = await until(() => modules().length === 0, 8000)
 check('a daemon told to stop takes its sink with it', reaped, modules().join(' | '))

@@ -142,6 +142,14 @@ const speaker = (globalThis.__speaker = {
   written: [],
   /** Set to a message to make `startSpeaker` throw it. */
   refuse: null,
+  /**
+   * A handset that will only give a track at the baseline.
+   *
+   * Not a contrivance: `AudioTrack.getMinBufferSize` refuses some rate and
+   * mask combinations on some hardware, and the app's answer to that is to
+   * try again at 16 kHz mono rather than tell the desktop it cannot play.
+   */
+  onlyBaseline: false,
   /** Set to a message to make `writeSpeaker` throw it. */
   breakOnWrite: null,
 })
@@ -150,11 +158,17 @@ export function speakerSupported() {
   return speaker.supported
 }
 
-export function startSpeaker(rate, chunkMs) {
+export function startSpeaker(rate, channels, chunkMs) {
   if (speaker.refuse) throw new Error(speaker.refuse)
+  if (speaker.onlyBaseline && !(rate === 16000 && channels === 1)) {
+    throw new Error('the phone would not open its speaker')
+  }
   speaker.starts += 1
   speaker.running = true
-  speaker.last = { rate, chunkMs }
+  speaker.last = { rate, channels, chunkMs }
+  // What the real module answers with: the format the track was *built* at,
+  // which is what the desktop will then send.
+  return { rate, channels }
 }
 
 export function stopSpeaker() {

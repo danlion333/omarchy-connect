@@ -5,7 +5,7 @@ import {
   stopSpeaker,
   writeSpeaker,
 } from '../../modules/omarchy-link'
-import { CHUNK_MS, type SpeakerChunk } from '../lib/speakerframe.ts'
+import { BASELINE, CHUNK_MS, readPlayFormat, type PlayFormat, type SpeakerChunk } from '../lib/speakerframe.ts'
 import type { ConnectClient } from './client'
 
 /**
@@ -50,13 +50,15 @@ export type SpeakerState = {
   playing: boolean
   /** The desktop's number for this run, while there is one. */
   stream: number | null
+  /** What the track was actually opened at, while there is one. */
+  format: PlayFormat | null
   /** When it started, by this phone's clock. */
   since: number | null
   /** Why the last attempt did not happen, as a sentence. */
   error: string | null
 }
 
-export const NO_SPEAKER: SpeakerState = { playing: false, stream: null, since: null, error: null }
+export const NO_SPEAKER: SpeakerState = { playing: false, stream: null, since: null, format: null, error: null }
 
 export type SpeakerResponder = {
   stop: () => void
@@ -77,6 +79,8 @@ export function startSpeakerResponder(
       next.playing === state.playing &&
       next.stream === state.stream &&
       next.since === state.since &&
+      next.format?.rate === state.format?.rate &&
+      next.format?.channels === state.format?.channels &&
       next.error === state.error
     ) {
       return
@@ -90,7 +94,7 @@ export function startSpeakerResponder(
     const ending = stream
     stream = null
     stopSpeaker()
-    publish({ playing: false, stream: null, since: null, ...(error ? { error } : {}) })
+    publish({ playing: false, stream: null, since: null, format: null, ...(error ? { error } : {}) })
     if (ending === null) return
     client.call('audio.hushed', { stream: ending, ...(error ? { error } : {}) }).catch(() => {})
   }
@@ -102,21 +106,42 @@ export function startSpeakerResponder(
       // `play`.
       stream = null
       stopSpeaker()
-      publish({ playing: false, stream: null, since: null })
+      publish({ playing: false, stream: null, since: null, format: null })
       return
     }
     if (data?.action !== 'play' || !data?.id) return
     try {
       if (!speakerSupported()) throw new Error('this phone cannot play the desktop’s sound')
       if (stream !== null) throw new Error('this phone is already playing the desktop')
-      startSpeaker(Number(data.rate) || 16000, Number(data.chunkMs) || CHUNK_MS)
+      const chunkMs = Number(data.chunkMs) || CHUNK_MS
+      const wanted = readPlayFormat(data)
+      // The offer first, the baseline if Android will not give a track for
+      // it. `AudioTrack.getMinBufferSize` refuses some rates on some
+      // hardware and there is no list anywhere of which — the only way to
+      // find out is to ask for one — so a phone that cannot do 48 kHz stereo
+      // falls back to the format that has always worked rather than telling
+      // the desktop it cannot play at all. A person hears their music in
+      // telephone quality, which is what they had yesterday; the alternative
+      // is silence.
+      let opened: PlayFormat
+      try {
+        opened = startSpeaker(wanted.rate, wanted.channels, chunkMs)
+      } catch (err) {
+        if (wanted.rate === BASELINE.rate && wanted.channels === BASELINE.channels) throw err
+        opened = startSpeaker(BASELINE.rate, BASELINE.channels, chunkMs)
+      }
       stream = Number(data.stream)
-      publish({ playing: true, stream, since: Date.now(), error: null })
-      await client.call('audio.playing', { id: data.id, ok: true })
+      publish({ playing: true, stream, since: Date.now(), format: opened, error: null })
+      // The format goes back with the answer, and it is the format the track
+      // was *built* at rather than the one that was asked for: the desktop
+      // sends whatever this says, so a phone that fell back and did not say
+      // so would be a phone playing 48 kHz stereo bytes through a 16 kHz mono
+      // track — which is not quieter or slower, it is noise.
+      await client.call('audio.playing', { id: data.id, ok: true, ...opened })
     } catch (err) {
       stream = null
       stopSpeaker()
-      publish({ playing: false, stream: null, since: null, error: (err as Error).message })
+      publish({ playing: false, stream: null, since: null, format: null, error: (err as Error).message })
       await client.call('audio.playing', { id: data.id, ok: false, error: (err as Error).message }).catch(() => {})
     }
   })

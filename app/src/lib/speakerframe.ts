@@ -8,7 +8,7 @@
  * in this project's life.
  *
  * ```
- * "OCS1" || stream:uint32be || seq:uint32be || pcm (s16le, 16 kHz, mono)
+ * "OCS1" || stream:uint32be || seq:uint32be || pcm (s16le, at the agreed format)
  * ```
  *
  * Deliberately a separate file from the thing that drives the player, for the
@@ -28,10 +28,57 @@
 export const MAGIC = new Uint8Array([0x4f, 0x43, 0x53, 0x31]) // "OCS1"
 export const HEADER_BYTES = MAGIC.length + 8
 
-/** What the desktop sends, and what the track is opened for. */
+/**
+ * The baseline: what a `play` instruction that says nothing else means.
+ *
+ * This was the only format there was, and it stays the one both ends fall
+ * back to — an old desktop names it in `rate` and `channels` and means it
+ * literally, and a new desktop names it there too and puts what it would
+ * rather send in `offer` beside it. `daemon/src/lib/speaker.js` is the long
+ * version of why the new format could not simply have been written into the
+ * old fields.
+ */
 export const RATE = 16000
 export const CHANNELS = 1
 export const BYTES_PER_SAMPLE = 2
+
+/** Every rate and channel count this end will open a track for. */
+export const RATES = [16000, 48000]
+export const CHANNEL_COUNTS = [1, 2]
+
+export type PlayFormat = { rate: number; channels: number }
+
+export const BASELINE: PlayFormat = { rate: RATE, channels: CHANNELS }
+
+/**
+ * What track to open for a `play` instruction, and the whole of this end's
+ * half of the negotiation.
+ *
+ * The rule is one sentence: take the `offer` when there is one this phone
+ * recognises, and the baseline otherwise — where "otherwise" covers a desktop
+ * too old to send an offer, a desktop that sent one this build has never
+ * heard of, and a field that arrived as `null`, `''` or a string. All four
+ * have to end at 16 kHz mono rather than at an exception, because the one
+ * thing worse than telephone quality on this road is a silent speaker and a
+ * desktop holding a request open for fifteen seconds.
+ *
+ * Note what is *not* consulted: the instruction's own `rate` and `channels`.
+ * They carry the baseline by definition now, and reading them would make a
+ * new desktop's honesty about backwards compatibility into a downgrade.
+ */
+export function readPlayFormat(data: unknown): PlayFormat {
+  const offer = (data as { offer?: unknown } | null)?.offer as { rate?: unknown; channels?: unknown } | undefined
+  if (!offer || typeof offer !== 'object') return { ...BASELINE }
+  const pick = (value: unknown, allowed: number[], fallback: number) => {
+    if (value === undefined || value === null || value === '') return fallback
+    const n = Math.round(Number(value))
+    return allowed.includes(n) ? n : fallback
+  }
+  return {
+    rate: pick(offer.rate, RATES, RATE),
+    channels: pick(offer.channels, CHANNEL_COUNTS, CHANNELS),
+  }
+}
 
 /**
  * Twenty milliseconds, which is what the desktop sends.
@@ -43,8 +90,14 @@ export const BYTES_PER_SAMPLE = 2
  */
 export const CHUNK_MS = 20
 
-/** How many bytes of PCM one chunk carries at the format above. */
-export const chunkBytes = (ms: number = CHUNK_MS) => Math.round((RATE * CHANNELS * BYTES_PER_SAMPLE * ms) / 1000)
+/**
+ * How many bytes of PCM one chunk carries at a given format.
+ *
+ * The baseline unless told otherwise, so every caller written when there was
+ * one format still means what it meant.
+ */
+export const chunkBytes = (ms: number = CHUNK_MS, format: PlayFormat = BASELINE) =>
+  Math.round((format.rate * format.channels * BYTES_PER_SAMPLE * ms) / 1000)
 
 /** Is this decrypted frame sound rather than the JSON everything else is? */
 export function isSpeakerFrame(bytes: Uint8Array): boolean {
