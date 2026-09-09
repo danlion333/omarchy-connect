@@ -65,14 +65,18 @@ type Events = {
   /**
    * One picture from the camera, on its way to the desktop.
    *
-   * `jpeg` is base64 for the reason `pcm` is, and it is far more of it —
-   * tens of kilobytes fifteen times a second rather than hundreds of bytes
-   * fifty times. `seq` is the capture's own count, and a number that skipped
-   * is a frame that was meant to go and could not: a frame the phone chose
-   * not to send, because the rate asked for is lower than the camera's, does
-   * not move it.
+   * `jpeg` is the JPEG itself and not base64 of it, which is the one place
+   * this differs from `onMicChunk`: a Kotlin `ByteArray` in an event payload
+   * crosses as a `Uint8Array`, and at tens of kilobytes fifteen times a second
+   * the encode and the character-at-a-time decode on the other side were worth
+   * more than the whole of the rest of this road. A chunk of sound is hundreds
+   * of bytes and stays as it is.
+   *
+   * `seq` is the capture's own count, and a number that skipped is a frame
+   * that was meant to go and could not: a frame the phone chose not to send,
+   * because the rate asked for is lower than the camera's, does not move it.
    */
-  onCameraFrame: (frame: { jpeg: string; seq: number }) => void
+  onCameraFrame: (frame: { jpeg: Uint8Array; seq: number }) => void
   /**
    * Filming ended without the app asking. The camera permission was revoked,
    * another app took the lens, or Android stopped the capture. `error` is
