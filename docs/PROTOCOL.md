@@ -372,7 +372,7 @@ switch, the same way it draws no dictation button without `voxtype`. See
 
 | Method | Params | Returns |
 | --- | --- | --- |
-| `video.started` | `{ id, ok, error }` | `{ ok }` — the phone's answer to being asked for its camera. |
+| `video.started` | `{ id, ok, error, width, height, fps }` | `{ ok }` — the phone's answer to being asked for its camera, carrying the size and rate its lens actually opened at. |
 | `video.stopped` | `{ stream, error }` | `{ ok, path, bytes, frames, seconds, fps, dropped, gaps }` — the phone saying it has stopped. |
 | `video.status` | — | `{ streaming, stream, since, camera, width, height, fps, quality, path, bytes, frames, seconds, dropped, gaps }`. With nothing streaming it is `{ streaming: false, camera, width, height, fps, quality, device }` — the format the *next* capture will ask for, the way `audio.status` gives its `gain` at rest. |
 | `video.offer` | `{ op, camera, width, height, fps, quality }` | `start`, `stop` or `status`. The phone offering its own camera instead of waiting to be asked. Answers with `video.status`'s shape plus the `path` the desktop opened, once the handset is actually filming. Refused on a `remote` socket. |
@@ -2217,11 +2217,12 @@ until the handset answers:
 ```jsonc
 // desktop → phone, on the video channel
 { "t": "ev", "event": "video", "data": { "action": "start", "id": "<uuid>", "stream": 1,
-  "camera": "back", "encoding": "jpeg", "width": 640, "height": 480, "fps": 15,
+  "camera": "back", "encoding": "jpeg", "width": 1280, "height": 720, "fps": 15,
   "quality": 70, "maxSeconds": 600 } }
 
-// phone → desktop, once its camera is actually open
-{ "t": "req", "id": 4, "method": "video.started", "params": { "id": "<uuid>", "ok": true } }
+// phone → desktop, once its camera is actually open, saying what it opened
+{ "t": "req", "id": 4, "method": "video.started",
+  "params": { "id": "<uuid>", "ok": true, "width": 1280, "height": 720, "fps": 15 } }
 // … or a refusal with the sentence the desktop prints
 { "t": "req", "id": 4, "method": "video.started",
   "params": { "id": "<uuid>", "ok": false, "error": "camera access is not granted on the phone" } }
@@ -2232,7 +2233,7 @@ comes from the `video` block of `~/.config/omarchy-connect/config.json` —
 `{ camera, width, height, fps, quality }`, the microphone's `audio` block for
 pictures. That is what makes the panel's switch and `omarchy-connect cam device
 on` — neither of which names a format — open the camera somebody actually
-wants rather than 640×480 forever. A flag on a single `camera start` overrides
+wants rather than one hard-coded size forever. A flag on a single `camera start` overrides
 the file for that one capture and leaves it unchanged, and the file is re-read
 whenever it moves, so an edit takes effect on the next start with no restart.
 The constants in `daemon/src/lib/video.js` are only the last word, for a config
@@ -2242,7 +2243,19 @@ that has never been touched.
 rather than refused** — 160–1920 wide, 120–1080 high, 1–30 fps, quality 1–100 —
 and the handset clamps again to the sizes its own sensor offers, picking the
 nearest by pixel count. A person typing `--fps 500` wants the fastest available,
-not an error. `video.offer` is the same switch pressed from the phone, exactly
+not an error.
+
+**The phone says which size it opened**, in the `width`, `height` and `fps` of
+its `video.started` answer, and that answer is the authority rather than the
+request — exactly as `audio.playing` is for a track. Camera2 publishes a fixed
+list of sizes and the handset picks the nearest by pixel count, so a desktop
+asking for 1280×720 from a lens that has only 1024×768 gets 1024×768 and is
+told so. The desktop records those numbers as the capture's format, prints them
+in `camera status` beside the `requested` ones when the two differ, and — when
+the phone is published as a camera here — **rebuilds the sink at that size**,
+because the published size is a promise `/dev/video` and `rawvideoparse` never
+re-read per frame. An app too old to name a size names none, and the desktop
+falls back to what it asked for, which is what every build before this did. `video.offer` is the same switch pressed from the phone, exactly
 as `audio.offer` is, and is refused to a socket that arrived down a tunnel for
 exactly the reason a microphone is — with the volume up.
 
@@ -2260,7 +2273,9 @@ JSON, sound and pictures rather than leaving it to be noticed. `stream` and
 `seq` mean what they mean for sound. One frame at 640×480 and quality 70 is
 25–40 KB on the handset this was measured on, so fifteen a second is roughly
 half a megabyte a second — an order of magnitude past the microphone's 32 KB/s,
-and still an order under the 1 MiB `maxPayload` per frame.
+and still an order under the 1 MiB `maxPayload` per frame. The default is now
+1280×720, which is roughly three times that on the wire and still inside the
+512 KB a single frame may be.
 
 A **hole in `seq` is a frame that was meant to go and could not**, and it is
 counted. A frame the phone chose not to send because the rate asked for is

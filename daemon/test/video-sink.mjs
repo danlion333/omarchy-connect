@@ -260,6 +260,7 @@ async function connect(port, pairCode) {
   const info = await (await fetch(`http://127.0.0.1:${port}/api/info`)).json()
   const phone = connectPhone(port, info.publicKey)
   let stream = null
+  let lens = null
   let seq = 0
 
   const hello = await new Promise((resolve, reject) => {
@@ -274,7 +275,14 @@ async function connect(port, pairCode) {
       if (msg.t === 'ev' && msg.event === 'video') {
         if (msg.data.action === 'start') {
           stream = msg.data.stream
-          phone.send({ t: 'req', id: 800 + stream, method: 'video.started', params: { id: msg.data.id, ok: true } })
+          phone.send({
+            t: 'req',
+            id: 800 + stream,
+            method: 'video.started',
+            // A sensor that has what it was asked for, unless `sensor()` has
+            // given this phone a lens that has not.
+            params: { id: msg.data.id, ok: true, ...(lens || {}) },
+          })
         }
         if (msg.data.action === 'stop') stream = null
       }
@@ -296,7 +304,7 @@ async function connect(port, pairCode) {
     return Buffer.concat(sent)
   }
 
-  return { hello, phone, film }
+  return { hello, phone, film, sensor: (size) => (lens = size) }
 }
 
 await waitForDaemon(base)
@@ -352,12 +360,12 @@ check(
 )
 check(
   'and the raw frames are given a size, because a pipe carries bytes and a node carries pictures',
-  /rawvideoparse/.test(args(gstLog)[0]) && /width=640/.test(args(gstLog)[0]) && /height=480/.test(args(gstLog)[0]),
+  /rawvideoparse/.test(args(gstLog)[0]) && /width=1280/.test(args(gstLog)[0]) && /height=720/.test(args(gstLog)[0]),
   args(gstLog)[0],
 )
 check(
   'the decoder is told the pictures are MJPEG and the output is raw',
-  /-f mjpeg/.test(args(ffmpegLog)[0]) && /-f rawvideo/.test(args(ffmpegLog)[0]) && /scale=640:480/.test(args(ffmpegLog)[0]),
+  /-f mjpeg/.test(args(ffmpegLog)[0]) && /-f rawvideo/.test(args(ffmpegLog)[0]) && /scale=1280:720/.test(args(ffmpegLog)[0]),
   args(ffmpegLog)[0],
 )
 check(
@@ -403,6 +411,59 @@ check(
   'and counts those apart from the pictures the phone really sent',
   idle?.frames === 12,
   JSON.stringify({ frames: idle?.frames, repeated: idle?.repeated }),
+)
+
+/* ── a lens that has no such size ──────────────────────────────────────── */
+
+/**
+ * The published camera follows the phone, not the request.
+ *
+ * The device is published before the handset has answered — deliberately, so
+ * that a program can select it and see a frozen picture rather than nothing —
+ * which means the size it is first published at is the desktop's wish. A
+ * handset whose sensor has no 1280×720 sends something else, and both ends of
+ * this chain take the size as a promise they never check per frame: ffmpeg
+ * would scale the picture to the wrong shape and `/dev/video` would tell every
+ * consumer a width the pictures do not have. So the chain is rebuilt on the
+ * answer, and that is what these two checks are.
+ */
+await cam({ op: 'stop' })
+phone.sensor({ width: 800, height: 600, fps: 10 })
+const chains = args(gstLog).length
+const clamped = await cam({ op: 'start' })
+await wait(400)
+check(
+  'a phone that opened another size is reported at the size it opened',
+  clamped.body?.video?.width === 800 && clamped.body?.video?.height === 600,
+  JSON.stringify({ width: clamped.body?.video?.width, height: clamped.body?.video?.height }),
+)
+check(
+  'and the camera other programs can pick was rebuilt at that size rather than scaled to the wish',
+  args(gstLog).length === chains + 1 &&
+    /width=800/.test(args(gstLog).at(-1)) &&
+    /height=600/.test(args(gstLog).at(-1)) &&
+    /framerate=10\/1/.test(args(gstLog).at(-1)) &&
+    /scale=800:600/.test(args(ffmpegLog).at(-1)),
+  `${args(gstLog).at(-1)} | ${args(ffmpegLog).at(-1)}`,
+)
+const resized = (await cam({ op: 'device', value: 'status' })).body?.video?.device
+check(
+  'which is what `cam status` prints, so it agrees with what v4l2-ctl would say',
+  resized?.enabled === true && resized?.width === 800 && resized?.height === 600,
+  JSON.stringify({ enabled: resized?.enabled, width: resized?.width, height: resized?.height }),
+)
+// The rebuild kills one chain and starts another in the same tick, and the
+// exit of the first arrives after the second is up. Without the guard in
+// `watch` that reads as the new chain collapsing, and the switch turns itself
+// off a moment after being resized — which no test of the arguments alone
+// would have caught.
+phone.film(3)
+await wait(400)
+const alive = (await cam({ op: 'device', value: 'status' })).body?.video?.device
+check(
+  'and the old chain dying afterwards does not take the new one with it',
+  alive?.enabled === true && alive?.frames >= 3,
+  JSON.stringify({ enabled: alive?.enabled, frames: alive?.frames }),
 )
 
 /* ── switching it off ──────────────────────────────────────────────────── */

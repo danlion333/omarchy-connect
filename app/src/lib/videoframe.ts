@@ -27,9 +27,17 @@
 export const MAGIC = new Uint8Array([0x4f, 0x43, 0x56, 0x31]) // "OCV1"
 export const HEADER_BYTES = MAGIC.length + 8
 
-/** What the capture is asked for, and what the desktop expects to receive. */
-export const WIDTH = 640
-export const HEIGHT = 480
+/**
+ * What the capture is asked for when the instruction names nothing.
+ *
+ * The mirror of `daemon/src/lib/video.js`, and only a fallback on this side:
+ * every real instruction carries its own numbers, and the handset clamps them
+ * to the sizes its sensor publishes. They moved from 640×480 to 720p with the
+ * desktop's, so a phone reading an instruction from a build too old to name a
+ * size lands where a new desktop would have put it.
+ */
+export const WIDTH = 1280
+export const HEIGHT = 720
 export const FPS = 15
 /** JPEG quality, 1–100. Seventy is where the artefacts stop being the story. */
 export const QUALITY = 70

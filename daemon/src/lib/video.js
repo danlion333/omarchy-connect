@@ -48,15 +48,17 @@ import { log } from './log.js'
  * nothing on this side doing anything cleverer than appending bytes to a file.
  * The price is the wire — measured on this desk at 640×480 and 15 fps, roughly
  * 25–40 KB a frame, so about half a megabyte a second against the microphone's
- * 32 KB — and that price is worth one release of being able to see what
+ * 32 KB, and something like three times that at the 1280×720 this now opens
+ * with — and that price is worth one release of being able to see what
  * arrived. `MediaCodec` and H.264 are the conversation to have once the
  * traffic is a number somebody has looked at rather than a guess.
  *
  * ## The ceiling
  *
  * `MAX_FRAME_BYTES` is 512 KiB, half the socket's `maxPayload`. That is not a
- * budget for a frame anybody expects — a 640×480 JPEG that reached half a
- * megabyte would be a photograph of static — it is the line past which a frame
+ * budget for a frame anybody expects — a 1280×720 JPEG at quality 70 is a
+ * hundred-odd kilobytes, and one that reached half a megabyte would be a
+ * photograph of static — it is the line past which a frame
  * is refused whole rather than written to a file that would then not decode.
  * The socket would refuse anything over 1 MiB by closing the connection, so a
  * frame refused here is refused *without* costing the link.
@@ -72,9 +74,24 @@ export const HEADER_BYTES = MAGIC.length + 8
 export const CAMERAS = ['back', 'front']
 export const CAMERA = 'back'
 
-/** What the desktop asks for, and what the phone clamps towards. */
-export const WIDTH = 640
-export const HEIGHT = 480
+/**
+ * What the desktop asks for, and what the phone clamps towards.
+ *
+ * 720p rather than the 640×480 this shipped with. That number was never a
+ * limit of anything — `MAX_WIDTH` has always allowed 1920, and the handset
+ * picks the nearest size its sensor offers — it was simply the default, and
+ * because neither the panel's switch nor `cam device on` names a format, it
+ * was also the only size anybody ever got. A camera in somebody's picker that
+ * is 640×480 whatever the lens can do is the thing that looks broken; a phone
+ * with no 1280×720 mode still gets the nearest one it has, which is exactly
+ * what happened at 640×480 too.
+ *
+ * The frame rate stays at fifteen. Raising both at once would be trading a
+ * visible improvement for a lower one, since four times the pixels is four
+ * times the per-pixel NV21 work on the handset.
+ */
+export const WIDTH = 1280
+export const HEIGHT = 720
 export const FPS = 15
 /** JPEG quality, 1–100. Seventy is where the artefacts stop being the story. */
 export const QUALITY = 70

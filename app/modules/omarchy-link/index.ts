@@ -142,7 +142,13 @@ declare class OmarchyLink extends NativeModule<Events> {
   isMicRunning(): boolean
   hasMicPermission(): boolean
   requestMicPermissionAsync(): Promise<{ granted: boolean; canAskAgain: boolean }>
-  startCamera(facing: string, width: number, height: number, fps: number, quality: number): boolean
+  startCamera(
+    facing: string,
+    width: number,
+    height: number,
+    fps: number,
+    quality: number,
+  ): { ok: boolean; width: number; height: number; fps: number }
   stopCamera(): void
   isCameraRunning(): boolean
   hasCameraPermission(): boolean
@@ -745,17 +751,33 @@ export type CameraRequest = {
   quality: number
 }
 
+/** What the lens was actually opened at. Rarely exactly what was asked for. */
+export type CameraFormat = { width: number; height: number; fps: number }
+
 /**
- * Open the camera and start emitting `onCameraFrame`.
+ * Open the camera and start emitting `onCameraFrame`, and say what was opened.
  *
  * Throws rather than returning false when it cannot, because every reason it
  * cannot is a sentence the desktop is waiting to be told: no module, no
  * permission, no such lens, a device another app is holding.
+ *
+ * The return value is the size and rate the sensor settled on rather than the
+ * ones that were asked for, and the two differ on most handsets: Camera2
+ * publishes a fixed list of sizes and the native side picks the nearest by
+ * pixel count. The desktop publishes a camera at whatever this says, so the
+ * answer has to be the truth about the lens and not an echo of the request —
+ * `startSpeaker` above makes the same bargain about a track.
  */
-export function startCamera({ camera, width, height, fps, quality }: CameraRequest): void {
+export function startCamera({ camera, width, height, fps, quality }: CameraRequest): CameraFormat {
   const native = linkService()
   if (!native) throw new Error('this build cannot open its camera')
-  if (!native.startCamera(camera, width, height, fps, quality)) throw new Error('the phone would not open its camera')
+  const opened = native.startCamera(camera, width, height, fps, quality)
+  if (!opened?.ok) throw new Error('the phone would not open its camera')
+  return {
+    width: Number(opened.width) || width,
+    height: Number(opened.height) || height,
+    fps: Number(opened.fps) || fps,
+  }
 }
 
 /** Stop, and give the camera back. Safe when nothing is filming. */

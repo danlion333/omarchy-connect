@@ -139,7 +139,7 @@ export function startVideoResponder(
         throw new Error('camera access is not granted on the phone — open the app and allow it while using the app')
       }
       const camera = data.camera === 'front' ? 'front' : 'back'
-      startCamera({
+      const opened = startCamera({
         camera,
         width: Number(data.width) || WIDTH,
         height: Number(data.height) || HEIGHT,
@@ -148,7 +148,12 @@ export function startVideoResponder(
       })
       stream = Number(data.stream)
       publish({ filming: true, stream, camera, since: Date.now(), error: null })
-      await client.call('video.started', { id: data.id, ok: true })
+      // What the lens actually opened at, which is the desktop's only way of
+      // knowing: it publishes a camera at this size and scales every frame to
+      // it, so a request this phone could not honour has to come back as the
+      // size it could. `api/speaker.ts` answers `audio.playing` the same way
+      // and for the same reason.
+      await client.call('video.started', { id: data.id, ok: true, ...opened })
     } catch (err) {
       stream = null
       stopCamera()

@@ -6,7 +6,16 @@ import { CONFIG_DIR, CONFIG_FILE } from './paths.js'
 import { log } from './log.js'
 
 const DEFAULTS = {
-  version: 1,
+  /**
+   * Which shape of this file the values below are.
+   *
+   * Written since the first release and read by nothing until now, when it
+   * became the marker a one-off migration needs: `raiseCameraFormat` below has
+   * to be able to tell a file it has already been through from one it has not,
+   * or a person who deliberately types 640×480 back would have it taken off
+   * them on the next read.
+   */
+  version: 2,
   deviceName: os.hostname(),
   port: 8765,
   autoAcceptClipboard: true,
@@ -110,7 +119,7 @@ const DEFAULTS = {
    * are the constants those bounds were written around, so a config nobody has
    * touched behaves exactly as the constants did.
    */
-  video: { camera: 'back', width: 640, height: 480, fps: 15, quality: 70 },
+  video: { camera: 'back', width: 1280, height: 720, fps: 15, quality: 70 },
   otp: { enabled: true, autoCopy: false },
   devices: [],
 }
@@ -250,6 +259,52 @@ function seedDefaults(parsed, base) {
   return seeded
 }
 
+/** The camera format the daemon used to write into a file nobody had edited. */
+const OLD_VIDEO = { width: 640, height: 480 }
+
+/**
+ * The picture size nobody chose, raised once.
+ *
+ * `seedDefaults` above is why this is needed. It writes the defaults into the
+ * file the first time a daemon reads it — which is what makes a setting
+ * findable, and is also how every desktop that ran the release before this one
+ * ended up with `640×480` written down as though somebody had meant it. Nobody
+ * did: it was the constant of the day, put there by this file. Leaving it
+ * would mean the switch that raised the default raised nothing at all on the
+ * only machines that already exist.
+ *
+ * So it is lifted exactly once, keyed on `version`, and only when the file
+ * still says the *exact* old pair. Any other size is a size a person typed,
+ * and a person who types 640×480 back after this has done its one pass keeps
+ * it — which is the whole reason the marker is a version rather than a
+ * comparison against the old numbers alone.
+ *
+ * `quality`, `fps` and `camera` are untouched: their defaults have not moved.
+ */
+function raiseCameraFormat(parsed, cfg, base) {
+  if (Number(parsed.version) >= 2) return false
+  const video = isObject(parsed.video) ? parsed.video : null
+  if (video && (Number(video.width) !== OLD_VIDEO.width || Number(video.height) !== OLD_VIDEO.height)) {
+    // Somebody's own numbers. Only the marker moves.
+    cfg.version = DEFAULTS.version
+    if (base) delete base.version
+    return true
+  }
+  cfg.version = DEFAULTS.version
+  cfg.video = { ...cfg.video, width: DEFAULTS.video.width, height: DEFAULTS.video.height }
+  if (base) {
+    delete base.version
+    delete base.video
+  }
+  if (video) {
+    log.info(
+      `the camera in the config was still the old ${OLD_VIDEO.width}\u00d7${OLD_VIDEO.height} default — ` +
+        `raised to ${DEFAULTS.video.width}\u00d7${DEFAULTS.video.height}`,
+    )
+  }
+  return true
+}
+
 /**
  * The config, from memory when the file has not moved and from disk when it
  * has.
@@ -279,8 +334,9 @@ export function loadConfig() {
     cache = adopt(cache, { ...DEFAULTS, ...parsed })
     baseline = clone(cache)
     const seeded = seedDefaults(parsed, baseline)
+    const raised = raiseCameraFormat(parsed, cache, baseline)
     stamp = at
-    if (keepOnePhone(cache) || seeded) saveConfig(cache)
+    if (keepOnePhone(cache) || seeded || raised) saveConfig(cache)
   } else {
     // Nothing readable behind us, so there is nothing to merge with either:
     // this is the one write that is allowed to be the whole object.
