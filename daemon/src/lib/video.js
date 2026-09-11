@@ -110,8 +110,9 @@ export const MAX_FRAME_BYTES = 512 * 1024
 /**
  * What the desktop will hold in memory when the disk cannot keep up.
  *
- * A second and a half of pictures rather than the microphone's eight seconds
- * of sound, and the difference is the point: a late video frame is worth less
+ * Under a second of pictures at 720p — it was a second and a half at the
+ * 640×480 this used to open with — against the microphone's eight seconds of
+ * sound, and the difference is the point: a late video frame is worth less
  * than a late chunk of audio, because a viewer would rather see now than see
  * everything. Small enough that a stalled sink shows up as dropped frames in
  * the status rather than as a process that grows.
