@@ -136,6 +136,46 @@ const fresh = inProcess(`
 `)
 check('a missing config is written fresh', fresh.exists === true && fresh.port === 8765, String(fresh.port))
 
+/* ── the default that had already been written down ───────────────────── */
+
+// `seedDefaults` writes every default into the file the first time a daemon
+// reads it, which is what makes a setting findable and is also why raising a
+// default changes nothing on any machine that already exists: the old number
+// is sitting in the file looking exactly like a decision. The camera's size is
+// the first default to move since, so it is lifted once — and the marker for
+// "once" is the `version` field, which is what stops it from being lifted
+// again out from under somebody who typed it back.
+const raised = inProcess(`
+  write({ ...read(), version: 1, video: { camera: 'front', width: 640, height: 480, fps: 15, quality: 70 } })
+  out.lifted = config.loadConfig().video
+  out.disk = read()
+  write({ ...read(), video: { ...read().video, width: 640, height: 480 } })
+  out.again = config.loadConfig().video
+`)
+check(
+  'a camera format still on the old default is raised to the new one',
+  raised.lifted?.width === 1280 && raised.lifted?.height === 720,
+  JSON.stringify(raised.lifted),
+)
+check('and it is written to the file rather than only believed', raised.disk?.video?.width === 1280, JSON.stringify(raised.disk?.video))
+check('with everything nobody changed left exactly where it was', raised.disk?.video?.camera === 'front' && raised.disk?.video?.quality === 70, JSON.stringify(raised.disk?.video))
+check('the marker moved with it', raised.disk?.version === 2, String(raised.disk?.version))
+check(
+  'so a person who types the old size back keeps it',
+  raised.again?.width === 640 && raised.again?.height === 480,
+  JSON.stringify(raised.again),
+)
+
+// A file that says anything else says it because somebody meant it, and the
+// migration is only allowed to move the marker past it.
+const kept = inProcess(`
+  write({ ...read(), version: 1, video: { camera: 'back', width: 320, height: 240, fps: 5, quality: 40 } })
+  out.video = config.loadConfig().video
+  out.version = read().version
+`)
+check('a size somebody chose is never touched', kept.video?.width === 320 && kept.video?.height === 240, JSON.stringify(kept.video))
+check('and that file is marked as seen so it is never looked at again', kept.version === 2, String(kept.version))
+
 /* ── a real daemon, the real CLI, a real phone ────────────────────────── */
 
 const daemon = spawn(process.execPath, [entry, 'start', '--port', String(PORT)], { env, stdio: ['ignore', 'ignore', 'inherit'] })
