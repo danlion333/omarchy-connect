@@ -426,9 +426,12 @@ class OmarchyLinkModule : Module() {
     /**
      * Open the camera and start emitting `onCameraFrame`.
      *
-     * Answers false rather than throwing, for the same reason `startMic` does:
-     * every particular reason is already a line in logcat and none of them
-     * changes what the phone tells the desktop — it could not look. Blocks
+     * Answers `{ ok: false }` rather than throwing, for the same reason
+     * `startMic` does: every particular reason is already a line in logcat and
+     * none of them changes what the phone tells the desktop — it could not
+     * look. A success carries `width`, `height` and `fps`, which are the
+     * sensor's answer to the request and not a copy of it; `startSpeaker`
+     * answers with the track it built for exactly the same reason. Blocks
      * while Camera2 opens the device and configures the session, which is why
      * the desktop's fifteen seconds are comfortably wider than the eight this
      * waits.

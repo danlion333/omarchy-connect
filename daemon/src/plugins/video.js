@@ -116,7 +116,15 @@ export function summary() {
     stream: live.stream,
     since: live.startedAt,
     camera: live.camera,
+    // The phone's numbers, not the desktop's wish. A handset whose sensor has
+    // no 1280×720 mode opens the nearest thing it has and says so, and what
+    // `camera status` prints has to be the size the file in the cache actually
+    // is — anything else is a status that disagrees with `ffprobe`.
     ...live.format,
+    // Kept beside it rather than instead of it, because "you asked for 1280
+    // and this phone gave you 1024" is the sentence somebody needs when the
+    // picture is not the size they set in the config.
+    requested: live.requested,
     ...live.capture.summary(),
     device: deviceSummary(),
   }
@@ -195,6 +203,34 @@ export function setDevice(on, { mode = 'auto' } = {}) {
   if (was.enabled) log.info('the phone is no longer a camera on this desktop')
   changed()
   return deviceSummary()
+}
+
+/**
+ * Put the published camera on the size the phone is really sending.
+ *
+ * The device is published *before* the handset has answered — `requestDevice`
+ * says why, and that order is not the thing to change: a camera a program can
+ * select and see frozen beats no camera at all. The consequence is that the
+ * first size it is published at is a guess, the desktop's own request, and a
+ * phone with no such mode sends something else. ffmpeg would then scale every
+ * frame back to the guess, so a 1280×720 desktop asking a phone that can only
+ * do 1024×768 would publish a stretched 720p picture and a `cam status` that
+ * disagreed with the file in the cache.
+ *
+ * So the chain is rebuilt at the size that actually arrives. This is cheap and
+ * it happens in the window between the switch and the first frame, when
+ * nothing has opened the device yet — a program already reading it would see
+ * the source blink, which is why nothing calls this except the answer to a
+ * `start` that the switch itself sent.
+ */
+function retune(chosen) {
+  if (!sink?.running) return
+  try {
+    const moved = sink.retune(chosen)
+    if (moved) log.info(`the camera on this desktop is now ${chosen.width}\u00d7${chosen.height} at ${chosen.fps} fps`)
+  } catch (err) {
+    log.warn(`could not put the camera on ${chosen.width}\u00d7${chosen.height}: ${err.message}`)
+  }
 }
 
 /**
@@ -443,7 +479,7 @@ export default {
      * another app is holding it — and `omarchy-connect camera` prints it
      * rather than timing out on a stream that was never going to arrive.
      */
-    'video.started'({ id, ok = true, error } = {}, ctx = {}) {
+    'video.started'({ id, ok = true, error, width, height, fps } = {}, ctx = {}) {
       const pending = asked
       if (!pending || pending.id !== id) throw new Error('nothing is waiting on that camera request')
       clearTimeout(pending.timer)
@@ -453,12 +489,25 @@ export default {
         return { ok: false }
       }
       const file = pathFor()
+      // What the handset says it opened, which is the authority on this road
+      // exactly as it is for the speaker in `plugins/audio.js`: the phone
+      // clamps a request to the sizes its sensor really offers and picks the
+      // nearest by pixel count, and until it said so the desktop had no way of
+      // knowing which one that was. An app too old to name a size names none,
+      // and `readFormat` falls back to what was asked for — which is what this
+      // road did for every build before this one.
+      const chosen = readFormat({ width, height, fps }, pending.format)
+      const moved =
+        chosen.width !== pending.format.width ||
+        chosen.height !== pending.format.height ||
+        chosen.fps !== pending.format.fps
       live = {
         stream: pending.stream,
         session: ctx.session,
         startedAt: Date.now(),
         camera: pending.camera,
-        format: pending.format,
+        format: chosen,
+        requested: pending.format,
         /** Frames that arrived and were not pictures. Reported, not answered. */
         refused: 0,
         capture: new Capture({ file }),
@@ -471,9 +520,25 @@ export default {
         }, MAX_SECONDS * 1000),
       }
       live.ceiling.unref?.()
-      log.ok(`the phone is streaming its ${pending.camera} camera into ${file}`)
+      log.ok(
+        `the phone is streaming its ${pending.camera} camera at ${chosen.width}\u00d7${chosen.height} into ${file}` +
+          (moved
+            ? ` — the nearest it has to the ${pending.format.width}\u00d7${pending.format.height} at ` +
+              `${pending.format.fps} fps it was asked for`
+            : ''),
+      )
+      // Before the resolve, so the terminal that was holding a `cam device on`
+      // open prints a device that is already the right size.
+      retune(chosen)
       changed()
-      pending.resolve({ ok: true, stream: live.stream, path: file, camera: pending.camera, ...pending.format })
+      pending.resolve({
+        ok: true,
+        stream: live.stream,
+        path: file,
+        camera: pending.camera,
+        ...chosen,
+        requested: pending.format,
+      })
       return { ok: true, stream: live.stream }
     },
 

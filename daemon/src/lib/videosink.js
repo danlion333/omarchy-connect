@@ -517,6 +517,45 @@ export class VideoSink {
   }
 
   /**
+   * Publish the same camera at a different size.
+   *
+   * The size is a promise this chain makes to everything downstream and never
+   * checks per frame — `scale=` in ffmpeg, `rawvideoparse` for the node, the
+   * `/dev/video` format — so it cannot be changed in a running pipeline. It is
+   * changed by building a second one, which is honest: the device really does
+   * become a different camera, and the counters start again with it because
+   * they counted frames of a different picture.
+   *
+   * Answers whether anything moved, so the caller only says so when it did.
+   * A sink that is not running takes the numbers and will use them when it is
+   * started, which is what makes this safe to call from anywhere.
+   */
+  retune({ width, height, fps } = {}) {
+    const next = {
+      width: width ?? this.width,
+      height: height ?? this.height,
+      fps: fps ?? this.fps,
+    }
+    if (next.width === this.width && next.height === this.height && next.fps === this.fps) return false
+    this.width = next.width
+    this.height = next.height
+    this.fps = next.fps
+    if (!this.running) return true
+    this.stop()
+    try {
+      this.start()
+    } catch (err) {
+      // The chain that was running is down and a second one could not be
+      // built — the loopback device was unloaded underneath it, ffmpeg went
+      // away. That is the same fact as a child dying on its own, and the
+      // switch upstream has to hear it from the same place.
+      this.collapse()
+      throw err
+    }
+    return true
+  }
+
+  /**
    * A child that ended by itself.
    *
    * Every way that happens means the same thing to everybody upstream — there
@@ -531,13 +570,19 @@ export class VideoSink {
     child.stderr?.on('data', (bytes) => {
       tail = (tail + bytes.toString()).split('\n').filter(Boolean).slice(-1)[0] || tail
     })
+    // Both handlers ask whether this is still *the* child rather than only
+    // whether something is running. `retune` stops one chain and starts
+    // another within the same tick, and an `exit` from the old decoder arrives
+    // after the new one is up — without this it would read as the new chain
+    // collapsing and take down the camera that had just been resized.
+    const current = () => child === this.decoder || child === this.publisher
     child.on('error', (err) => {
-      if (!this.running) return
+      if (!this.running || !current()) return
       log.warn(`${what} could not be started: ${err.message}`)
       this.collapse()
     })
     child.on('exit', (code, signal) => {
-      if (!this.running || this.stopping) return
+      if (!this.running || this.stopping || !current()) return
       log.warn(`${what} ended (${signal || `code ${code}`})${tail ? `: ${tail}` : ''}`)
       this.collapse()
     })

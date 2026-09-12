@@ -89,6 +89,12 @@ const camera = (globalThis.__camera = {
   last: null,
   /** Set to a message to make `startCamera` throw it. */
   refuse: null,
+  /**
+   * The size this stub's lens really has, when it is not the one asked for.
+   * The real module answers with what Camera2 settled on rather than with the
+   * request, and a stub that echoed the request would hide the whole point.
+   */
+  lens: null,
 })
 
 export function cameraSupported() {
@@ -110,6 +116,8 @@ export function startCamera(request) {
   camera.starts += 1
   camera.running = true
   camera.last = request
+  const { width, height, fps } = { ...request, ...(camera.lens || {}) }
+  return { width, height, fps }
 }
 
 export function stopCamera() {

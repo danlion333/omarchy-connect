@@ -124,6 +124,23 @@ internal object Camera {
    */
   private const val SLACK = 3
 
+  /** Nothing was opened. The layer above turns this into a sentence. */
+  private val REFUSED: Map<String, Any> = mapOf("ok" to false)
+
+  /**
+   * What the lens was actually opened at, while it is open.
+   *
+   * The desktop's request is a wish: `closest` picks the nearest size the
+   * sensor publishes by pixel count, and the rate is clamped to what this
+   * class will emit. Until this was reported, the desktop published a camera
+   * at the size it had asked for and scaled every frame to it — so a phone
+   * with no 1280×720 mode became a stretched picture, and nothing on either
+   * side could say why. `Speaker.start` answers with the track it really
+   * built for the same reason, and this is that answer for pictures.
+   */
+  @Volatile
+  private var chosen: Map<String, Any>? = null
+
   /** One frame, as JPEG bytes. They cross the bridge as bytes, not base64. */
   @Volatile
   var onFrame: ((ByteArray, Int) -> Unit)? = null
@@ -148,12 +165,16 @@ internal object Camera {
     context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
   /**
-   * Open the camera and start emitting frames. Returns false when it could
-   * not, which the module turns into the sentence the desktop prints.
+   * Open the camera and start emitting frames. Answers `{ ok: false }` when it
+   * could not, which the module turns into the sentence the desktop prints,
+   * and `{ ok, width, height, fps }` when it could — the size and rate this
+   * phone settled on rather than the ones it was handed.
    *
    * Idempotent in the only direction that matters: a second start while one is
-   * running answers true, because the desktop asking twice for something it
-   * already has should not cost it the stream it has.
+   * running answers with the stream that is already open, because the desktop
+   * asking twice for something it already has should not cost it the stream it
+   * has — and because the numbers that matter are the running lens's, not the
+   * second request's.
    *
    * Asynchronous underneath and synchronous on the surface. Camera2 opens a
    * device through a callback, and the caller — the desktop's own instruction,
@@ -161,23 +182,23 @@ internal object Camera {
    * So this blocks the calling thread until the session is configured or has
    * failed, with a ceiling of its own well under the desktop's.
    */
-  fun start(context: Context, facing: String, width: Int, height: Int, fps: Int, quality: Int): Boolean {
-    if (running.get()) return true
+  fun start(context: Context, facing: String, width: Int, height: Int, fps: Int, quality: Int): Map<String, Any> {
+    if (running.get()) return chosen ?: REFUSED
     if (!hasPermission(context)) {
       Trace.warn("camera.start.refused", "reason" to "no-permission")
-      return false
+      return REFUSED
     }
 
     val manager = context.getSystemService(Context.CAMERA_SERVICE) as? CameraManager
     if (manager == null) {
       Trace.warn("camera.start.refused", "reason" to "no-camera-service")
-      return false
+      return REFUSED
     }
     val wantFront = facing.equals("front", ignoreCase = true)
     val id = pick(manager, wantFront)
     if (id == null) {
       Trace.warn("camera.start.refused", "reason" to "no-such-camera", "front" to wantFront)
-      return false
+      return REFUSED
     }
 
     // The type has to be held before the device is opened, not after: what
@@ -323,7 +344,7 @@ internal object Camera {
       // check above and this line, which a one-time grant can genuinely do.
       Trace.fail("camera.open.failed", error)
       teardown()
-      return false
+      return REFUSED
     }
 
     // Well under the fifteen seconds the desktop is holding its request open,
@@ -337,7 +358,7 @@ internal object Camera {
     if (!settled || !ok) {
       Trace.warn("camera.start.refused", "reason" to if (settled) "session-failed" else "timeout")
       teardown()
-      return false
+      return REFUSED
     }
 
     Trace.evt(
@@ -349,7 +370,12 @@ internal object Camera {
       "ae" to "${range.lower}-${range.upper}",
       "q" to jpegQuality,
     )
-    return true
+    // The rate is this class's grid rather than the auto-exposure range: the
+    // gate in the reader is what decides how many pictures leave the phone,
+    // and `range` is only what the sensor was asked to aim for.
+    val answer: Map<String, Any> = mapOf("ok" to true, "width" to size.width, "height" to size.height, "fps" to rate)
+    chosen = answer
+    return answer
   }
 
   /**
@@ -437,6 +463,7 @@ internal object Camera {
    */
   private fun teardown() {
     running.set(false)
+    chosen = null
     try {
       session?.stopRepeating()
     } catch (error: Exception) {

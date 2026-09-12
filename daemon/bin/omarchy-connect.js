@@ -899,14 +899,14 @@ async function cmdCamera(args) {
       )
     }
     return log.ok(
-      `watching the ${video.camera} camera at ${video.width}\u00d7${video.height} — ` +
+      `watching the ${video.camera} camera at ${video.width}\u00d7${video.height}${asked(video)} — ` +
         `${video.frames} frames in ${video.seconds}s ` +
         `(${video.fps} fps, ${video.gaps} the phone never sent) into ${video.path}`,
     )
   }
   if (op === 'start') {
     return log.ok(
-      `the phone is filming — ${video.width}\u00d7${video.height} at ${video.fps} fps into ${video.path}\n` +
+      `the phone is filming — ${video.width}\u00d7${video.height}${asked(video)} at ${video.fps} fps into ${video.path}\n` +
         '  play it with `mpv --demuxer=mjpeg` or count it with `ffprobe -f mjpeg`\n' +
         '  stop it with `omarchy-connect camera stop`',
     )
@@ -914,6 +914,20 @@ async function cmdCamera(args) {
   const lost = video.dropped ? `, ${video.dropped} frames dropped to keep up` : ''
   const holes = video.gaps ? `, ${video.gaps} the phone never sent` : ''
   log.ok(`the phone has stopped — ${video.frames} frames in ${video.seconds}s (${video.fps} fps) in ${video.path}${lost}${holes}`)
+}
+
+/**
+ * What was asked for, when the handset could not give it.
+ *
+ * Silent whenever the two agree, which is the ordinary case — a note on every
+ * line saying the phone did what it was told is noise. It is the disagreement
+ * that a person needs, because the alternative is wondering why the config
+ * they edited did not take.
+ */
+function asked(video) {
+  const want = video.requested
+  if (!want || (want.width === video.width && want.height === video.height)) return ''
+  return ` (the nearest its lens has to ${want.width}\u00d7${want.height})`
 }
 
 /**
@@ -935,12 +949,18 @@ function printCameraDevice(device) {
     log.warn(device.hint || 'this desktop cannot publish the phone as a camera')
     return
   }
+  // The size is the device's own, which is the phone's and not the desktop's
+  // wish: the chain is rebuilt at whatever the handset said it opened, so this
+  // is the number `v4l2-ctl --all` and every camera picker will agree with.
+  const size = device.width ? ` at ${device.width}\u00d7${device.height}, ${device.fps} fps` : ''
   if (!device.enabled) {
     log.info('the phone is not a camera on this desktop — `omarchy-connect cam device on`')
   } else if (device.mode === 'v4l2') {
-    log.ok(`"${device.deviceLabel || device.description}" is a camera on this desktop at ${device.device}`)
+    log.ok(`"${device.deviceLabel || device.description}" is a camera on this desktop at ${device.device}${size}`)
   } else {
-    log.ok(`"${device.description}" is a PipeWire camera on this desktop — pick it wherever cameras are offered`)
+    log.ok(
+      `"${device.description}" is a PipeWire camera on this desktop${size} — pick it wherever cameras are offered`,
+    )
   }
   // Said whether the switch is on or off, because it is the difference between
   // "every app can see this" and "only the ones that ask PipeWire can", and

@@ -31,7 +31,7 @@ import { fileURLToPath } from 'node:url'
 import { check, done } from '../../tools/test-harness.mjs'
 import { connectPhone } from './phone.mjs'
 import { quietBluetooth, localHeaders } from './sandbox.mjs'
-import { readCamera, readFormat, WIDTH, HEIGHT, FPS, QUALITY, MAX_WIDTH } from '../src/lib/video.js'
+import { readCamera, readFormat, WIDTH, HEIGHT, FPS, QUALITY, MAX_WIDTH, MIN_HEIGHT, MIN_FPS } from '../src/lib/video.js'
 
 const PORT = Number(process.env.PORT || 8837)
 const base = `http://127.0.0.1:${PORT}`
@@ -110,11 +110,18 @@ const camera = (op, value = {}) =>
     body: await r.json(),
   }))
 
-/** A phone that opens its camera whenever it is asked, and remembers the ask. */
+/**
+ * A phone that opens its camera whenever it is asked, and remembers the ask.
+ *
+ * `lens` is the sensor: what it answers `video.started` with. `null` is a
+ * handset that says nothing but `ok`, which is every build older than this
+ * feature, and an object is one whose lens had to settle for something else.
+ */
 async function connect(pairCode) {
   const info = await (await fetch(`${base}/api/info`)).json()
   const phone = connectPhone(PORT, info.publicKey)
   const asked = []
+  let lens = null
   let seq = 0
 
   const hello = await new Promise((resolve, reject) => {
@@ -133,7 +140,7 @@ async function connect(pairCode) {
       if (msg.t === 'ev' && msg.event === 'video' && msg.data.action === 'start') {
         asked.push(msg.data)
         seq += 1
-        phone.send({ t: 'req', id: seq, method: 'video.started', params: { id: msg.data.id, ok: true } })
+        phone.send({ t: 'req', id: seq, method: 'video.started', params: { id: msg.data.id, ok: true, ...(lens || {}) } })
       }
     })
   })
@@ -141,7 +148,7 @@ async function connect(pairCode) {
   const subscribed = new Promise((resolve) => phone.on((msg) => msg.t === 'sub.ok' && resolve(msg.events)))
   phone.send({ t: 'sub', events: ['video'] })
   await subscribed
-  return { hello, asked }
+  return { hello, asked, sensor: (size) => (lens = size) }
 }
 
 await waitForDaemon()
@@ -235,5 +242,75 @@ check(
   JSON.stringify(readConfig().video) === JSON.stringify({ camera: 'back', width: 320, height: 240, fps: 5, quality: 40 }),
   JSON.stringify(readConfig().video),
 )
+
+/* ── the phone answers with the size it could actually open ────────────── */
+
+/**
+ * The acceptance criterion this suite exists to hold: a handset whose sensor
+ * has no such mode starts on the nearest one it does have rather than
+ * refusing, and the desktop records *that* rather than its own wish. It
+ * matters because everything downstream takes the size as a promise — the
+ * `.mjpeg` file is whatever the frames are, and the published camera is told a
+ * width once and never checks — so a desktop believing its own request would
+ * be a status that disagrees with `ffprobe` and a camera that scales a
+ * squashed picture up to a size nothing ever sent.
+ */
+writeVideo({ camera: 'back', width: 1280, height: 720, fps: 15, quality: 70 })
+phone.sensor({ width: 1024, height: 768, fps: 12 })
+const clamped = await camera('start')
+check('a phone with no such mode still starts', clamped.body?.ok === true, JSON.stringify(clamped.body))
+check(
+  'and it was asked for the size the desktop wanted',
+  phone.asked.at(-1)?.width === 1280 && phone.asked.at(-1)?.height === 720,
+  JSON.stringify(phone.asked.at(-1)),
+)
+check(
+  'the capture is the size the phone opened, not the size it was asked for',
+  clamped.body.video.width === 1024 && clamped.body.video.height === 768 && clamped.body.video.fps === 12,
+  JSON.stringify(clamped.body.video),
+)
+check(
+  'with what was asked for kept beside it, so the difference can be explained',
+  clamped.body.video.requested?.width === 1280 && clamped.body.video.requested?.height === 720,
+  JSON.stringify(clamped.body.video.requested),
+)
+const during = (await camera('status')).body.video
+check(
+  'and the status says the same thing while it is streaming',
+  during.width === 1024 && during.height === 768,
+  JSON.stringify({ width: during.width, height: during.height }),
+)
+// The quality was never the phone's to answer, so it comes from the request.
+check('a field the phone did not answer is still the one that was asked for', during.quality === 70, String(during.quality))
+await camera('stop')
+const settled = (await camera('status')).body.video
+check(
+  'a finished capture leaves the next one asking for the config again',
+  settled.width === 1280 && settled.height === 720,
+  JSON.stringify({ width: settled.width, height: settled.height }),
+)
+
+// An app too old to say anything but `ok` is the case that has to keep
+// working, because it is every build shipped before this one.
+phone.sensor(null)
+const silent = await camera('start')
+check(
+  'a phone that names no size is taken at the desktop\'s word, as it always was',
+  silent.body.video.width === 1280 && silent.body.video.height === 720,
+  JSON.stringify(silent.body.video),
+)
+await camera('stop')
+
+// And nonsense is clamped rather than believed: the bounds in `lib/video.js`
+// are about what the rest of the daemon can be handed, and an answer is no
+// more trusted than a request.
+phone.sensor({ width: 99999, height: 0, fps: -4 })
+const silly = await camera('start')
+check(
+  'an answer past the bounds is clamped like any other number',
+  silly.body.video.width === MAX_WIDTH && silly.body.video.height === MIN_HEIGHT && silly.body.video.fps === MIN_FPS,
+  JSON.stringify(silly.body.video),
+)
+await camera('stop')
 
 done('camera format checks')
