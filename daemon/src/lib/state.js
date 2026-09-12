@@ -7,6 +7,8 @@ import { identity, fingerprint, SUITE } from './crypto.js'
 import * as tls from './tls.js'
 import { INBOX } from '../plugins/share.js'
 import { SOURCE_NAME, SOURCE_DESCRIPTION } from './pipesource.js'
+import { readGain, readAuto } from './mic.js'
+import { readCamera, readFormat } from './video.js'
 import { SINK_NAME, SINK_DESCRIPTION } from './pipesink.js'
 import { detected as detectedAgents } from '../agents/index.js'
 import * as hooks from '../agents/hooks.js'
@@ -152,6 +154,14 @@ export function baseSnapshot({ version = null, port = null } = {}) {
     // is offered for something nothing can carry out.
     audio: {
       streaming: false,
+      // The level is the other half, and it is config rather than a fact
+      // about a socket: it is what the next stream will be made louder by,
+      // it is perfectly true with the daemon down, and the panel's dial is
+      // drawn from it. So it is said here for the same reason
+      // `remote.enabled` is said above — the switch cannot be worked while
+      // nothing is running, and the number beside it is still the number.
+      gain: readGain(cfg.audio?.gain),
+      auto: readAuto(cfg.audio?.auto),
       input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
       // The speaker says the same three things for the same reasons, and one
       // of them harder: a sink is unloaded on the way out, so a daemon that is
@@ -164,6 +174,17 @@ export function baseSnapshot({ version = null, port = null } = {}) {
         enabled: false,
         playing: false,
       },
+    },
+    // And the picture, on the same terms as the gain: nothing is filming
+    // while the daemon is down, but what the next capture will ask for lives
+    // in the config and is worth drawing. `available` is left false for the
+    // reason the microphone's is — whether this desktop can publish a camera
+    // at all is a question only a running daemon answers.
+    video: {
+      streaming: false,
+      camera: readCamera(cfg.video?.camera),
+      ...readFormat({}, cfg.video || {}),
+      device: { available: false, enabled: false },
     },
     // Sessions are discovered by a running daemon and nothing else, so with it
     // stopped the panel shows the switch and an empty list rather than a stale
@@ -233,10 +254,29 @@ export function clear() {
   // Same for the microphone: the stream died with the socket it came in on and
   // the input source was unloaded on the way out, so the panel must not be
   // left showing a phone that is still speaking into a daemon that is gone.
+  const cfg = loadConfig()
   snapshot.audio = {
     streaming: false,
+    // The level survives what the stream did not: it is the config's, it is
+    // what the next stream will use, and a panel left saying 1x over a
+    // desktop whose config says four would be lying about the one thing this
+    // card is opened to read.
+    gain: readGain(cfg.audio?.gain),
+    auto: readAuto(cfg.audio?.auto),
     input: { available: false, name: SOURCE_NAME, description: SOURCE_DESCRIPTION, enabled: false },
     output: { available: false, name: SINK_NAME, description: SINK_DESCRIPTION, enabled: false, playing: false },
+  }
+  // The camera the same way, and one step further: a stopped daemon's last
+  // live summary held the numbers the *handset* negotiated and a frame rate
+  // measured off the wire, so leaving it there would show a size nobody chose
+  // and a rate with a decimal point in it. What is true with nothing filming
+  // is the desktop's own wish. `device` is left as it was — whether this
+  // machine can publish a camera is not something stopping the daemon changed.
+  snapshot.video = {
+    ...(snapshot.video || {}),
+    streaming: false,
+    camera: readCamera(cfg.video?.camera),
+    ...readFormat({}, cfg.video || {}),
   }
   return publish(snapshot)
 }

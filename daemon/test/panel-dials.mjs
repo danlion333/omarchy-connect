@@ -348,4 +348,31 @@ check(
   JSON.stringify({ audio: published.audio?.gain, video: published.video?.width }),
 )
 
+/* ── and the card is still readable with nothing running ───────────────── */
+
+// The dials go away when the daemon does, which is the switches' own rule, and
+// what is left is the words. So the words have to be *true*: a status file
+// written on the way out that dropped the level would leave the card saying
+// the microphone is at 1x over a config that says three, which is worse than
+// saying nothing. `mic status` and `camera status` with the daemon down read
+// this same file.
+daemon.kill('SIGTERM')
+await new Promise((resolve) => daemon.once('exit', resolve))
+for (let i = 0; i < 40 && JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8')).running; i += 1) {
+  await wait(100)
+}
+const stopped = JSON.parse(fs.readFileSync(path.join(sandbox, 'state', 'status.json'), 'utf8'))
+check('the file a stopped daemon leaves behind says the daemon is stopped', stopped.running === false, JSON.stringify(stopped.running))
+check(
+  'and still says which level was chosen, so the card does not claim 1x over a config that says otherwise',
+  Model.gainValue(Model.audio(stopped)) === '3' && Model.gainText(Model.audio(stopped), false).indexOf('3\u00d7') > 0,
+  Model.gainText(Model.audio(stopped), false),
+)
+check(
+  'and which picture, as the desktop asked for it rather than as a lens last negotiated it',
+  Model.sizeValue(Model.camera(stopped)) === '1280x720' && Model.fpsValue(Model.camera(stopped)) === '24' &&
+    Model.lensValue(Model.camera(stopped)) === 'back' && Model.camera(stopped).streaming === false,
+  JSON.stringify({ size: Model.sizeValue(Model.camera(stopped)), fps: Model.fpsValue(Model.camera(stopped)) }),
+)
+
 done()
