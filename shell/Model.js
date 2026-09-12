@@ -534,6 +534,12 @@ function audio(status) {
     seconds: num(value.seconds, 0),
     dropped: num(value.dropped, 0),
     path: typeof value.path === "string" ? value.path : "",
+    // How loud this desktop makes the phone, and whether anybody chose it.
+    // Published whether or not a stream is running (`plugins/audio.js`), which
+    // is what lets the panel draw the dial before the microphone is switched
+    // on and while the daemon is stopped.
+    gain: num(value.gain, 1),
+    auto: value.auto === true,
     input: {
       // False on a desktop with no pipewire-pulse, and false again with the
       // daemon down, because nothing there could carry the switch out.
@@ -622,6 +628,94 @@ function micDetail(value, now) {
   return name === "" ? elapsed : elapsed + " \u00b7 " + name
 }
 
+/* ── the microphone dial ───────────────────────────────────────────────── */
+
+/**
+ * The levels the panel offers.
+ *
+ * Steps rather than a slider, and the row stops at sixteen because that is
+ * `MAX_GAIN` in `plugins/audio.js` — a dial that let somebody ask for twenty
+ * would be a dial whose right-hand end is an error message. They are steps
+ * because a gain is chosen by ear: you try one, listen to the input in the
+ * program that was too quiet, and try the next. Nobody arrives at 5.3 on
+ * purpose, and a panel that made it possible to land there by half a pixel of
+ * drag would be offering a precision that does not exist.
+ */
+var GAIN_STEPS = [1, 2, 4, 8, 16]
+
+function gainLabel(value) {
+  return String(value) + "×"
+}
+
+/** How many decibels a multiply is, for the line under the dial. */
+function gainDecibels(value) {
+  var gain = num(value, 1)
+  if (gain <= 0) return "0.0 dB"
+  var dB = 20 * Math.log(gain) / Math.LN10
+  return (dB >= 0 ? "+" : "") + dB.toFixed(1) + " dB"
+}
+
+/**
+ * The chips, with whatever is pinned among them.
+ *
+ * A number typed at a terminal — `mic gain 5` — is still the desktop's level,
+ * so it joins the row in its own place. The alternative is a dial with every
+ * chip dark next to a line saying the microphone is at five, which reads as a
+ * panel that has lost track of its own setting.
+ */
+function gainOptions(value) {
+  var audio = isObject(value) ? value : {}
+  var steps = GAIN_STEPS.slice()
+  var chosen = num(audio.gain, 1)
+  if (audio.auto !== true && chosen > 0 && steps.indexOf(chosen) < 0) {
+    steps.push(chosen)
+    steps.sort(function (a, b) { return a - b })
+  }
+  var list = [{ value: "auto", label: "Auto", tooltip: "Let the desktop follow the room" }]
+  for (var i = 0; i < steps.length; i += 1) {
+    list.push({
+      value: String(steps[i]),
+      label: gainLabel(steps[i]),
+      tooltip: "Pin the level at " + gainLabel(steps[i]) + " (" + gainDecibels(steps[i]) + ")"
+    })
+  }
+  return list
+}
+
+/** Which chip is the current one. */
+function gainValue(value) {
+  var audio = isObject(value) ? value : {}
+  if (audio.auto === true) return "auto"
+  return String(num(audio.gain, 1))
+}
+
+/**
+ * The line under the dial.
+ *
+ * With the follower on it says where the follower has arrived, which is the
+ * number somebody is deciding against when they reach for a constant; with a
+ * constant it says the decibels, because +12 dB means something to anybody who
+ * has ever touched a mixer and 4x does not.
+ *
+ * A stopped daemon says so and still says the level, for the reason the
+ * switches above go quiet rather than vanish: the setting is in the config and
+ * is perfectly true, it is only unchangeable until something is running to
+ * carry the change.
+ */
+function gainText(value, running) {
+  var audio = isObject(value) ? value : {}
+  var level = audio.auto === true
+    ? "following the room · " + gainLabel(num(audio.gain, 1)) + " at the moment"
+    : "pinned at " + gainLabel(num(audio.gain, 1)) + " (" + gainDecibels(audio.gain) + ")"
+  if (!running) return "the daemon is stopped · " + level
+  return level
+}
+
+/** The argv that changes it, for whichever chip was pressed. */
+function gainArgs(chip) {
+  return String(chip) === "auto" ? ["mic", "gain", "auto"] : ["mic", "gain", String(chip)]
+}
+
 /* ── the phone as a camera ─────────────────────────────────────────────── */
 
 /**
@@ -646,6 +740,15 @@ function camera(status) {
     streaming: value.streaming === true,
     since: num(value.since, 0),
     frames: num(value.frames, 0),
+    // The picture the next capture will ask for — the `video` block of the
+    // config, said by the status whether or not a lens is open, exactly as
+    // the microphone's gain is. While one *is* open these are the numbers the
+    // handset actually gave, which is the more useful truth of the two.
+    camera: value.camera === "front" ? "front" : "back",
+    width: num(value.width, 1280),
+    height: num(value.height, 720),
+    fps: num(value.fps, 15),
+    quality: num(value.quality, 70),
     device: {
       available: device.available === true,
       enabled: device.enabled === true,
@@ -675,6 +778,124 @@ function cameraText(value, running) {
     : "\"" + value.device.description + "\""
   if (value.streaming) return "on \u00b7 " + where + " \u00b7 the phone is filming"
   return "on \u00b7 " + where + " \u00b7 the picture is frozen — nothing is filming into it"
+}
+
+/* ── the camera dials ──────────────────────────────────────────────────── */
+
+/**
+ * The three things about the picture that are worth a chip.
+ *
+ * The sizes are the ones a phone sensor actually has a mode for and a meeting
+ * actually wants; the rates are the three every Android camera offers. They
+ * are wishes either way — `lib/video.js` clamps them and the handset clamps
+ * them again against its lens — so a row that offered 4K would be a row whose
+ * right-hand chip quietly means something else.
+ *
+ * `quality` is deliberately not here. It is a JPEG knob between 1 and 100 with
+ * no number on it anybody can picture, and the one thing it trades against —
+ * how much of the link the pictures take — is not something this panel shows.
+ */
+var SIZE_STEPS = [[640, 480], [1280, 720], [1920, 1080]]
+var FPS_STEPS = [15, 24, 30]
+
+function sizeLabel(width, height) {
+  return String(width) + "×" + String(height)
+}
+
+/** The chips, with whatever the config holds among them. */
+function sizeOptions(value) {
+  var camera = isObject(value) ? value : {}
+  var steps = []
+  var i
+  for (i = 0; i < SIZE_STEPS.length; i += 1) steps.push(SIZE_STEPS[i])
+  var width = num(camera.width, 1280)
+  var height = num(camera.height, 720)
+  var known = false
+  for (i = 0; i < steps.length; i += 1) if (steps[i][0] === width && steps[i][1] === height) known = true
+  // A size that came from the config file or from a lens that could only do
+  // something else joins the row, the way a hand-typed gain does.
+  if (!known && width > 0 && height > 0) {
+    steps.push([width, height])
+    steps.sort(function (a, b) { return a[0] - b[0] })
+  }
+  var list = []
+  for (i = 0; i < steps.length; i += 1) {
+    list.push({
+      value: steps[i][0] + "x" + steps[i][1],
+      label: sizeLabel(steps[i][0], steps[i][1]),
+      tooltip: "Ask the phone for " + sizeLabel(steps[i][0], steps[i][1])
+    })
+  }
+  return list
+}
+
+function sizeValue(value) {
+  var camera = isObject(value) ? value : {}
+  return num(camera.width, 1280) + "x" + num(camera.height, 720)
+}
+
+function fpsOptions(value) {
+  var camera = isObject(value) ? value : {}
+  var steps = FPS_STEPS.slice()
+  var chosen = num(camera.fps, 15)
+  if (chosen > 0 && steps.indexOf(chosen) < 0) {
+    steps.push(chosen)
+    steps.sort(function (a, b) { return a - b })
+  }
+  var list = []
+  for (var i = 0; i < steps.length; i += 1) {
+    list.push({ value: String(steps[i]), label: steps[i] + " fps", tooltip: "Ask the phone for " + steps[i] + " frames a second" })
+  }
+  return list
+}
+
+function fpsValue(value) {
+  var camera = isObject(value) ? value : {}
+  return String(num(camera.fps, 15))
+}
+
+function lensOptions() {
+  return [
+    { value: "back", label: "Back", tooltip: "The lens on the back of the phone" },
+    { value: "front", label: "Front", tooltip: "The lens that looks at you" }
+  ]
+}
+
+function lensValue(value) {
+  var camera = isObject(value) ? value : {}
+  return camera.camera === "front" ? "front" : "back"
+}
+
+/**
+ * The line under the three dials.
+ *
+ * It says something different while a lens is open, and the difference is the
+ * point: the numbers in the status are then the handset's own — what its
+ * sensor settled on — rather than what this desktop asked for, and somebody
+ * looking at a picture that is not the size they chose needs the panel to be
+ * the place that admits it.
+ */
+function formatText(value, running) {
+  var camera = isObject(value) ? value : {}
+  var shape = lensValue(camera) + " lens · " + sizeLabel(num(camera.width, 1280), num(camera.height, 720))
+    + " · " + num(camera.fps, 15) + " fps"
+  if (!running) return "the daemon is stopped · " + shape
+  if (camera.streaming) return "filming now · " + shape
+  return "the next time the camera opens · " + shape
+}
+
+/** The argv behind each of the three dials. */
+function sizeArgs(chip) {
+  var parts = String(chip).split("x")
+  return ["cam", "format", "--width", String(parts[0]), "--height", String(parts[1])]
+}
+
+function fpsArgs(chip) {
+  return ["cam", "format", "--fps", String(chip)]
+}
+
+function lensArgs(chip) {
+  return ["cam", "format", "--camera", String(chip)]
 }
 
 /* ── coding agents ────────────────────────────────────────────────────── */

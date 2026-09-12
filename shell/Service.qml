@@ -132,6 +132,12 @@ Item {
   // whose only outcome is an error is a question rather than a control. It
   // still appears while the source is loaded, so it can be turned back off.
   readonly property bool micAvailable: Model.micShown(audio)
+  // How loud this desktop makes the phone, and whether anybody has taken the
+  // knob. Published at rest as well as mid-stream (`plugins/audio.js`), so the
+  // dial has something true to draw before the microphone is ever switched on
+  // and while the daemon is stopped.
+  readonly property real micGain: audio.gain
+  readonly property bool micAuto: audio.auto
 
   // And the same phone as a *speaker*: a sink this desktop can route anything
   // into. Kept as separate properties from the microphone's rather than folded
@@ -151,6 +157,10 @@ Item {
   readonly property bool cameraStreaming: camera.streaming
   readonly property bool cameraEnabled: camera.device.enabled
   readonly property bool cameraAvailable: Model.cameraShown(camera)
+  // The picture the next capture will ask for — the desktop's `video` config
+  // block, which the status carries whether or not a lens is open. The same
+  // bargain the gain makes: a setting is drawable while nothing is running,
+  // and that is most of when somebody wants to change it.
 
   // Whether the phone may reach this desktop from off its own network, and
   // what it would come in over. Switchable from here for the same reason the
@@ -636,6 +646,35 @@ Item {
 
   function disableCamera() {
     invoke(Model.command(root.status, ["cam", "device", "off"]), "Taking the phone out of the camera list…")
+  }
+
+  /**
+   * The two dials beside those switches: how loud the phone is here, and what
+   * the camera opens with.
+   *
+   * Worth waiting on rather than firing and forgetting, and more so than any
+   * switch on this card. A switch says what it did by moving; a dial says it
+   * by the picture changing or by the room getting louder, neither of which is
+   * on this screen — so if the command fails, the *only* thing that could tell
+   * anybody is the sentence `invoke` puts on the panel. Without it a chip
+   * would light up, the config would be untouched, and the level would be
+   * whatever it was.
+   */
+  function setMicGain(chip) {
+    invoke(Model.command(root.status, Model.gainArgs(chip)),
+      String(chip) === "auto" ? "Following the room again…" : "Pinning the level at " + chip + "×…")
+  }
+
+  function setCameraSize(chip) {
+    invoke(Model.command(root.status, Model.sizeArgs(chip)), "Asking for " + String(chip).replace("x", "×") + "…")
+  }
+
+  function setCameraFps(chip) {
+    invoke(Model.command(root.status, Model.fpsArgs(chip)), "Asking for " + chip + " frames a second…")
+  }
+
+  function setCameraLens(chip) {
+    invoke(Model.command(root.status, Model.lensArgs(chip)), "Switching to the " + chip + " lens…")
   }
 
   function enableRemote() {
