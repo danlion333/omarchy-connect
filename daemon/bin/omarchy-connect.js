@@ -844,6 +844,7 @@ async function cmdHeadset(args) {
 async function cmdCamera(args) {
   const [action = 'status', ...rest] = args._
   if (action === 'device') return cmdCameraDevice(rest, args)
+  if (action === 'format') return cmdCameraFormat(args)
   const op = ['start', 'on', 'watch'].includes(action)
     ? 'start'
     : ['stop', 'off'].includes(action)
@@ -853,7 +854,7 @@ async function cmdCamera(args) {
         : null
   if (!op) {
     log.error(
-      'usage: omarchy-connect camera <start|stop|status|device on|device off> ' +
+      'usage: omarchy-connect camera <start|stop|status|format|device on|device off> ' +
         '[--front] [--width N] [--height N] [--fps N] [--quality N]',
     )
     process.exit(1)
@@ -928,6 +929,47 @@ function asked(video) {
   const want = video.requested
   if (!want || (want.width === video.width && want.height === video.height)) return ''
   return ` (the nearest its lens has to ${want.width}\u00d7${want.height})`
+}
+
+/**
+ * The picture this desktop asks for, kept.
+ *
+ * `mic gain` for the camera, and the same bargain: a flag on `camera start` is
+ * an argument for one capture, and this is the preference behind every capture
+ * that names nothing — the panel's switch, `cam device on`, the next `camera
+ * start`. It writes the `video` block of the config, so it outlives the daemon
+ * and the reboot, and a running daemon picks it up without being restarted.
+ *
+ * With no flags it prints what is stored, which is the only way to read the
+ * setting without opening the config file.
+ */
+async function cmdCameraFormat(args) {
+  const value = {
+    ...(args.front ? { camera: 'front' } : args.back ? { camera: 'back' } : {}),
+    ...(args.camera ? { camera: String(args.camera) } : {}),
+    ...(args.width ? { width: Number(args.width) } : {}),
+    ...(args.height ? { height: Number(args.height) } : {}),
+    ...(args.fps ? { fps: Number(args.fps) } : {}),
+    ...(args.quality ? { quality: Number(args.quality) } : {}),
+  }
+  const res = await daemonRequest('/api/camera', { method: 'POST', body: { op: 'format', value }, timeout: 10_000 })
+  if (!res.status) {
+    log.error('daemon is not running — start it with `omarchy-connect start`')
+    process.exit(1)
+  }
+  if (!res.ok) {
+    log.error(res.data?.error || 'the camera format could not be changed')
+    process.exit(1)
+  }
+  const video = res.data?.video || {}
+  // Said as the next capture rather than as four fields, because that is the
+  // question somebody setting it is asking, and because a live capture is
+  // still running with whatever it opened.
+  log.ok(
+    `the phone's camera on this desktop: ${video.camera} lens at ${video.width}\u00d7${video.height}, ` +
+      `${video.fps} fps, quality ${video.quality}` +
+      (video.streaming ? '\n  the capture that is running keeps the size it opened with' : ''),
+  )
 }
 
 /**
@@ -2592,6 +2634,7 @@ const USAGE = `${bold('omarchy-connect')} ${dim(`v${pkg.version}`)}
   ${bold('headset')} <on|off|status>     both at once, with the phone cancelling the echo
   ${bold('camera')} <start|stop|status>  stream the phone's camera to this desktop
   ${bold('cam device')} <on|off|status>  offer the phone as a camera every app can pick
+  ${bold('cam format')} [--width N …]    the size, rate and lens every capture starts with
   ${bold('agent')} <status|enable|spawn|run|…>  read and answer this desktop's coding agents
   ${bold('config')} [key] [value]        read or change configuration
   ${bold('terminal')} <status|on|off>    a shell here the phone can type into

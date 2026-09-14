@@ -159,6 +159,19 @@ it is drawn.
     The line under it says what the daemon's config says, so it is right even
     with the daemon stopped, and it follows the same gate the CLI's
     `omarchy-connect terminal on` flips.
+  - *Microphone level* and *Camera picture* — the first controls here that are
+    a number rather than a position. They sit under the switch they belong to:
+    the level under the microphone, and the size, rate and lens under the
+    camera. Each is a row of chips over the command that writes the setting —
+    `mic gain`, `cam format` — so the value lives in the daemon's config and is
+    still there after the panel closes, after `omarchy-restart-shell` and after
+    a reboot. A level chosen while the phone is speaking is heard on the next
+    buffer, with nothing stopped or started; a camera size is what the lens
+    opens with the *next* time it opens, because re-negotiating a live stream
+    is not something a panel should do behind somebody's back. With the daemon
+    stopped the chips are not drawn at all — there is nothing to carry the
+    change — and the line that says what the setting is stays, because that is
+    most of what this card is opened to read.
   - *Start at login* — whether the daemon comes up with the session. Starting
     and stopping it *right now* is the hero's switch, which is a separate
     decision and stays where you can reach it without opening anything.
@@ -246,6 +259,10 @@ activates, `x` unpairs the phone, `p` pairs, `s` sends, `i` opens the inbox,
 `r` refreshes, Tab moves to the neighbouring bar panel, Esc closes. `p` with a
 phone already paired says which one is in the way rather than acting: dropping
 a pairing is not something one unmodified keystroke should be able to do.
+
+`h` and `l` also walk the chips of a dial when `j` has stepped into one, and
+Enter picks the chip under the cursor; arriving at a dial puts the cursor on
+whatever is already chosen rather than on the left-hand end of the row.
 
 `e` opens and shuts **Details**, `c` does the same for **Settings** — the two
 folded sections are one keystroke away for a keyboard user rather than

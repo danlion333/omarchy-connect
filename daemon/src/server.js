@@ -65,6 +65,7 @@ import {
   feed as feedVideo,
   hangUp as hangUpVideo,
   summary as videoSummary,
+  setFormat as setVideoFormat,
 } from './plugins/video.js'
 import { isAudioFrame } from './lib/mic.js'
 import { isVideoFrame } from './lib/video.js'
@@ -789,6 +790,15 @@ export function createServer({ port, version = '0.1.0' } = {}) {
           // The switch takes a word rather than an object, exactly as
           // `/api/mic`'s does, so that one shape covers both halves of both
           // roads and nobody has to remember which one nests.
+          // Not a capture either: the picture the *next* one will ask for,
+          // written into the config the way `op: "gain"` writes the
+          // microphone's on `/api/mic`. It is what lets the panel offer a
+          // size and a lens without shipping a text editor.
+          if (op === 'format') {
+            setVideoFormat(value && typeof value === 'object' ? value : {})
+            publishState()
+            return json(res, 200, { ok: true, video: videoSummary() })
+          }
           if (op === 'device') {
             const device = await requestVideoDevice(typeof value === 'string' ? value : 'status', { mode })
             publishState()

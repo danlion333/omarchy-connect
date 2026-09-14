@@ -10,7 +10,7 @@ import {
   readCamera,
   readFormat,
 } from '../lib/video.js'
-import { loadConfig } from '../lib/config.js'
+import { loadConfig, updateConfig } from '../lib/config.js'
 import {
   DESCRIPTION as SINK_DESCRIPTION,
   NODE_NAME,
@@ -92,6 +92,51 @@ const configured = () => {
 }
 
 const format = () => ({ encoding: 'jpeg', ...configured() })
+
+/**
+ * Change the picture this desktop will ask for next time, and keep it.
+ *
+ * `setGain` in `plugins/audio.js` for pictures, and here for the same reason
+ * that one exists: the number is a property of a room and a handset rather
+ * than of a session, so the only place it can live and still be true tomorrow
+ * is the config file. Until now the `video` block could only be edited in a
+ * text editor, which is a fine way to set something once and a poor way to
+ * offer it as a control — the panel has no editor and should not grow one.
+ *
+ * Named fields win and the rest of the block is left exactly as it was, so a
+ * panel that changes the frame rate does not quietly reset the lens; every one
+ * of them is clamped on the way in by the same `readFormat` a capture goes
+ * through, so what comes back is what the next `camera start` will ask for and
+ * not what the caller hoped.
+ *
+ * A capture that is already running keeps the format it opened with. The
+ * handset has a lens open at a size it negotiated, and re-negotiating it under
+ * a live stream is the capture tract this change deliberately does not touch —
+ * the microphone's gain can move mid-stream because it is arithmetic on
+ * samples this desktop already has, and a camera's size is not.
+ */
+export function setFormat(values = {}) {
+  const asked = values && typeof values === 'object' ? values : {}
+  // A lens named out loud and wrongly is a person's typo, exactly as it is on
+  // `camera start`, and it is refused to their face rather than silently
+  // saved as `back`.
+  if (asked.camera !== undefined && asked.camera !== null && asked.camera !== '') {
+    if (!CAMERAS.includes(String(asked.camera).toLowerCase())) {
+      throw new Error(`unknown camera: ${asked.camera} — it is "back" or "front"`)
+    }
+  }
+  const wish = loadConfig().video || {}
+  const next = { camera: readCamera(asked.camera, readCamera(wish.camera)), ...readFormat(asked, wish) }
+  updateConfig((cfg) => {
+    cfg.video = { ...(cfg.video || {}), ...next }
+  })
+  log.info(
+    `the phone's camera on this desktop is now the ${next.camera} lens at ` +
+      `${next.width}\u00d7${next.height}, ${next.fps} fps, quality ${next.quality}`,
+  )
+  changed()
+  return next
+}
 
 /**
  * Say, on this desktop only, that the camera picture has moved.

@@ -26,6 +26,10 @@ Panel {
 
   property string focusSection: "header"
   property int actionIndex: 0
+  // Which chip the keyboard is on inside whichever dial the cursor is in.
+  // One number rather than one per dial: the cursor is in at most one of them
+  // at a time, and it lands on the chosen chip every time it arrives.
+  property int chipIndex: 0
   property bool cursorActive: false
   property real now: Date.now()
   // Both start shut on every open. A panel that remembered being expanded
@@ -310,6 +314,57 @@ Panel {
     return String(entry.id || Model.phoneReplyTo(entry))
   }
 
+  /* ── the dials ───────────────────────────────────────────────────── */
+
+  // The four numbered settings on the settings card, named the way every
+  // other keyboard-reachable thing on this panel is named: by section. Each
+  // one is a row of chips over a command, and all three of these functions
+  // exist so that the cursor code below can walk them without knowing which
+  // is which.
+  readonly property var dialSections: ["gain", "size", "fps", "lens"]
+
+  function isDial(section) {
+    return dialSections.indexOf(section) >= 0
+  }
+
+  function dialOptions(section) {
+    if (section === "gain") return Model.gainOptions(bridge.audio)
+    if (section === "size") return Model.sizeOptions(bridge.camera)
+    if (section === "fps") return Model.fpsOptions(bridge.camera)
+    if (section === "lens") return Model.lensOptions()
+    return []
+  }
+
+  function dialValue(section) {
+    if (section === "gain") return Model.gainValue(bridge.audio)
+    if (section === "size") return Model.sizeValue(bridge.camera)
+    if (section === "fps") return Model.fpsValue(bridge.camera)
+    if (section === "lens") return Model.lensValue(bridge.camera)
+    return ""
+  }
+
+  function dialChosen(section) {
+    var options = dialOptions(section)
+    var value = dialValue(section)
+    for (var i = 0; i < options.length; i += 1) if (String(options[i].value) === value) return i
+    return 0
+  }
+
+  function pickDial(section, chip) {
+    if (section === "gain") bridge.setMicGain(chip)
+    else if (section === "size") bridge.setCameraSize(chip)
+    else if (section === "fps") bridge.setCameraFps(chip)
+    else if (section === "lens") bridge.setCameraLens(chip)
+  }
+
+  // Nothing on this card may be changed while there is no daemon to carry the
+  // change — the switches vanish for that reason, and a dial that stayed
+  // clickable would be a chip that lights up over a command that could only
+  // fail. The values themselves stay on screen: they are in the config, they
+  // are true, and "what is this set to" is most of what somebody opens this
+  // card to find out.
+  readonly property bool dialsLive: bridge.running
+
   readonly property var sections: {
     var list = ["header", "actions"]
     if (answerable.length > 0) list.push("messages")
@@ -319,8 +374,10 @@ Panel {
       if (bridge.terminalAvailable) list.push("terminal")
       if (bridge.remoteAvailable) list.push("remote")
       if (bridge.micAvailable) list.push("mic")
+      if (bridge.micAvailable && dialsLive) list.push("gain")
       if (bridge.speakerAvailable) list.push("speaker")
       if (bridge.cameraAvailable) list.push("camera")
+      if (bridge.cameraAvailable && dialsLive) list.push("size", "fps", "lens")
       list.push("autostart")
     }
     return list
@@ -343,6 +400,10 @@ Panel {
         actionIndex = Math.max(0, Math.min(actions.length - 1, actionIndex + dx))
       else if (focusSection === "messages")
         messageIndex = Math.max(0, Math.min(answerable.length - 1, messageIndex + dx))
+      // Left and right walk the chips of a dial, which is the one place on
+      // this panel where a row of things sits *inside* a section.
+      else if (isDial(focusSection))
+        chipIndex = Math.max(0, Math.min(dialOptions(focusSection).length - 1, chipIndex + dx))
       return
     }
     if (dy === 0) return
@@ -350,6 +411,10 @@ Panel {
     var index = sections.indexOf(focusSection) + dy
     if (index < 0 || index >= sections.length) return
     focusSection = sections[index]
+    // Arriving at a dial puts the cursor on what is already chosen, so the
+    // first thing anybody sees is their own setting rather than the left-hand
+    // end of the row.
+    if (isDial(focusSection)) chipIndex = dialChosen(focusSection)
     if (focusSection === "header" && panelFlick) panelFlick.contentY = 0
     else if (focusSection !== "actions" && focusSection !== "messages") scrollToBottom()
   }
@@ -373,6 +438,10 @@ Panel {
     else if (focusSection === "speaker") requestSpeaker(!bridge.speakerEnabled)
     else if (focusSection === "camera") requestCamera(!bridge.cameraEnabled)
     else if (focusSection === "autostart") bridge.toggleAutostart()
+    else if (isDial(focusSection)) {
+      var options = dialOptions(focusSection)
+      if (chipIndex >= 0 && chipIndex < options.length) pickDial(focusSection, String(options[chipIndex].value))
+    }
   }
 
   function toggleDetails() {
@@ -1460,6 +1529,25 @@ Panel {
               onClicked: root.requestMic(!bridge.micEnabled)
             }
 
+            // How loud this desktop makes what the phone hears. Under the
+            // switch rather than beside it, because it is the same feature at
+            // a finer grain: the switch decides whether the room is in the
+            // input list at all, and this decides how much of it there is.
+            // `setGain` moves a stream that is already running, so the chip
+            // pressed while somebody is listening is heard on the next
+            // buffer — no stopping, no starting.
+            Dial {
+              visible: bridge.micAvailable || !root.dialsLive
+              glyph: "󰕾"
+              label: "Microphone level"
+              description: Model.gainText(bridge.audio, bridge.running)
+              options: root.dialOptions("gain")
+              value: root.dialValue("gain")
+              section: "gain"
+              live: root.dialsLive
+              onPicked: function (chip) { bridge.setMicGain(chip) }
+            }
+
             // The same switch pointed the other way: this desktop's sound out
             // of the phone. Hidden on a machine with no pipewire-pulse and
             // while the daemon is stopped, and kept once the sink is loaded
@@ -1502,6 +1590,50 @@ Panel {
               accent: bridge.cameraStreaming ? root.urgent : root.foreground
               fontFamily: root.fontFamily
               onClicked: root.requestCamera(!bridge.cameraEnabled)
+            }
+
+            // And the picture that switch opens. Three dials rather than one,
+            // because they are three independent wishes — a lens, a size and a
+            // rate — and a single row of "720p30 front" chips would be nine
+            // combinations of which somebody wants one.
+            //
+            // They write the desktop's `video` config, which is what every
+            // capture that names no format reads: the switch above, `cam
+            // device on`, the next `camera start`. So a size chosen here is
+            // the size the camera opens with the *next* time it opens, and a
+            // lens already filming keeps what it negotiated.
+            Dial {
+              visible: bridge.cameraAvailable || !root.dialsLive
+              glyph: "󰍹"
+              label: "Camera picture"
+              description: Model.formatText(bridge.camera, bridge.running)
+              options: root.dialOptions("size")
+              value: root.dialValue("size")
+              section: "size"
+              live: root.dialsLive
+              onPicked: function (chip) { bridge.setCameraSize(chip) }
+            }
+
+            Dial {
+              visible: bridge.cameraAvailable || !root.dialsLive
+              glyph: "󰅐"
+              label: "Frame rate"
+              options: root.dialOptions("fps")
+              value: root.dialValue("fps")
+              section: "fps"
+              live: root.dialsLive
+              onPicked: function (chip) { bridge.setCameraFps(chip) }
+            }
+
+            Dial {
+              visible: bridge.cameraAvailable || !root.dialsLive
+              glyph: "󰹑"
+              label: "Lens"
+              options: root.dialOptions("lens")
+              value: root.dialValue("lens")
+              section: "lens"
+              live: root.dialsLive
+              onPicked: function (chip) { bridge.setCameraLens(chip) }
             }
 
             // Reading works without hooks; knowing that an agent is *stuck*
@@ -1645,6 +1777,94 @@ Panel {
   }
 
   /* ── row components ──────────────────────────────────────────────── */
+
+  /**
+   * A number on the settings card: a caption, a row of chips, and the line
+   * that says what the setting is.
+   *
+   * Every other control on this panel is a switch, which is a thing with two
+   * positions and no memory of its own — the state is the daemon's, and the
+   * switch draws it. A dial is the first control here whose *value* is the
+   * point, so it says the value twice: once as the chip that is lit, and once
+   * in words underneath, because "1280×720" is a choice and "filming now ·
+   * back lens · 1280×720 · 15 fps" is what is actually happening.
+   *
+   * With nothing running to carry a change the chips are not drawn at all.
+   * That is the switches' own rule — a control whose only outcome is an error
+   * is a question rather than a control — with the difference that the words
+   * stay: the setting lives in the config, it is true with the daemon down,
+   * and it is most of what this card is opened to read.
+   */
+  component Dial: Column {
+    id: dial
+    property string glyph: ""
+    property string label: ""
+    property string description: ""
+    property var options: []
+    property string value: ""
+    property string section: ""
+    property bool live: true
+
+    signal picked(string chip)
+
+    width: parent ? parent.width : implicitWidth
+    spacing: Style.space(4)
+
+    Row {
+      width: parent.width
+      spacing: Style.space(8)
+
+      Text {
+        width: root.iconCell
+        text: dial.glyph
+        color: root.dim
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+        horizontalAlignment: Text.AlignHCenter
+      }
+
+      Text {
+        text: dial.label
+        color: root.foreground
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.caption
+      }
+    }
+
+    ButtonGroup {
+      visible: dial.live
+      options: dial.options
+      value: dial.value
+      // The panel owns its own keyboard cursor, so the group never takes Tab
+      // focus here — `cursorIndex` is the whole of the highlight.
+      focusable: false
+      cursorIndex: root.cursorActive && root.focusSection === dial.section ? root.chipIndex : -1
+      foreground: root.foreground
+      accent: root.foreground
+      fontFamily: root.fontFamily
+      fontSize: Style.font.caption
+      x: root.iconCell + Style.space(8)
+      onChanged: function (chip) { dial.picked(chip) }
+      onHovered: function (index, isHovered) {
+        if (!isHovered) return
+        root.setCursor(dial.section)
+        root.chipIndex = index
+      }
+    }
+
+    Text {
+      // The two camera dials under the first one say nothing of their own:
+      // one sentence describes the picture all three of them make.
+      visible: dial.description !== ""
+      width: parent.width - root.iconCell - Style.space(8)
+      x: root.iconCell + Style.space(8)
+      text: dial.description
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+    }
+  }
 
   // One line that stands in for a section until you ask for it: a chevron, a
   // word, and the whole row as a click target.

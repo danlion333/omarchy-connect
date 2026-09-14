@@ -2239,6 +2239,15 @@ whenever it moves, so an edit takes effect on the next start with no restart.
 The constants in `daemon/src/lib/video.js` are only the last word, for a config
 that has never been touched.
 
+`POST /api/camera` with `{ "op": "format", "value": { … } }` — or
+`omarchy-connect cam format --width 1280 --height 720 --fps 15 --camera front`,
+or the dials on the panel's settings card — is how that block is *written*
+without opening the file: named fields win, the rest of the block is left as it
+was, everything is clamped by the same `readFormat` a capture goes through, and
+the answer is the format the next capture will ask for. A capture that is
+already running keeps the size it negotiated with the handset; nothing
+re-opens a live lens.
+
 `camera` is `"back"` or `"front"`. Everything else in the request is **clamped
 rather than refused** — 160–1920 wide, 120–1080 high, 1–30 fps, quality 1–100 —
 and the handset clamps again to the sizes its own sensor offers, picking the
