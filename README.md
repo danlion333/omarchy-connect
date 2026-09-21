@@ -1176,5 +1176,4 @@ Omarchy upstream — the name says what it connects to, not who wrote it.
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The `app/` directory also carries Expo's own MIT
-license from the template it was started from.
+MIT — see [LICENSE](LICENSE).

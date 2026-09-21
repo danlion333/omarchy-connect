@@ -255,7 +255,7 @@ export class Handsfree extends EventEmitter {
           : 'guess'
       : null
     // PipeWire's gateway carries an address and no name, so the only screen
-    // that ever names the handset would otherwise read `D0:49:7C:20:F9:74`.
+    // that ever names the handset would otherwise read `00:00:5E:00:53:01`.
     // BlueZ knows what its owner called it; keep that as it goes past.
     if (chosen) this.link.handset = { address: chosen.address, name: chosen.name }
     // And a name still being carried for a handset BlueZ no longer lists is a

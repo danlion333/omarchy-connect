@@ -552,9 +552,9 @@ function stubbed(policy = 'presence') {
 {
   const dev = (name, address, icon, hfp = true) => ({ name, address, icon, hfp, path: `/org/bluez/${address}` })
   const fleet = (phone) => [
-    dev('BT-Car', 'E2:E3:4E:DC:EF:99', 'audio-card'),
-    dev('OnePlus Buds Z', 'E4:41:22:2F:6E:3A', 'audio-headset'),
-    dev(phone, 'D0:49:7C:20:F9:74', 'phone'),
+    dev('BT-Car', '00:00:5E:00:53:03', 'audio-card'),
+    dev('OnePlus Buds Z', '00:00:5E:00:53:02', 'audio-headset'),
+    dev(phone, '00:00:5E:00:53:01', 'phone'),
     dev('Оксанин Pixel', 'AA:BB:CC:DD:EE:FF', 'phone'),
   ]
   const chosen = (list, expect, address = null) => pick(list, address, expect)?.name ?? null
@@ -583,7 +583,7 @@ function stubbed(policy = 'presence') {
   check('a handset renamed past recognition is not guessed at', chosen(fleet("Dan's OnePlus"), 'OnePlus 9 Pro 5G') === null)
   check(
     'a short alias cannot claim a long name',
-    matchesName(dev('G7', 'AD:26:B3:10:A5:92', 'audio-card'), 'OnePlus 9 Pro 5G') === false,
+    matchesName(dev('G7', '00:00:5E:00:53:04', 'audio-card'), 'OnePlus 9 Pro 5G') === false,
   )
   check(
     'two bonds with the same name are still a question',
@@ -592,13 +592,13 @@ function stubbed(policy = 'presence') {
   // Somebody who typed an address is not to be second-guessed by inference.
   check(
     'an explicit pin outranks the name it disagrees with',
-    chosen(fleet('OnePlus 9 Pro 5G'), 'OnePlus 9 Pro 5G', 'E2:E3:4E:DC:EF:99') === 'BT-Car',
+    chosen(fleet('OnePlus 9 Pro 5G'), 'OnePlus 9 Pro 5G', '00:00:5E:00:53:03') === 'BT-Car',
   )
   // One phone and nothing else is the case that predates all of this, and it
   // has to keep working on a desktop that has never paired anything over WiFi.
   check(
     'a lone handset is still found with no LAN pairing at all',
-    chosen([dev('OnePlus 9 Pro 5G', 'D0:49:7C:20:F9:74', 'phone')], null) === 'OnePlus 9 Pro 5G',
+    chosen([dev('OnePlus 9 Pro 5G', '00:00:5E:00:53:01', 'phone')], null) === 'OnePlus 9 Pro 5G',
   )
 
   // And the whole of it through the client, which is what actually records
@@ -608,11 +608,11 @@ function stubbed(policy = 'presence') {
   link.handsets = { at: Date.now(), list: fleet('OnePlus 9 Pro 5G'), read: true }
   link.expect = () => 'OnePlus 9 Pro 5G'
   const matched = await link.handset()
-  check('the client joins the link to the paired phone', matched?.address === 'D0:49:7C:20:F9:74', matched?.address)
+  check('the client joins the link to the paired phone', matched?.address === '00:00:5E:00:53:01', matched?.address)
   check('and says so rather than implying a guess', link.link.matched === 'phone', link.link.matched)
   check('the name BlueZ knows comes with it', link.link.handset?.name === 'OnePlus 9 Pro 5G')
 
-  link.link.address = 'E2:E3:4E:DC:EF:99'
+  link.link.address = '00:00:5E:00:53:03'
   await link.handset()
   check('a pin is reported as a pin', link.link.matched === 'pinned', link.link.matched)
 
@@ -660,7 +660,7 @@ function stubbed(policy = 'presence') {
    * something that was already done.
    */
   const link = new Handsfree()
-  link.handset = async () => ({ address: 'D0:49:7C:20:F9:74', name: 'OnePlus 9 Pro 5G', path: '/org/bluez/dev' })
+  link.handset = async () => ({ address: '00:00:5E:00:53:01', name: 'OnePlus 9 Pro 5G', path: '/org/bluez/dev' })
   const already = await link.bond()
   check('a desktop that is already bonded makes no window', already.ok && already.already === true, JSON.stringify(already))
   check('and it says which handset that was', already.handset?.name === 'OnePlus 9 Pro 5G', already.handset?.name)
