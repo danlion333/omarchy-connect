@@ -50,6 +50,12 @@ the desktop and the app repaints in the same palette.
 
 ## Install the daemon
 
+Node 20 or newer, on an Omarchy desktop — or any Hyprland one. The daemon has a
+single dependency (`ws`) and asks the system for everything else, so what it can
+actually do depends on which helpers are installed; [What the desktop
+needs](#what-the-desktop-needs) is the table of that. Running the test suites
+wants Node 22.18, which is where importing TypeScript stops needing a flag.
+
 ```bash
 cd daemon
 npm install
@@ -1154,3 +1160,21 @@ one without a terminal.
 
 The one gap that is not on this list is sending a message from an iPhone. It is
 not a matter of effort — iOS exposes no way to do it, to anyone.
+
+## Status and affiliation
+
+Version 0.2.0. The honest summary is that this is one person's daily driver
+rather than a product: it runs every day on the desktop it was written on, and
+the corners nobody has walked into yet are exactly the corners nobody has
+walked into yet. Issues and pull requests are welcome, and so is the news that
+something does not work on a machine that is not this one.
+
+This is not an Omarchy project. It is built for
+[Omarchy](https://omarchy.org) and leans on the `omarchy-*` helpers wherever
+they exist, but it is not affiliated with, endorsed by, or maintained by
+Omarchy upstream — the name says what it connects to, not who wrote it.
+
+## License
+
+MIT — see [LICENSE](LICENSE). The `app/` directory also carries Expo's own MIT
+license from the template it was started from.
